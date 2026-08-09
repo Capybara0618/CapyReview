@@ -181,7 +181,14 @@ CapyReview 工作流，输出 `experiment.json`、`case-results.jsonl`、JSON �
 生产 PR 的泛化效果。
 
 > 旧版规则对比实验不属于当前 DeepSeek 单系统 Evaluation 协议，不能作为当前架构的
-> 效果指标。简历与项目介绍只能引用由当前 schema v2 正式报告生成的结果。
+> 效果指标。该历史数字现由与生产代码隔离的确定性规则基准负责复现，仅用于解释旧实验
+> 的计算来源；详见[历史受控规则基准](docs/CONTROLLED_RULE_BENCHMARK.md)。
+
+复现历史受控规则基准无需 API Key：
+
+```powershell
+python scripts/run_controlled_rule_benchmark.py
+```
 
 ## 存储与队列
 
