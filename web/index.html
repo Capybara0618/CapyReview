@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d10">
+  <title>CapyReview · PR 审查 Agent Runtime</title>
+  <meta name="description" content="CapyReview 风险驱动的 PR 审查 Agent Runtime Harness">
+  <link rel="stylesheet" href="/assets/app.css?v=20260809">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#overview" aria-label="CapyReview 首页">
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <span>CapyReview<small>PR REVIEW RUNTIME</small></span>
+      </a>
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="overview"><b>OV</b><span>概览</span></button>
+        <button class="nav-item" data-view="review"><b>RV</b><span>发起审查</span></button>
+        <button class="nav-item" data-view="tasks"><b>TR</b><span>任务与 Trace</span></button>
+        <button class="nav-item" data-view="evolution"><b>EV</b><span>反馈演化</span></button>
+        <button class="nav-item" data-view="evaluation"><b>EA</b><span>离线评测</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <i></i><span><small>运行状态</small><b id="system-status">连接中</b></span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div><span class="eyebrow">CAPYREVIEW CONSOLE</span><h1 id="page-title">概览</h1></div>
+        <button class="button secondary" id="refresh" type="button">刷新当前页</button>
+      </header>
+
+      <section class="view active" id="view-overview" aria-labelledby="page-title">
+        <article class="hero">
+          <div>
+            <span class="eyebrow">RISK-ROUTED · EVIDENCE-GROUNDED</span>
+            <h2>让一次 PR 审查<br><em>可恢复、可追踪、可演化。</em></h2>
+            <p>Risk Router 按变更风险选择最小 Reviewer 集，Evidence Validator 与独立 Judge 只保留可定位到新增行的问题。</p>
+            <div class="actions">
+              <button class="button" data-jump="review" type="button">发起一次审查</button>
+              <button class="button secondary" data-jump="tasks" type="button">查看运行记录</button>
+            </div>
+          </div>
+          <div class="runtime-chain" aria-label="审查链路">
+            <span>Risk Router</span><i></i><span>Reviewer Agents</span><i></i>
+            <span>Evidence Validator</span><i></i><span>Judge</span>
+          </div>
+        </article>
+        <div class="stats" id="stats" aria-live="polite">
+          <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+        </div>
+        <article class="panel">
+          <div class="panel-head"><div><span class="eyebrow">RECENT RUNS</span><h3>最近任务</h3></div><button class="link" data-jump="tasks" type="button">查看全部</button></div>
+          <div class="task-list" id="recent-tasks"><div class="skeleton row"></div></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-review" aria-labelledby="page-title">
+        <div class="section-heading"><span class="eyebrow">NEW REVIEW</span><h2>发起 PR 审查</h2><p>粘贴 Unified Diff；异步任务将经 Redis Streams 进入 Runtime。</p></div>
+        <div class="two-columns">
+          <article class="panel">
+            <form id="review-form">
+              <div class="field-row">
+                <label>仓库<input name="repository" placeholder="owner/repository" required></label>
+                <label>PR 编号 <small>可选</small><input name="pull_request" type="number" min="1" placeholder="42"></label>
+              </div>
+              <label>Unified Diff <small id="diff-stats">0 行 · 0 字符</small>
+                <textarea name="diff" rows="17" spellcheck="false" required placeholder="--- a/app.py&#10;+++ b/app.py&#10;@@ -1 +1 @@&#10;-old_value&#10;+new_value"></textarea>
+              </label>
+              <div class="form-footer">
+                <label class="check"><input name="async" type="checkbox" checked><span>异步执行</span></label>
+                <button class="button secondary" id="load-demo" type="button">载入示例</button>
+                <button class="button" type="submit">开始审查</button>
+              </div>
+            </form>
+          </article>
+          <aside class="panel compact">
+            <div class="panel-head"><div><span class="eyebrow">BOUNDED LOOP</span><h3>运行边界</h3></div></div>
+            <ol class="steps">
+              <li><b>01</b><span><strong>解析与路由</strong><small>识别敏感路径、危险调用和变更规模</small></span></li>
+              <li><b>02</b><span><strong>Reviewer 工具循环</strong><small>搜索 Diff、读取新增行、检索历史记忆</small></span></li>
+              <li><b>03</b><span><strong>证据与 Judge 门禁</strong><small>校验路径、行号与证据，再统一去重排序</small></span></li>
+            </ol>
+            <pre class="result empty" id="review-result">审查结果将在这里显示</pre>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-tasks" aria-labelledby="page-title">
+        <div class="section-heading"><span class="eyebrow">RUNTIME TRACE</span><h2>任务与 Trace</h2><p>查看 Finding、Agent 协作消息、Checkpoint 与状态 Trace。</p></div>
+        <div class="task-layout">
+          <article class="panel">
+            <div class="panel-head"><div><span class="eyebrow">RUNS</span><h3>全部任务</h3></div></div>
+            <div class="task-list" id="all-tasks"><div class="skeleton row"></div></div>
+          </article>
+          <article class="panel detail-panel">
+            <div class="panel-head">
+              <div><span class="eyebrow">RUN DETAIL</span><h3>任务详情</h3></div>
+              <div class="actions">
+                <button class="button secondary hidden" id="cancel-task" type="button">取消</button>
+                <button class="button secondary hidden" id="resume-task" type="button">续跑</button>
+              </div>
+            </div>
+            <div id="task-detail" class="empty-state">请选择一个任务。</div>
+            <details><summary>原始任务数据</summary><pre id="task-raw">尚未选择任务</pre></details>
+            <section class="feedback hidden" id="feedback-panel">
+              <div class="panel-head"><div><span class="eyebrow">HUMAN FEEDBACK</span><h3>记录审查反馈</h3></div></div>
+              <form id="feedback-form">
+                <div class="field-row">
+                  <label>反馈类型<select name="category"><option value="false_positive">误报</option><option value="missed_issue">漏报</option><option value="accepted">确认有效</option></select></label>
+                  <label>关联 Finding <small>可选</small><select name="finding_index" id="feedback-finding"><option value="">任务级反馈</option></select></label>
+                </div>
+                <label>说明<textarea name="note" rows="3" maxlength="2000" required></textarea></label>
+                <div class="form-footer"><button class="button" type="submit">保存反馈</button><span id="feedback-result"></span></div>
+              </form>
+              <div id="feedback-history"></div>
+            </section>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-evolution" aria-labelledby="page-title">
+        <div class="section-heading"><span class="eyebrow">FEEDBACK LOOP</span><h2>反馈与策略演化</h2><p>候选 Prompt/Skill 只有通过安全、Validation 提升和 Holdout 非退化门禁后才会激活。</p></div>
+        <div class="evolution-flow"><span>确认反馈</span><i></i><span>生成候选</span><i></i><span>Validation</span><i></i><span>Holdout</span><i></i><span>激活 / 回滚</span></div>
+        <div class="two-columns">
+          <article class="panel">
+            <div class="panel-head"><div><span class="eyebrow">GATE STATUS</span><h3>演化状态</h3></div><button class="button secondary" id="auto-evolve" type="button">从反馈生成候选</button></div>
+            <pre id="evolution-status">正在读取门禁状态…</pre>
+            <form id="evolution-form">
+              <label>策略名称<input name="skill_name" value="llm-review" required></label>
+              <label>候选 Prompt<textarea name="prompt" rows="9" required>Review the unified diff. Return JSON findings with severity, fix and test. Report only actionable defects introduced by added lines.</textarea></label>
+              <button class="button" type="submit">执行门禁评测</button>
+            </form>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><span class="eyebrow">VERSIONS</span><h3>最近演化记录</h3></div></div>
+            <div id="evolution-runs" class="task-list"><div class="skeleton row"></div></div>
+            <pre class="result empty" id="evolution-result">演化结果将在这里显示</pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="view" id="view-evaluation" aria-labelledby="page-title">
+        <div class="section-heading"><span class="eyebrow">EVALUATION HARNESS</span><h2>受控离线评测</h2><p>使用路径、行号与 CWE 一对一匹配，展示数据口径、核心指标和实验边界。</p></div>
+        <div class="evaluation-grid" id="evaluation-summary" aria-live="polite"><div class="skeleton"></div><div class="skeleton"></div></div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/assets/app.js?v=20260809"></script>
+</body>
+</html>

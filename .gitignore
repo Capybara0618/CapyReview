@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.db
+.env
+.pytest_cache/
+tmp/
+.venv/
+venv/
+.coverage
+htmlcov/
+.idea/
+.vscode/
+dist/
+build/
+output/llm-evaluation/

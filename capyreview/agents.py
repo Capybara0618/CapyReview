@@ -1,0 +1,947 @@
+"""Risk-routed review with domain agents, evidence validation and a final judge.
+
+The coordinator selects the smallest justified reviewer set, runs selected domain
+reviewers under bounded tool loops, validates changed-line evidence, and delegates
+semantic approval to one independent judge. Runtime events and hand-offs are
+persisted when a task store is available.
+"""
+import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, TypedDict
+
+from .context_manager import ContextManager
+from .diff_parser import ParsedDiff
+from .memory import MemoryManager
+from .models import Finding, Severity
+from .reviewer import Reviewer
+from .runtime import AgentLoop, AgentRuntime, AgentTool, RuntimeNode, ToolRegistry
+
+
+@dataclass
+class AgentMessage:
+    sender: str
+    recipient: str
+    kind: str
+    content: Dict[str, Any]
+    correlation_id: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class CollaborationBus:
+    """Task-scoped mailbox plus durable transcript."""
+
+    def __init__(self, task_id: str = "", store=None):
+        self.task_id = task_id
+        self.store = store
+        self.messages: List[AgentMessage] = []
+        self._lock = threading.Lock()
+
+    def send(
+        self, sender: str, recipient: str, kind: str,
+        content: Dict[str, Any], correlation_id: str = "",
+    ) -> AgentMessage:
+        message = AgentMessage(sender, recipient, kind, content, correlation_id)
+        with self._lock:
+            self.messages.append(message)
+            if self.store is not None and self.task_id:
+                self.store.record_agent_message(self.task_id, message.to_dict())
+        return message
+
+    def inbox(self, recipient: str, correlation_id: str = "") -> List[dict]:
+        with self._lock:
+            values = [
+                message.to_dict() for message in self.messages
+                if message.recipient in {recipient, "specialists", "all"}
+                and (not correlation_id or message.correlation_id == correlation_id)
+            ]
+        return values
+
+    def count(self, kind: str = "") -> int:
+        with self._lock:
+            return sum(1 for item in self.messages if not kind or item.kind == kind)
+
+
+@dataclass
+class ReviewAssignment:
+    agent: str
+    objective: str
+    files: List[str]
+    risk_domains: List[str]
+    assignment_id: str = ""
+    round: int = 1
+    reason: str = "initial-plan"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ReviewPlan:
+    languages: List[str]
+    changed_files: List[str]
+    risk_level: str
+    assignments: List[ReviewAssignment]
+    route: str = "specialized"
+
+    def to_dict(self) -> dict:
+        return {
+            "languages": self.languages,
+            "changed_files": self.changed_files,
+            "risk_level": self.risk_level,
+            "route": self.route,
+            "assignments": [item.to_dict() for item in self.assignments],
+        }
+
+
+@dataclass
+class EvidenceReport:
+    finding_key: str
+    grounded: bool
+    method: str
+    evidence: str
+
+    @property
+    def reproducible(self) -> bool:
+        """Compatibility name for persisted reports created by older versions."""
+        return self.grounded
+
+@dataclass
+class VerificationDecision:
+    finding_key: str
+    approved: bool
+    reasons: List[str]
+    confidence: float
+
+
+class CollaborationState(TypedDict, total=False):
+    diff: str
+    parsed: ParsedDiff
+    task_id: str
+    repository: str
+    bus: CollaborationBus
+    plan: ReviewPlan
+    specialist_findings: List[Finding]
+    finding_sources: Dict[str, List[str]]
+    assignments_by_agent: Dict[str, ReviewAssignment]
+    reproductions: Dict[str, EvidenceReport]
+    judge_context: Dict[str, Any]
+    decisions: Dict[str, VerificationDecision]
+    verified: List[Finding]
+    agent_outcomes: List[dict]
+
+
+def finding_key(finding: Finding) -> str:
+    raw = "%s:%s:%s" % (finding.path, finding.line, finding.rule_id)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+class AssignmentRouter:
+    name = "assignment-router"
+
+    DOMAIN_OBJECTIVES = {
+        "security": "Trace attacker-controlled data and find exploitable security defects.",
+        "reliability": "Find failure handling, observability and runtime reliability regressions.",
+        "correctness": "Find behavior and data-flow defects introduced by the change.",
+        "regression": "Identify compatibility and test gaps caused by the change.",
+    }
+
+    def plan(self, parsed: ParsedDiff, specialists: List[Reviewer]) -> ReviewPlan:
+        extensions = {path.rsplit(".", 1)[-1].lower() for path in parsed.files if "." in path}
+        languages = sorted({
+            "python" if ext == "py" else
+            "javascript" if ext in {"js", "jsx", "ts", "tsx"} else
+            "configuration" if ext in {"yml", "yaml", "json", "toml"} else ext
+            for ext in extensions
+        })
+        sensitive = any(
+            token in path.lower()
+            for path in parsed.files
+            for token in ("auth", "security", "payment", "permission", "token", "migration")
+        )
+        default_domains = ["security", "reliability", "correctness", "regression"]
+        assignments = []
+        for index, agent in enumerate(specialists, 1):
+            declared = list(getattr(agent, "domains", ()) or default_domains)
+            objectives = [
+                self.DOMAIN_OBJECTIVES[item]
+                for item in declared if item in self.DOMAIN_OBJECTIVES
+            ]
+            assignments.append(ReviewAssignment(
+                agent=agent.name,
+                objective=" ".join(objectives) or "Find actionable defects and cite changed-line evidence.",
+                files=list(parsed.files),
+                risk_domains=declared,
+                assignment_id="A%02d" % index,
+            ))
+        return ReviewPlan(
+            languages=languages or ["unknown"],
+            changed_files=list(parsed.files),
+            risk_level="high" if sensitive or len(parsed.files) > 10 else "normal",
+            assignments=assignments,
+        )
+
+    def replan(
+        self, failed: ReviewAssignment, substitutes: List[Reviewer], error: str,
+    ) -> Optional[ReviewAssignment]:
+        if not substitutes:
+            return None
+        target = max(
+            substitutes,
+            key=lambda item: len(
+                set(getattr(item, "domains", ()) or failed.risk_domains)
+                .intersection(failed.risk_domains)
+            ),
+        )
+        return ReviewAssignment(
+            agent=target.name,
+            objective=(
+                failed.objective
+                + " Take over a failed assignment and independently reconstruct its evidence."
+            ),
+            files=list(failed.files), risk_domains=list(failed.risk_domains),
+            assignment_id=failed.assignment_id, round=failed.round + 1,
+            reason="replacement-after-failure: %s" % error[:160],
+        )
+
+
+class RiskRouter(AssignmentRouter):
+    """Select the smallest reviewer set justified by the changed code."""
+
+    name = "risk-router"
+    RISK_TOKENS = (
+        "eval(", "exec(", "shell=true", "subprocess", "pickle.loads",
+        "yaml.load(", "password", "secret", "api_key", "authorization",
+        "permission", "token", "execute(", "query(", "md5(", "sha1(",
+    )
+    SENSITIVE_PATH_TOKENS = (
+        "auth", "security", "payment", "permission", "token", "migration",
+        "credential", "secret",
+    )
+
+    def route(self, parsed: ParsedDiff, reviewers: List[Reviewer]) -> ReviewPlan:
+        if not reviewers:
+            return ReviewPlan(["unknown"], list(parsed.files), "normal", [], "routine")
+        risky_files = {
+            line.path for line in parsed.added_lines
+            if any(token in line.content.lower() for token in self.RISK_TOKENS)
+        }
+        sensitive_files = {
+            path for path in parsed.files
+            if any(token in path.lower() for token in self.SENSITIVE_PATH_TOKENS)
+        }
+        specialized = bool(risky_files or sensitive_files or len(parsed.files) > 10)
+        if specialized:
+            selected = list(reviewers)
+        else:
+            selected = [
+                reviewer for reviewer in reviewers
+                if not (
+                    set(getattr(reviewer, "domains", ()) or ())
+                    and set(getattr(reviewer, "domains", ()) or ()) <= {
+                        "security", "authorization",
+                    }
+                )
+            ] or [reviewers[0]]
+
+        base = super().plan(parsed, selected)
+        assignments = []
+        for assignment in base.assignments:
+            domains = set(assignment.risk_domains)
+            scoped = list(assignment.files)
+            if specialized and domains and domains <= {"security", "authorization"}:
+                relevant = risky_files | sensitive_files
+                scoped = [path for path in parsed.files if path in relevant] or scoped
+            assignments.append(ReviewAssignment(
+                agent=assignment.agent,
+                objective=assignment.objective,
+                files=scoped,
+                risk_domains=assignment.risk_domains,
+                assignment_id=assignment.assignment_id,
+                round=assignment.round,
+                reason="risk-routed" if specialized else "routine-route",
+            ))
+        return ReviewPlan(
+            base.languages, base.changed_files,
+            "high" if specialized else "normal", assignments,
+            "specialized" if specialized else "routine",
+        )
+
+    def plan(self, parsed: ParsedDiff, specialists: List[Reviewer]) -> ReviewPlan:
+        return self.route(parsed, specialists)
+
+
+class EvidenceValidator:
+    name = "evidence-validator"
+
+    def validate(self, finding: Finding, parsed: ParsedDiff) -> EvidenceReport:
+        line = next(
+            (item.content for item in parsed.added_lines
+             if item.path == finding.path and item.line == finding.line), ""
+        )
+        normalized = line.replace(" ", "")
+        signatures = {
+            "SEC-EVAL": ("eval(" in line or "exec(" in line),
+            "SEC-SUBPROCESS-SHELL": "shell=True" in normalized,
+            "SEC-HARDCODED-SECRET": any(
+                token in line.lower() for token in ("password", "secret", "token", "api_key")
+            ),
+            "SEC-SQL-CONCAT": any(token in line for token in ("execute(", "query(")),
+            "REL-DEBUG-PRINT": "print(" in line or "console.log(" in line,
+            "REL-EMPTY-EXCEPT": "except" in line,
+        }
+        exact_evidence = bool(line and finding.evidence and finding.evidence.strip() in line.strip())
+        reproducible = signatures.get(finding.rule_id, exact_evidence)
+        return EvidenceReport(
+            finding_key(finding), reproducible,
+            "independent changed-line evidence check",
+            line.strip()[:240] if reproducible else "No independently matching changed-line evidence.",
+        )
+
+
+class MultiAgentCoordinator(Reviewer):
+    """Bounded risk-routed review with failure recovery and independent judging."""
+
+    name = "risk-routed-multi-agent-review"
+
+    def __init__(
+        self, agents: List[Reviewer], max_workers: int = 4, store=None,
+        agent_retries: int = 1,
+        context_manager: Optional[ContextManager] = None,
+        memory_manager: Optional[MemoryManager] = None,
+        agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 45,
+        judge=None,
+    ):
+        if not agents:
+            raise ValueError("at least one LLM reviewer is required")
+        if judge is None or not callable(getattr(judge, "judge", None)):
+            raise ValueError("an explicit independent LLM judge is required")
+        self.agents = list(agents)
+        self.max_workers = max_workers
+        self.store = store
+        self.agent_retries = max(0, agent_retries)
+        self.context_manager = context_manager or ContextManager()
+        self.memory_manager = memory_manager
+        self.agent_loop = AgentLoop(agent_loop_max_steps, agent_loop_timeout_seconds)
+        self.runtime = AgentRuntime(max_steps=8, timeout_seconds=120)
+        self.router = RiskRouter()
+        self.planner = self.router
+        self.evidence_validator = EvidenceValidator()
+        self.evidence_agent = self.evidence_validator
+        self.test_agent = self.evidence_validator
+        self.judge = judge
+        self._summaries: Dict[str, dict] = {}
+        self._last_summary: Dict[str, Any] = {}
+        self._summary_lock = threading.Lock()
+
+    def review(self, diff: str, parsed: ParsedDiff) -> List[Finding]:
+        return self.review_with_context("", diff, parsed)
+
+    def review_with_context(
+        self, task_id: str, diff: str, parsed: ParsedDiff,
+        repository: str = "",
+    ) -> List[Finding]:
+        state: CollaborationState = {
+            "task_id": task_id, "diff": diff, "parsed": parsed,
+            "repository": repository,
+            "bus": CollaborationBus(task_id, self.store),
+        }
+        result = self.runtime.execute(
+            state,
+            [
+                RuntimeNode("router", self._plan_node, checkpoint=False),
+                RuntimeNode("reviewers", self._specialist_node, checkpoint=False),
+                RuntimeNode("evidence", self._evidence_node, checkpoint=False),
+                RuntimeNode("judge", self._judge_node, checkpoint=False),
+                RuntimeNode("finalize", self._arbitrate_node, checkpoint=False),
+            ],
+            task_id=task_id,
+        )
+        summary = self._make_summary(result)
+        with self._summary_lock:
+            self._last_summary = summary
+            if task_id:
+                self._summaries[task_id] = summary
+        return result["verified"]
+
+    def collaboration_summary(self, task_id: str) -> dict:
+        with self._summary_lock:
+            return dict(self._summaries.get(task_id, self._last_summary if not task_id else {}))
+
+    @staticmethod
+    def _bus(state: CollaborationState) -> CollaborationBus:
+        return state["bus"]
+
+    def _emit(
+        self, state: CollaborationState, sender: str, recipient: str,
+        kind: str, content: Dict[str, Any], correlation_id: str = "",
+    ) -> None:
+        self._bus(state).send(sender, recipient, kind, content, correlation_id)
+
+    def _plan_node(self, state: CollaborationState) -> Dict[str, Any]:
+        plan = self.router.route(state["parsed"], self.agents)
+        for assignment in plan.assignments:
+            self._emit(
+                state, self.router.name, assignment.agent, "assignment",
+                assignment.to_dict(), assignment.assignment_id,
+            )
+        return {
+            "plan": plan,
+            "assignments_by_agent": {item.agent: item for item in plan.assignments},
+        }
+
+    def _recall_memories(
+        self, state: CollaborationState, assignment: ReviewAssignment,
+    ) -> List[dict]:
+        if not self.memory_manager or not state.get("repository"):
+            return []
+        query = " ".join([
+            assignment.objective, " ".join(assignment.files),
+            " ".join(assignment.risk_domains),
+        ])
+        memories = self.memory_manager.recall(
+            state.get("repository", ""), query
+        )
+        if memories:
+            self._emit(
+                state, "memory-manager", assignment.agent, "memory_recalled",
+                {
+                    "count": len(memories),
+                    "memory_ids": [item["id"] for item in memories],
+                    "scopes": sorted({item["scope"] for item in memories}),
+                }, assignment.assignment_id,
+            )
+        return memories
+
+    def _agent_tools(
+        self, state: CollaborationState, assignment: ReviewAssignment,
+    ) -> ToolRegistry:
+        def search_diff(query: str, limit: int = 20):
+            value = str(query).strip().lower()
+            if not value:
+                raise ValueError("search_diff query is required")
+            hits = []
+            for index, line in enumerate(state["diff"].splitlines(), 1):
+                if value in line.lower():
+                    hits.append({"diff_line": index, "content": line[:500]})
+                if len(hits) >= max(1, min(int(limit), 50)):
+                    break
+            return hits
+
+        def changed_line(path: str, line: int):
+            match = next((
+                item for item in state["parsed"].added_lines
+                if item.path == str(path) and item.line == int(line)
+            ), None)
+            if match is None:
+                return {"found": False, "path": path, "line": line}
+            return {
+                "found": True, "path": match.path, "line": match.line,
+                "content": match.content,
+            }
+
+        def list_changed_files():
+            return list(state["parsed"].files)
+
+        def recall_memory(query: str, limit: int = 5):
+            if not self.memory_manager or not state.get("repository"):
+                return []
+            return self.memory_manager.recall(
+                state["repository"], str(query),
+                limit=max(1, min(int(limit), 10)),
+            )
+
+        return ToolRegistry([
+            AgentTool(
+                "search_diff",
+                "Search the PR diff for an exact case-insensitive text fragment.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    },
+                    "required": ["query"], "additionalProperties": False,
+                },
+                search_diff,
+            ),
+            AgentTool(
+                "changed_line",
+                "Read one added line by new-file path and line number.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "line": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["path", "line"], "additionalProperties": False,
+                },
+                changed_line,
+            ),
+            AgentTool(
+                "list_changed_files",
+                "List files changed by this PR.",
+                {
+                    "type": "object", "properties": {},
+                    "additionalProperties": False,
+                },
+                list_changed_files,
+            ),
+            AgentTool(
+                "recall_memory",
+                "Recall repository-scoped review experience relevant to a query.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                    },
+                    "required": ["query"], "additionalProperties": False,
+                },
+                recall_memory,
+            ),
+        ])
+
+    def _run_agent_loop(
+        self, state: CollaborationState, agent: Reviewer,
+        assignment: ReviewAssignment, feedback: Optional[List[str]],
+    ) -> tuple:
+        memories = self._recall_memories(state, assignment)
+        bundle = self.context_manager.build(state["diff"], assignment.to_dict(), memories)
+        self._emit(
+            state, "context-manager", agent.name, "context_prepared",
+            bundle.metadata(), assignment.assignment_id,
+        )
+        tools = self._agent_tools(state, assignment)
+
+        def on_event(kind: str, detail: Dict[str, Any]) -> None:
+            self._emit(
+                state, "agent-runtime", agent.name, kind, detail,
+                assignment.assignment_id,
+            )
+            if self.memory_manager and state.get("task_id") and state.get("repository"):
+                self.memory_manager.remember(
+                    state["repository"], "working", kind, str(detail),
+                    task_id=state["task_id"],
+                    agent=agent.name, importance=0.3,
+                )
+
+        loop_state = {
+            "diff": state["diff"], "context": bundle.text,
+            "context_metadata": bundle.metadata(), "parsed": state["parsed"],
+            "assignment": assignment.to_dict(), "feedback": list(feedback or []),
+            "inbox": self._bus(state).inbox(agent.name, assignment.assignment_id),
+            "memories": memories, "available_tools": tools.catalog(),
+        }
+        last_context = {"metadata": bundle.metadata()}
+
+        def managed_step(loop_iteration: Dict[str, Any]) -> Dict[str, Any]:
+            managed = self.context_manager.compose(
+                bundle, assignment.to_dict(), feedback=list(feedback or []),
+                inbox=loop_iteration.get("inbox") or [], memories=memories,
+                observations=loop_iteration.get("observations") or [],
+                tools=tools.catalog(),
+            )
+            metadata = managed.metadata()
+            last_context["metadata"] = metadata
+            self._emit(
+                state, "context-manager", agent.name, "context_window_prepared",
+                metadata, assignment.assignment_id,
+            )
+            prepared = dict(loop_iteration)
+            prepared["context"] = managed.text
+            prepared["managed_context"] = managed.text
+            prepared["context_metadata"] = metadata
+            return getattr(agent, "agent_step")(prepared)
+
+        result = self.agent_loop.run(
+            managed_step, tools, loop_state, on_event,
+        )
+        findings = list(result.output or [])
+        if not all(isinstance(item, Finding) for item in findings):
+            raise TypeError("agent loop final output must contain Finding objects")
+        return findings, {
+            "loop_steps": result.steps, "loop_stop_reason": result.stop_reason,
+            "context": last_context["metadata"], "memories_recalled": len(memories),
+            "tools_available": len(tools.names()),
+            "tool_calls": len(result.observations),
+        }
+
+    def _invoke_agent(
+        self, state: CollaborationState, agent: Reviewer,
+        assignment: ReviewAssignment, feedback: Optional[List[str]] = None,
+    ) -> tuple:
+        last_error = None
+        for attempt in range(1, self.agent_retries + 2):
+            self._emit(
+                state, "coordinator", agent.name, "attempt_started",
+                {"attempt": attempt, "round": assignment.round}, assignment.assignment_id,
+            )
+            try:
+                loop_stepper = getattr(agent, "agent_step", None)
+                execution = {"loop_steps": 0, "loop_stop_reason": "one-shot"}
+                if loop_stepper:
+                    findings, execution = self._run_agent_loop(
+                        state, agent, assignment, feedback
+                    )
+                else:
+                    collaborative = getattr(agent, "review_assignment", None)
+                    if collaborative:
+                        findings = collaborative(
+                            state["diff"], state["parsed"], assignment.to_dict(),
+                            list(feedback or []),
+                            self._bus(state).inbox(agent.name, assignment.assignment_id),
+                        )
+                    else:
+                        findings = agent.review(state["diff"], state["parsed"])
+                self._emit(
+                    state, agent.name, self.judge.name, "reviewer_candidates",
+                    {
+                        "attempt": attempt, "round": assignment.round,
+                        "findings": [item.to_dict() for item in findings],
+                        "execution": execution,
+                    }, assignment.assignment_id,
+                )
+                return findings, attempt, "", execution
+            except Exception as exc:
+                last_error = str(exc)
+                self._emit(
+                    state, agent.name, self.router.name, "agent_failure",
+                    {"attempt": attempt, "error": last_error[:1000]},
+                    assignment.assignment_id,
+                )
+                if attempt <= self.agent_retries:
+                    self._emit(
+                        state, self.router.name, agent.name, "retry_request",
+                        {"next_attempt": attempt + 1, "reason": last_error[:500]},
+                        assignment.assignment_id,
+                    )
+        return (
+            [], self.agent_retries + 1, last_error or "unknown agent failure",
+            {"loop_steps": 0, "loop_stop_reason": "failed"},
+        )
+
+    def _replacement_candidates(self, failed_agent: Reviewer) -> List[Reviewer]:
+        return [item for item in self.agents if item is not failed_agent]
+
+    def _run_assignment(
+        self, state: CollaborationState, assignment: ReviewAssignment,
+        agent: Reviewer,
+    ) -> dict:
+        findings, attempts, error, execution = self._invoke_agent(
+            state, agent, assignment
+        )
+        result = {
+            "agent": agent.name, "assignment_id": assignment.assignment_id,
+            "attempts": attempts, "status": "completed" if not error else "failed",
+            "findings": findings, "error": error, "substituted_for": "",
+            "assignment": assignment, "execution": execution,
+        }
+        if not error:
+            return result
+        replacement = self.router.replan(
+            assignment, self._replacement_candidates(agent), error
+        )
+        if replacement is None:
+            return result
+        substitute = next(
+            item for item in self._replacement_candidates(agent)
+            if item.name == replacement.agent
+        )
+        self._emit(
+            state, self.router.name, substitute.name, "assignment_handoff",
+            {
+                "from": agent.name, "reason": error[:500],
+                "assignment": replacement.to_dict(),
+            }, assignment.assignment_id,
+        )
+        findings, replacement_attempts, replacement_error, replacement_execution = self._invoke_agent(
+            state, substitute, replacement, ["Take over after %s failed: %s" % (agent.name, error)]
+        )
+        return {
+            "agent": substitute.name, "assignment_id": assignment.assignment_id,
+            "attempts": attempts + replacement_attempts,
+            "status": "completed" if not replacement_error else "failed",
+            "findings": findings, "error": replacement_error,
+            "substituted_for": agent.name,
+            "assignment": replacement, "execution": replacement_execution,
+        }
+
+    def _specialist_node(self, state: CollaborationState) -> Dict[str, Any]:
+        outcomes = []
+        by_name = {item.name: item for item in self.agents}
+        assignments = state["plan"].assignments
+        with ThreadPoolExecutor(
+            max_workers=min(self.max_workers, max(1, len(assignments)))
+        ) as pool:
+            futures = {
+                pool.submit(self._run_assignment, state, assignment, by_name[assignment.agent]): assignment
+                for assignment in assignments
+            }
+            for future in as_completed(futures):
+                outcomes.append(future.result())
+        findings = []
+        sources: Dict[str, List[str]] = {}
+        assignment_map = dict(state["assignments_by_agent"])
+        for outcome in outcomes:
+            assignment_map[outcome["agent"]] = outcome["assignment"]
+            for finding in outcome["findings"]:
+                key = finding_key(finding)
+                sources.setdefault(key, []).append(outcome["agent"])
+                findings.append(finding)
+        if outcomes and all(item["status"] == "failed" for item in outcomes):
+            raise RuntimeError(
+                "all review assignments failed after retry/replanning: "
+                + "; ".join(item["error"] for item in outcomes)
+            )
+        return {
+            "specialist_findings": findings,
+            "finding_sources": sources,
+            "agent_outcomes": outcomes,
+            "assignments_by_agent": assignment_map,
+        }
+
+    def _evidence_node(self, state: CollaborationState) -> Dict[str, Any]:
+        reproductions = {}
+        for finding in state["specialist_findings"]:
+            reproduction = self.evidence_validator.validate(finding, state["parsed"])
+            reproductions[reproduction.finding_key] = reproduction
+            self._emit(
+                state, self.evidence_validator.name, self.judge.name, "evidence_validation",
+                asdict(reproduction), reproduction.finding_key,
+            )
+        return {"reproductions": reproductions}
+
+    def _judge_node(self, state: CollaborationState) -> Dict[str, Any]:
+        candidates = state["specialist_findings"]
+        plan = state.get("plan")
+        risk_domains = sorted({
+            domain
+            for assignment in (plan.assignments if plan else [])
+            for domain in assignment.risk_domains
+        })
+        evidence_clues = " ".join(
+            "%s %s %s %s" % (
+                finding.path,
+                finding.rule_id,
+                finding.title,
+                finding.evidence,
+            )
+            for finding in candidates
+            if state["reproductions"][finding_key(finding)].grounded
+        )[:4000]
+        judge_bundle = self.context_manager.build(
+            state["diff"],
+            {
+                "agent": self.judge.name,
+                "objective": "Validate grounded candidate evidence. " + evidence_clues,
+                "files": sorted({finding.path for finding in candidates}),
+                "risk_domains": risk_domains,
+            },
+        )
+        self._emit(
+            state,
+            "context-manager",
+            self.judge.name,
+            "context_prepared",
+            judge_bundle.metadata(),
+        )
+        decisions = {}
+        raw_decisions = self.judge.judge(
+            judge_bundle.text, state["parsed"], candidates,
+            state["reproductions"],
+        )
+        for finding in candidates:
+            key = finding_key(finding)
+            raw = dict(raw_decisions.get(key) or {})
+            evidence = state["reproductions"][key]
+            approved = bool(raw.get("approved", False)) and evidence.grounded
+            reasons = [str(item)[:500] for item in raw.get("reasons", [])]
+            if not evidence.grounded and not any(
+                "evidence" in reason.lower() for reason in reasons
+            ):
+                reasons.append("evidence is not grounded on the reported changed line")
+            decision = VerificationDecision(
+                key, approved, reasons,
+                max(0.0, min(1.0, float(raw.get("confidence", finding.confidence)))),
+            )
+            decisions[key] = decision
+            self._emit(
+                state, self.judge.name, "review-report", "judge_decision",
+                asdict(decision), key,
+            )
+        return {
+            "decisions": decisions,
+            "judge_context": judge_bundle.metadata(),
+        }
+
+    def _arbitrate_node(self, state: CollaborationState) -> Dict[str, Any]:
+        merged: Dict[tuple, Finding] = {}
+        severity_rank = {
+            Severity.CRITICAL: 4, Severity.HIGH: 3,
+            Severity.MEDIUM: 2, Severity.LOW: 1,
+        }
+        for finding in state["specialist_findings"]:
+            decision = state["decisions"][finding_key(finding)]
+            if not decision.approved:
+                continue
+            finding.confidence = decision.confidence
+            # A changed line contributes one primary review conclusion. Specialists
+            # may describe the same root cause with different CWE identifiers or
+            # expand it into secondary consequences; those are alternatives, not
+            # independent final findings.
+            identity = (finding.path, finding.line)
+            current = merged.get(identity)
+            finding_rank = (
+                severity_rank[finding.severity], finding.confidence, finding.rule_id
+            )
+            current_rank = (
+                severity_rank[current.severity], current.confidence, current.rule_id
+            ) if current is not None else (-1, -1.0, "")
+            if current is None or finding_rank > current_rank:
+                merged[identity] = finding
+        severity_order = {
+            Severity.CRITICAL: 0, Severity.HIGH: 1,
+            Severity.MEDIUM: 2, Severity.LOW: 3,
+        }
+        verified = sorted(
+            merged.values(),
+            key=lambda item: (severity_order[item.severity], item.path, item.line),
+        )
+        rejected = [
+            {"finding_key": key, "reasons": decision.reasons}
+            for key, decision in state["decisions"].items() if not decision.approved
+        ]
+        self._emit(
+            state, self.judge.name, "review-report", "final_decision",
+            {
+                "approved_findings": [item.to_dict() for item in verified],
+                "rejected_findings": rejected,
+            },
+        )
+        if self.memory_manager and state.get("repository"):
+            approved_keys = {finding_key(item) for item in verified}
+            for finding in state["specialist_findings"]:
+                key = finding_key(finding)
+                decision = state["decisions"][key]
+                self.memory_manager.remember_finding(
+                    state["repository"], state.get("task_id", ""), finding.to_dict(),
+                    key in approved_keys, decision.reasons,
+                )
+            if state.get("task_id"):
+                outcomes = state.get("agent_outcomes", [])
+                memory_summary = {
+                    "proposed_findings": len(state.get("specialist_findings", [])),
+                    "approved_findings": len(verified),
+                    "rejected_findings": len(rejected),
+                    "dialogue_rounds": 0,
+                    "agent_loop_steps": sum(
+                        int((item.get("execution") or {}).get("loop_steps", 0))
+                        for item in outcomes
+                    ),
+                    "tool_calls": sum(
+                        int((item.get("execution") or {}).get("tool_calls", 0))
+                        for item in outcomes
+                    ),
+                }
+                archived = self.memory_manager.consolidate_task(
+                    state["repository"], state["task_id"], memory_summary,
+                )
+                self._emit(
+                    state, "memory-manager", "agent-runtime", "memory_consolidated",
+                    {
+                        "task_id": state["task_id"],
+                        "summary_memory_id": (archived or {}).get("id", ""),
+                        "working_memory_released": True,
+                    },
+                )
+        return {"verified": verified}
+
+    def _make_summary(self, state: CollaborationState) -> dict:
+        outcomes = state.get("agent_outcomes", [])
+        decisions = state.get("decisions", {})
+        candidates = state.get("specialist_findings", [])
+        reproductions = state.get("reproductions", {})
+        evidence_rejected = sum(
+            1 for finding in candidates
+            if not reproductions.get(finding_key(finding), EvidenceReport(
+                finding_key(finding), False, "missing", ""
+            )).grounded
+        )
+        judge_rejected = sum(
+            1 for finding in candidates
+            if reproductions.get(finding_key(finding))
+            and reproductions[finding_key(finding)].grounded
+            and not decisions.get(
+                finding_key(finding),
+                VerificationDecision(finding_key(finding), False, [], 0.0),
+            ).approved
+        )
+        approved_before_dedup = sum(
+            1 for finding in candidates
+            if decisions.get(
+                finding_key(finding),
+                VerificationDecision(finding_key(finding), False, [], 0.0),
+            ).approved
+        )
+        final_findings = len(state.get("verified", []))
+        funnel = {
+            "reviewer_candidates": len(candidates),
+            "evidence_rejected": evidence_rejected,
+            "judge_rejected": judge_rejected,
+            "approved_before_dedup": approved_before_dedup,
+            "duplicates_merged": max(0, approved_before_dedup - final_findings),
+            "final_findings": final_findings,
+        }
+        judge_context = dict(state.get("judge_context") or {})
+        return {
+            "protocol": "route-review-evidence-judge",
+            "roles": [
+                self.router.name, "reviewers", self.evidence_validator.name,
+                self.judge.name,
+            ],
+            "route": state.get("plan").route if state.get("plan") else "unknown",
+            "planned_assignments": len(state.get("plan").assignments) if state.get("plan") else 0,
+            "dialogue_rounds": 0,
+            "messages": self._bus(state).count(),
+            "retries": self._bus(state).count("retry_request"),
+            "handoffs": self._bus(state).count("assignment_handoff"),
+            "agents": [
+                {
+                    "agent": item["agent"], "status": item["status"],
+                    "attempts": item["attempts"],
+                    "substituted_for": item.get("substituted_for", ""),
+                    "loop_steps": (item.get("execution") or {}).get("loop_steps", 0),
+                    "loop_stop_reason": (
+                        item.get("execution") or {}
+                    ).get("loop_stop_reason", "one-shot"),
+                    "context_compressed": bool(
+                        ((item.get("execution") or {}).get("context") or {}).get("compressed")
+                    ),
+                    "memories_recalled": (
+                        item.get("execution") or {}
+                    ).get("memories_recalled", 0),
+                }
+                for item in outcomes
+            ],
+            "agent_loop_steps": sum(
+                int((item.get("execution") or {}).get("loop_steps", 0))
+                for item in outcomes
+            ),
+            "context_compressions": sum(
+                bool(((item.get("execution") or {}).get("context") or {}).get("compressed"))
+                for item in outcomes
+            ) + int(bool(judge_context.get("compressed"))),
+            "judge_context": judge_context,
+            "memories_recalled": sum(
+                int((item.get("execution") or {}).get("memories_recalled", 0))
+                for item in outcomes
+            ),
+            "proposed_findings": len(state.get("specialist_findings", [])),
+            "approved_findings": sum(1 for item in decisions.values() if item.approved),
+            "rejected_findings": sum(1 for item in decisions.values() if not item.approved),
+            "review_funnel": funnel,
+        }
