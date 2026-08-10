@@ -1,12 +1,10 @@
 import inspect
-import os
-import sqlite3
-import tempfile
 import unittest
 
 from capyreview.models import ReviewReport, TaskState, TraceEvent
 from capyreview.postgres_store import PostgresTaskStore, SCHEMA_STATEMENTS, create_store
-from capyreview.store import TaskStore, utc_now
+from capyreview.store import utc_now
+from tests.fakes import InMemoryTaskStore
 
 
 CORE_TABLES = {
@@ -96,36 +94,19 @@ def public_methods(cls):
     }
 
 
-class SQLiteStoreContractTests(unittest.TestCase):
+class InMemoryStoreContractTests(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-        self.store = TaskStore(self.path)
-
-    def tearDown(self):
-        if os.path.exists(self.path):
-            os.unlink(self.path)
-
-    def test_schema_contains_only_the_product_core(self):
-        with sqlite3.connect(self.path) as conn:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name NOT LIKE 'sqlite_%'"
-                )
-            }
-
-        self.assertEqual(CORE_TABLES, tables)
+        self.store = InMemoryTaskStore()
 
     def test_public_api_has_no_tenant_or_enterprise_surface(self):
-        methods = public_methods(TaskStore)
+        methods = public_methods(InMemoryTaskStore)
 
         self.assertTrue(CORE_METHODS.issubset(methods))
         self.assertTrue(REMOVED_METHODS.isdisjoint(methods))
         for name in CORE_METHODS:
             self.assertNotIn(
-                "tenant_id", inspect.signature(getattr(TaskStore, name)).parameters
+                "tenant_id",
+                inspect.signature(getattr(InMemoryTaskStore, name)).parameters,
             )
 
     def test_task_trace_checkpoint_cancel_resume_and_success_lifecycle(self):
@@ -287,7 +268,7 @@ class SQLiteStoreContractTests(unittest.TestCase):
 
 
 class PostgresStoreStaticContractTests(unittest.TestCase):
-    def test_schema_and_method_signatures_match_sqlite_contract(self):
+    def test_schema_and_method_signatures_match_product_contract(self):
         schema = "\n".join(SCHEMA_STATEMENTS).lower()
         for table in CORE_TABLES:
             self.assertIn("create table if not exists %s" % table, schema)
@@ -310,23 +291,17 @@ class PostgresStoreStaticContractTests(unittest.TestCase):
         self.assertTrue(CORE_METHODS.issubset(postgres_methods))
         self.assertTrue(REMOVED_METHODS.isdisjoint(postgres_methods))
         for name in CORE_METHODS:
-            sqlite_parameters = list(
-                inspect.signature(getattr(TaskStore, name)).parameters
+            fake_parameters = list(
+                inspect.signature(getattr(InMemoryTaskStore, name)).parameters
             )[1:]
             postgres_parameters = list(
                 inspect.signature(getattr(PostgresTaskStore, name)).parameters
             )[1:]
-            self.assertEqual(sqlite_parameters, postgres_parameters, name)
+            self.assertEqual(fake_parameters, postgres_parameters, name)
 
-    def test_create_store_keeps_sqlite_as_the_local_default(self):
-        handle, path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-        try:
-            store = create_store("", path)
-            self.assertIsInstance(store, TaskStore)
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+    def test_create_store_rejects_non_postgresql_urls(self):
+        with self.assertRaisesRegex(ValueError, "PostgreSQL"):
+            create_store("")
 
 
 if __name__ == "__main__":

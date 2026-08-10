@@ -35,10 +35,9 @@ PR Diff / GitHub Webhook
 
 ## 快速开始
 
-运行环境为 Python 3.11。首次使用先完成依赖和密钥配置：
+推荐使用 Docker Desktop。首次使用只需复制环境模板：
 
 ```powershell
-python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
@@ -52,7 +51,7 @@ DEEPSEEK_MODEL=deepseek-chat
 之后每次启动只需要一行命令：
 
 ```powershell
-python -m capyreview
+docker compose up --build
 ```
 
 打开：
@@ -61,7 +60,7 @@ python -m capyreview
 - FastAPI 文档：`http://127.0.0.1:8080/docs`
 - 健康检查：`http://127.0.0.1:8080/health`
 
-服务可以在未填写密钥时启动并返回配置状态，但真正发起审查必须配置
+Compose 会同时启动 PostgreSQL、Redis Streams Worker 和 CapyReview。服务可以在未填写密钥时启动并返回配置状态，但真正发起审查必须配置
 `DEEPSEEK_API_KEY`。CapyReview 固定连接 DeepSeek 官方地址
 `https://api.deepseek.com`，不需要配置 Base URL 或 Provider。
 
@@ -192,12 +191,12 @@ python scripts/run_controlled_rule_benchmark.py
 
 ## 存储与队列
 
-默认启动无需额外基础设施：
+CapyReview 只有一套正式运行架构：
 
-- SQLite：任务、Checkpoint、Trace、Finding、反馈、Memory 和策略版本；
-- 进程内队列：本地异步任务执行。
+- PostgreSQL：持久化任务、Checkpoint、Trace、Finding、反馈、Memory 和策略版本；
+- Redis Streams：异步审查任务投递、Consumer Group、ACK、租约回收与有界重试。
 
-完整基础设施模式使用 PostgreSQL 与 Redis：
+启动完整系统：
 
 ```powershell
 docker compose up --build
@@ -205,6 +204,8 @@ docker compose up --build
 
 Compose 会读取根目录 `.env`，启动 PostgreSQL、Redis 与 CapyReview，并将服务暴露在
 `http://127.0.0.1:8080`。
+
+生产启动路径不会回退到本地文件数据库或进程内任务队列；缺少 PostgreSQL/Redis 配置或连接失败时会直接报错。单元测试使用不参与应用启动的纯内存 Test Double。
 
 ## API
 
@@ -229,6 +230,15 @@ Compose 会读取根目录 `.env`，启动 PostgreSQL、Redis 与 CapyReview，�
 
 ```powershell
 python -m unittest discover -s tests -v
+```
+
+真实 PostgreSQL/Redis 集成测试使用独立端口 overlay，避免占用本机已有的数据库端口：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.integration.yml up -d postgres redis
+$env:CAPYREVIEW_TEST_DATABASE_URL='postgresql://capyreview:capyreview-local@127.0.0.1:55432/capyreview'
+$env:CAPYREVIEW_TEST_REDIS_URL='redis://127.0.0.1:56379/15'
+python -m unittest tests.test_infrastructure_integration -v
 ```
 
 更多材料：

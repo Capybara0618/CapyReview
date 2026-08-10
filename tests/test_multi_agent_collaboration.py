@@ -1,12 +1,10 @@
-import os
-import tempfile
 import unittest
 
 from capyreview.agents import MultiAgentCoordinator
 from capyreview.diff_parser import parse_unified_diff
 from capyreview.models import Finding, Severity
 from capyreview.reviewer import OpenAICompatibleReviewer
-from capyreview.store import TaskStore
+from tests.fakes import InMemoryTaskStore
 
 
 DIFF = "--- a/app.py\n+++ b/app.py\n@@ -1 +1,2 @@\n-old\n+eval(data)\n+print(data)\n"
@@ -39,12 +37,7 @@ class CannedLLMReviewer(OpenAICompatibleReviewer):
 
 class MultiAgentCollaborationTests(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-        self.store = TaskStore(self.path)
-
-    def tearDown(self):
-        os.unlink(self.path)
+        self.store = InMemoryTaskStore()
 
     def test_security_and_reliability_are_independent_specialists(self):
         parsed = parse_unified_diff(DIFF)

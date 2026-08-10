@@ -67,7 +67,6 @@ def _non_negative_int(name: str, default: int) -> int:
 class Settings:
     host: str = "127.0.0.1"
     port: int = 8080
-    db_path: str = "capyreview.db"
     max_diff_bytes: int = 1024 * 1024
     max_steps: int = 8
     timeout_seconds: int = 120
@@ -110,6 +109,14 @@ class Settings:
             "headers": {},
         }
 
+    def validate_infrastructure(self) -> None:
+        if not self.database_url.startswith(("postgres://", "postgresql://")):
+            raise ValueError(
+                "CAPYREVIEW_DATABASE_URL must be a PostgreSQL connection URL"
+            )
+        if not self.redis_url.startswith(("redis://", "rediss://")):
+            raise ValueError("CAPYREVIEW_REDIS_URL must be a Redis connection URL")
+
     def validate_evolution(self) -> None:
         if self.eval_min_cases > self.eval_max_cases:
             raise ValueError("CAPYREVIEW_EVAL_MIN_CASES cannot exceed CAPYREVIEW_EVAL_MAX_CASES")
@@ -137,7 +144,6 @@ class Settings:
         return cls(
             host=os.getenv("CAPYREVIEW_HOST", "127.0.0.1"),
             port=_int("CAPYREVIEW_PORT", 8080),
-            db_path=os.getenv("CAPYREVIEW_DB_PATH", "capyreview.db"),
             max_diff_bytes=_int("CAPYREVIEW_MAX_DIFF_BYTES", 1024 * 1024),
             max_steps=_int("CAPYREVIEW_MAX_STEPS", 8),
             timeout_seconds=_int("CAPYREVIEW_TIMEOUT_SECONDS", 120),

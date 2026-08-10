@@ -1,10 +1,9 @@
-import os
-import tempfile
 import unittest
 
 from capyreview.config import Settings
 from capyreview.models import Finding, Severity
 from capyreview.service import ReviewService
+from tests.fakes import InMemoryTaskStore
 
 
 DIFF = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
@@ -46,20 +45,21 @@ class CapturingQueue:
 
 class ServiceTests(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
         self.settings = Settings(
-            db_path=self.path,
             max_diff_bytes=10_000,
             timeout_seconds=10,
         )
 
-    def tearDown(self):
-        if os.path.exists(self.path):
-            os.unlink(self.path)
+    def service(self, reviewer=None, queue=None):
+        return ReviewService(
+            self.settings,
+            reviewer=reviewer,
+            store=InMemoryTaskStore(),
+            queue=queue or CapturingQueue(),
+        )
 
     def test_fake_llm_end_to_end_review(self):
-        service = ReviewService(self.settings, reviewer=FakeCoordinator())
+        service = self.service(reviewer=FakeCoordinator())
         try:
             result = service.create_review("org/repo", DIFF, 1)
         finally:
@@ -73,7 +73,7 @@ class ServiceTests(unittest.TestCase):
         )
 
     def test_server_can_initialize_without_key_but_review_fails_clearly(self):
-        service = ReviewService(self.settings)
+        service = self.service()
         try:
             with self.assertRaisesRegex(ValueError, "DEEPSEEK_API_KEY"):
                 service.create_review("org/repo", DIFF, 1)
@@ -82,11 +82,12 @@ class ServiceTests(unittest.TestCase):
 
     def test_active_evolved_policy_is_injected_into_both_llm_specialists(self):
         settings = Settings(
-            db_path=self.path,
             deepseek_api_key="test-key",
             deepseek_model="test-model",
         )
-        service = ReviewService(settings)
+        service = ReviewService(
+            settings, store=InMemoryTaskStore(), queue=CapturingQueue()
+        )
         try:
             service.store.save_skill_version(
                 "llm-review",
@@ -104,7 +105,7 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(all("POLICY-REVIEW" in prompt for prompt in prompts))
 
     def test_rejects_large_diff_before_creating_a_task(self):
-        service = ReviewService(self.settings, reviewer=FakeCoordinator())
+        service = self.service(reviewer=FakeCoordinator())
         try:
             with self.assertRaises(ValueError):
                 service.create_review("org/repo", "x" * 10_001)
@@ -113,7 +114,7 @@ class ServiceTests(unittest.TestCase):
             service.close()
 
     def test_feedback_is_persisted_without_tenant_or_repair_categories(self):
-        service = ReviewService(self.settings, reviewer=FakeCoordinator())
+        service = self.service(reviewer=FakeCoordinator())
         try:
             result = service.create_review("org/repo", DIFF, 1)
             feedback = service.record_feedback(
@@ -133,7 +134,8 @@ class ServiceTests(unittest.TestCase):
     def test_webhook_is_idempotent_and_uses_the_same_core_queue(self):
         queue = CapturingQueue()
         service = ReviewService(
-            self.settings, reviewer=FakeCoordinator(), queue=queue,
+            self.settings, reviewer=FakeCoordinator(),
+            store=InMemoryTaskStore(), queue=queue,
         )
         payload = {
             "action": "opened",
@@ -157,7 +159,8 @@ class ServiceTests(unittest.TestCase):
     def test_cancelled_task_can_be_prepared_and_requeued_for_resume(self):
         queue = CapturingQueue()
         service = ReviewService(
-            self.settings, reviewer=FakeCoordinator(), queue=queue,
+            self.settings, reviewer=FakeCoordinator(),
+            store=InMemoryTaskStore(), queue=queue,
         )
         try:
             pending = service.enqueue_review("org/repo", DIFF, 1)

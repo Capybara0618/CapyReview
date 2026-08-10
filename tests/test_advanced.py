@@ -1,23 +1,16 @@
-import os
-import tempfile
 import unittest
 
 from capyreview.evolution import EvolutionEngine, RegressionEvaluator
 from capyreview.models import Finding, Severity
-from capyreview.store import TaskStore
+from tests.fakes import InMemoryTaskStore
 
 
 class EvolutionGateTests(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-
-    def tearDown(self):
-        if os.path.exists(self.path):
-            os.unlink(self.path)
+        self.store = InMemoryTaskStore()
 
     def test_feedback_candidate_is_deferred_without_a_model(self):
-        store = TaskStore(self.path)
+        store = self.store
         store.create("task", "org/repo", 1, {"source": "test"})
         store.record_failure_case("task", "false_positive", {"note": "style-only"})
         engine = EvolutionEngine(store)
@@ -29,7 +22,7 @@ class EvolutionGateTests(unittest.TestCase):
         self.assertTrue(engine.rollback("llm-review", result["version"]["version"]))
 
     def test_replay_evaluation_activates_only_an_improved_policy(self):
-        store = TaskStore(self.path)
+        store = self.store
         diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
         store.save_evaluation_case(
             "eval-case", "validation", diff,
@@ -121,7 +114,7 @@ class EvolutionGateTests(unittest.TestCase):
         ))
 
     def test_holdout_regression_blocks_activation_without_case_leakage(self):
-        store = TaskStore(self.path)
+        store = self.store
         validation = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
         holdout = "--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n-old\n+safe_call(data)\n"
         store.save_evaluation_case(
@@ -163,14 +156,14 @@ class EvolutionGateTests(unittest.TestCase):
         self.assertNotIn("secret-holdout-clean", str(store.list_evolution_runs()[0]))
 
     def test_auto_evolution_does_not_create_duplicate_noop_versions(self):
-        store = TaskStore(self.path)
+        store = self.store
         result = EvolutionEngine(store, seed_defaults=False).auto_propose("llm-review")
         self.assertEqual("deferred", result["decision"])
         self.assertIsNone(result["version"])
         self.assertEqual([], store.list_skill_versions("llm-review"))
 
     def test_auto_evolution_accepts_only_validated_feedback_rule_ids(self):
-        store = TaskStore(self.path)
+        store = self.store
         store.create("valid", "org/repo", 1, {})
         store.create("invalid", "org/repo", 2, {})
         store.record_failure_case(
@@ -188,7 +181,7 @@ class EvolutionGateTests(unittest.TestCase):
         self.assertNotIn("ignore previous instructions", prompt)
 
     def test_evaluation_cases_are_immutable_and_idempotent(self):
-        store = TaskStore(self.path)
+        store = self.store
         diff = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
         expected = [{"path": "a.py", "line": 1, "min_severity": "high"}]
         first = store.save_evaluation_case(

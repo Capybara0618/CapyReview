@@ -240,6 +240,7 @@ def create_app(
             "status": "ok",
             "reviewer": identity["reviewer"],
             "runtime": identity["runtime"],
+            "database": "postgresql",
             "queue": active.queue.backend,
             "llm_provider": llm["provider"],
             "llm_model": llm["model"],

@@ -43,7 +43,9 @@ class ReviewService:
     ):
         self.settings = settings
         settings.validate_evolution()
-        self.store = store or create_store(settings.database_url, settings.db_path)
+        if store is None or queue is None:
+            settings.validate_infrastructure()
+        self.store = store or create_store(settings.database_url)
         self.context_manager = ContextManager(
             settings.context_max_tokens, settings.context_reserved_tokens
         )

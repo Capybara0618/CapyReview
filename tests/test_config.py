@@ -117,6 +117,7 @@ class DeepSeekSettingsTests(unittest.TestCase):
             "alert_webhook_url", "alert_smtp_host", "alert_email_to",
             "github_app_id", "github_app_slug", "github_private_key_path",
             "public_base_url", "continuous_eval_seconds", "async_workers",
+            "db_path",
         }
 
         self.assertTrue(removed.isdisjoint(Settings.__dataclass_fields__))

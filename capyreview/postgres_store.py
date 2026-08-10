@@ -1,4 +1,4 @@
-"""PostgreSQL persistence mirroring the SQLite product-core contract."""
+"""PostgreSQL persistence for the CapyReview product-core contract."""
 
 import json
 from typing import Any, Dict, Optional
@@ -818,9 +818,7 @@ class PostgresTaskStore:
         return value
 
 
-def create_store(database_url: str, sqlite_path: str):
-    if database_url.startswith(("postgres://", "postgresql://")):
-        return PostgresTaskStore(database_url)
-    from .store import TaskStore
-
-    return TaskStore(sqlite_path)
+def create_store(database_url: str) -> PostgresTaskStore:
+    if not database_url.startswith(("postgres://", "postgresql://")):
+        raise ValueError("CapyReview requires a PostgreSQL connection URL")
+    return PostgresTaskStore(database_url)

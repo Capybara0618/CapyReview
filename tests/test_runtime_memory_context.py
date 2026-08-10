@@ -1,5 +1,3 @@
-import os
-import tempfile
 import unittest
 
 from capyreview.agents import MultiAgentCoordinator
@@ -9,7 +7,8 @@ from capyreview.memory import MemoryManager
 from capyreview.models import Finding, Severity
 from capyreview.reviewer import OpenAICompatibleReviewer
 from capyreview.runtime import AgentLoop, AgentRuntime, AgentTool, RuntimeNode, ToolRegistry
-from capyreview.store import TaskStore, utc_now
+from capyreview.store import utc_now
+from tests.fakes import InMemoryTaskStore
 
 
 class ApprovingJudge:
@@ -28,12 +27,7 @@ class ApprovingJudge:
 
 class RuntimeMemoryContextTests(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-        self.store = TaskStore(self.path)
-
-    def tearDown(self):
-        os.unlink(self.path)
+        self.store = InMemoryTaskStore()
 
     def test_runtime_restores_completed_node_checkpoints(self):
         self.store.create("runtime-task", "org/repo", 1, {})

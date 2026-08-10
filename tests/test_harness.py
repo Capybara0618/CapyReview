@@ -1,10 +1,8 @@
-import os
-import tempfile
 import unittest
 
 from capyreview.harness import ReviewHarness
 from capyreview.models import Finding, Severity
-from capyreview.store import TaskStore
+from tests.fakes import InMemoryTaskStore
 
 
 class FakeLlmReviewer:
@@ -21,12 +19,7 @@ class FakeLlmReviewer:
 
 class HarnessTests(unittest.TestCase):
     def setUp(self):
-        handle, self.path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-        self.store = TaskStore(self.path)
-
-    def tearDown(self):
-        os.unlink(self.path)
+        self.store = InMemoryTaskStore()
 
     def test_successful_state_flow_is_persisted(self):
         task_id = "test-task"

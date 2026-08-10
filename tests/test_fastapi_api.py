@@ -161,6 +161,8 @@ class FastApiContractTests(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["reviewer"], "not-initialized")
         self.assertEqual(health.json()["runtime"], "capyreview-runtime")
+        self.assertEqual(health.json()["database"], "postgresql")
+        self.assertEqual(health.json()["queue"], "redis-streams")
 
         dashboard = self.client.get("/api/dashboard")
         self.assertEqual(dashboard.status_code, 200)

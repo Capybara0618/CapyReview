@@ -1,0 +1,8 @@
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${CAPYREVIEW_POSTGRES_PORT:-55432}:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:${CAPYREVIEW_REDIS_PORT:-56379}:6379"

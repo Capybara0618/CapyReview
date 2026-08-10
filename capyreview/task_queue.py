@@ -17,10 +17,12 @@ class TaskQueue:
     GROUP = "capyreview-workers"
 
     def __init__(
-        self, handler: Callable[[Dict[str, Any]], None], redis_url: str = "",
+        self, handler: Callable[[Dict[str, Any]], None], redis_url: str,
         max_attempts: int = 3, lease_seconds: int = 60,
         on_terminal_failure: Optional[Callable[[Dict[str, Any], str], None]] = None,
     ):
+        if not redis_url.startswith(("redis://", "rediss://")):
+            raise ValueError("CAPYREVIEW_REDIS_URL must be a Redis connection URL")
         self.handler = handler
         self.redis_url = redis_url
         self.max_attempts = max_attempts
@@ -29,26 +31,24 @@ class TaskQueue:
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="capyreview-worker"
         )
-        self._redis = None
         self._stop = threading.Event()
         self.consumer = "%s-%s" % (socket.gethostname(), uuid.uuid4().hex[:8])
-        if redis_url:
-            try:
-                import redis
-            except ImportError as exc:
-                raise RuntimeError("Redis mode requires: pip install redis") from exc
-            self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
-            self._redis.ping()
-            try:
-                self._redis.xgroup_create(self.STREAM, self.GROUP, id="0", mkstream=True)
-            except redis.ResponseError as exc:
-                if "BUSYGROUP" not in str(exc):
-                    raise
-            self._executor.submit(self._redis_worker)
+        try:
+            import redis
+        except ImportError as exc:
+            raise RuntimeError("Redis mode requires: pip install redis") from exc
+        self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
+        self._redis.ping()
+        try:
+            self._redis.xgroup_create(self.STREAM, self.GROUP, id="0", mkstream=True)
+        except redis.ResponseError as exc:
+            if "BUSYGROUP" not in str(exc):
+                raise
+        self._executor.submit(self._redis_worker)
 
     @property
     def backend(self) -> str:
-        return "redis-streams" if self._redis else "memory-acked"
+        return "redis-streams"
 
     def submit(self, payload: Dict[str, Any], message_id: str = "") -> str:
         envelope = {
@@ -57,10 +57,9 @@ class TaskQueue:
             "payload": payload,
             "submitted_at": time.time(),
         }
-        if self._redis:
-            self._redis.xadd(self.STREAM, {"envelope": json.dumps(envelope, ensure_ascii=False)})
-        else:
-            self._executor.submit(self._deliver, envelope)
+        self._redis.xadd(
+            self.STREAM, {"envelope": json.dumps(envelope, ensure_ascii=False)}
+        )
         return envelope["message_id"]
 
     def _deliver(self, envelope: Dict[str, Any]) -> bool:
@@ -74,20 +73,11 @@ class TaskQueue:
         except Exception as exc:
             if envelope["attempt"] >= self.max_attempts:
                 self._terminal_failure(envelope, str(exc))
-            elif self._redis:
+            else:
                 self._redis.xadd(self.STREAM, {
                     "envelope": json.dumps(envelope, ensure_ascii=False)
                 })
-            else:
-                delay = min(2 ** (envelope["attempt"] - 1), 10)
-                timer = threading.Timer(delay, self._submit_memory, args=(envelope,))
-                timer.daemon = True
-                timer.start()
             return False
-
-    def _submit_memory(self, envelope: Dict[str, Any]) -> None:
-        if not self._stop.is_set():
-            self._executor.submit(self._deliver, envelope)
 
     def _redis_worker(self) -> None:
         while not self._stop.is_set():
@@ -141,7 +131,4 @@ class TaskQueue:
 
     def close(self) -> None:
         self._stop.set()
-        # A successful task can still be unwinding after its terminal state is
-        # persisted. Wait for workers so SQLite handles and other resources are
-        # released before callers tear down the service or its database file.
         self._executor.shutdown(wait=True)

@@ -1,24 +1,5 @@
-import os
-import tempfile
 import unittest
 from pathlib import Path
-
-from capyreview.store import TaskStore
-
-
-class TaskStoreLifecycleTests(unittest.TestCase):
-    def test_each_operation_releases_its_sqlite_connection(self):
-        handle, path = tempfile.mkstemp(suffix=".db")
-        os.close(handle)
-        try:
-            store = TaskStore(path)
-            store.dashboard_stats()
-
-            os.unlink(path)
-            self.assertFalse(os.path.exists(path))
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
 
 
 class ProductBrandingTests(unittest.TestCase):
