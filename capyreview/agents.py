@@ -219,6 +219,7 @@ class RiskRouter(AssignmentRouter):
         "eval(", "exec(", "shell=true", "subprocess", "pickle.loads",
         "yaml.load(", "password", "secret", "api_key", "authorization",
         "permission", "token", "execute(", "query(", "md5(", "sha1(",
+        "signature", "hmac", "bypass",
     )
     SENSITIVE_PATH_TOKENS = (
         "auth", "security", "payment", "permission", "token", "migration",

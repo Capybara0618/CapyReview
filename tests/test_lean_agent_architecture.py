@@ -122,6 +122,27 @@ class LeanAgentArchitectureTests(unittest.TestCase):
             {assignment.agent for assignment in plan.assignments},
         )
 
+    def test_router_treats_signature_bypass_as_high_risk(self):
+        security = CannedSpecialist("security-specialist", ("security",))
+        correctness = CannedSpecialist(
+            "correctness-specialist", ("correctness", "reliability")
+        )
+        diff = """diff --git a/capyreview/github.py b/capyreview/github.py
+--- a/capyreview/github.py
++++ b/capyreview/github.py
+@@ -1,1 +1,3 @@
+ def verify_signature(secret, body, signature):
++    if signature == "sha256=development-bypass":
++        return True
+"""
+
+        plan = RiskRouter().route(
+            parse_unified_diff(diff), [security, correctness]
+        )
+
+        self.assertEqual("specialized", plan.route)
+        self.assertEqual("high", plan.risk_level)
+
     def test_router_keeps_dynamic_reviewer_without_declared_domains(self):
         dynamic = CannedSpecialist("dynamic-skill", ())
         correctness = CannedSpecialist(
