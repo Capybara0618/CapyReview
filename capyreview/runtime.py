@@ -250,16 +250,26 @@ class AgentLoop:
         self, stepper: Callable[[Dict[str, Any]], Dict[str, Any]],
         tools: Any, initial_state: Dict[str, Any],
         event_sink: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        resume_state: Optional[Dict[str, Any]] = None,
+        checkpoint_sink: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> AgentLoopResult:
         state = dict(initial_state)
-        observations = list(state.get("observations") or [])
+        resume = dict(resume_state or {})
+        observations = list(
+            resume.get("observations", state.get("observations") or [])
+        )
+        if not all(isinstance(item, dict) for item in observations):
+            raise AgentLoopProtocolError("resumed observations must be objects")
+        next_step = int(resume.get("next_step", 1))
+        if next_step < 1 or next_step > self.max_steps + 1:
+            raise AgentLoopProtocolError("resumed next_step is outside the loop budget")
         started = time.monotonic()
 
         def emit(kind: str, **detail) -> None:
             if event_sink:
                 event_sink(kind, detail)
 
-        for step in range(1, self.max_steps + 1):
+        for step in range(next_step, self.max_steps + 1):
             if time.monotonic() - started > self.timeout_seconds:
                 emit("agent_loop_budget_exhausted", step=step, budget="time")
                 raise RuntimeBudgetExceeded("agent loop time budget exceeded")
@@ -304,5 +314,10 @@ class AgentLoop:
                 }
             observations.append(observation)
             emit("agent_loop_observation", **observation)
+            if checkpoint_sink:
+                checkpoint_sink({
+                    "next_step": step + 1,
+                    "observations": [dict(item) for item in observations],
+                })
         emit("agent_loop_budget_exhausted", step=self.max_steps, budget="steps")
         raise RuntimeBudgetExceeded("agent loop step budget exceeded")

@@ -416,6 +416,22 @@ class MultiAgentCoordinator(Reviewer):
             {"node": node, "status": "completed"}, node,
         )
 
+    def _delete_checkpoint(
+        self, state: CollaborationState, node: str,
+    ) -> bool:
+        task_id = state.get("task_id", "")
+        if self.store is None or not task_id:
+            return False
+        deleted = self.store.delete_checkpoint(task_id, node)
+        with self._checkpoint_lock:
+            state.setdefault("checkpoints", {}).pop(node, None)
+        if deleted:
+            self._emit(
+                state, "agent-runtime", "coordinator", "checkpoint_cleared",
+                {"node": node}, node,
+            )
+        return deleted
+
     @staticmethod
     def _finding_from_dict(value: Dict[str, Any]) -> Finding:
         data = dict(value)
@@ -587,6 +603,50 @@ class MultiAgentCoordinator(Reviewer):
             "memories": memories, "available_tools": tools.catalog(),
         }
         last_context = {"metadata": bundle.metadata()}
+        checkpoint_node = "loop:%s" % assignment.assignment_id
+        checkpoint = (state.get("checkpoints") or {}).get(checkpoint_node) or {}
+        resume_state = None
+        if checkpoint.get("status") == "running" and isinstance(
+            checkpoint.get("state"), dict
+        ):
+            resume_state = dict(checkpoint["state"])
+            self._emit(
+                state, "agent-runtime", agent.name,
+                "agent_loop_checkpoint_restored",
+                {
+                    "node": checkpoint_node,
+                    "next_step": int(resume_state.get("next_step", 1)),
+                    "observations": len(resume_state.get("observations") or []),
+                },
+                assignment.assignment_id,
+            )
+
+        def save_loop_checkpoint(value: Dict[str, Any]) -> None:
+            task_id = state.get("task_id", "")
+            if self.store is None or not task_id:
+                return
+            saved = dict(value)
+            saved["agent"] = agent.name
+            attempt = max(1, int(saved.get("next_step", 1)) - 1)
+            self.store.save_checkpoint(
+                task_id, checkpoint_node, saved,
+                status="running", attempt=attempt,
+            )
+            with self._checkpoint_lock:
+                state.setdefault("checkpoints", {})[checkpoint_node] = {
+                    "status": "running", "attempt": attempt,
+                    "state": saved, "error": None,
+                }
+            self._emit(
+                state, "agent-runtime", agent.name,
+                "agent_loop_checkpoint_saved",
+                {
+                    "node": checkpoint_node,
+                    "next_step": saved["next_step"],
+                    "observations": len(saved["observations"]),
+                },
+                assignment.assignment_id,
+            )
 
         def managed_step(loop_iteration: Dict[str, Any]) -> Dict[str, Any]:
             managed = self.context_manager.compose(
@@ -609,6 +669,8 @@ class MultiAgentCoordinator(Reviewer):
 
         result = self.agent_loop.run(
             managed_step, tools, loop_state, on_event,
+            resume_state=resume_state,
+            checkpoint_sink=save_loop_checkpoint,
         )
         findings = list(result.output or [])
         if not all(isinstance(item, Finding) for item in findings):
@@ -738,6 +800,7 @@ class MultiAgentCoordinator(Reviewer):
                 },
                 attempt=attempts,
             )
+            self._delete_checkpoint(state, "loop:%s" % assignment.assignment_id)
             return result
         replacement = self.router.replan(
             assignment, self._replacement_candidates(agent), error
@@ -778,6 +841,7 @@ class MultiAgentCoordinator(Reviewer):
                 },
                 attempt=result["attempts"],
             )
+            self._delete_checkpoint(state, "loop:%s" % assignment.assignment_id)
         return result
 
     def _specialist_node(self, state: CollaborationState) -> Dict[str, Any]:

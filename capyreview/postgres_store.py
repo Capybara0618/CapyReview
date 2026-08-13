@@ -727,6 +727,14 @@ class PostgresTaskStore:
             result[item.pop("node")] = item
         return result
 
+    def delete_checkpoint(self, task_id: str, node: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM checkpoints WHERE task_id=%s AND node=%s",
+                (task_id, node),
+            )
+            return cursor.rowcount > 0
+
     def request_cancel(self, task_id: str) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(

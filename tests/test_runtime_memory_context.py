@@ -62,6 +62,38 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual(2, result.steps)
         self.assertEqual("lookup", result.observations[0]["tool"])
 
+    def test_agent_loop_resumes_from_persisted_observation_without_repeating_tool(self):
+        tool_calls = []
+        checkpoints = []
+
+        def interrupted_stepper(state):
+            if not state.get("observations"):
+                return {"action": "tool", "tool": "lookup", "arguments": {"key": "x"}}
+            raise RuntimeError("provider interrupted after tool observation")
+
+        loop = AgentLoop(max_steps=3, timeout_seconds=5)
+        with self.assertRaisesRegex(RuntimeError, "provider interrupted"):
+            loop.run(
+                interrupted_stepper,
+                {"lookup": lambda key: tool_calls.append(key) or "value:%s" % key},
+                {}, checkpoint_sink=checkpoints.append,
+            )
+
+        def resumed_stepper(state):
+            return {"action": "final", "output": state["observations"][0]["result"]}
+
+        result = loop.run(
+            resumed_stepper,
+            {"lookup": lambda key: tool_calls.append(key) or "value:%s" % key},
+            {}, resume_state=checkpoints[-1],
+        )
+
+        self.assertEqual("value:x", result.output)
+        self.assertEqual(2, result.steps)
+        self.assertEqual(["x"], tool_calls)
+        self.assertEqual(2, checkpoints[-1]["next_step"])
+        self.assertEqual("lookup", checkpoints[-1]["observations"][0]["tool"])
+
     def test_tool_registry_validates_arguments_before_invocation(self):
         calls = []
         registry = ToolRegistry([AgentTool(
@@ -298,6 +330,69 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             and item["content"].get("node") == "reviewer:A01"
             for item in events
         ))
+
+    def test_coordinator_resumes_agent_loop_observation_and_clears_it_after_final(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("loop-resume", "org/repo", 10, {})
+
+        class InterruptedSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    return {
+                        "action": "tool", "tool": "changed_line",
+                        "arguments": {"path": "app.py", "line": 1},
+                    }
+                raise RuntimeError("provider interrupted after observation")
+
+        first = MultiAgentCoordinator(
+            [InterruptedSpecialist()], store=self.store,
+            agent_retries=0, judge=ApprovingJudge(),
+        )
+        with self.assertRaisesRegex(RuntimeError, "provider interrupted"):
+            first.review_with_context(
+                "loop-resume", diff, parsed, repository="org/repo"
+            )
+
+        loop_checkpoint = self.store.load_checkpoints("loop-resume")["loop:A01"]
+        self.assertEqual("running", loop_checkpoint["status"])
+        self.assertEqual(2, loop_checkpoint["state"]["next_step"])
+
+        class ResumedSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    raise AssertionError("the completed tool call was repeated")
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+                    "The changed line executes data as code.",
+                    line.path, line.line, line.content,
+                    "Replace eval with an allow-listed parser.",
+                    "Add an untrusted-input regression test.", 0.9,
+                )]}
+
+        second = MultiAgentCoordinator(
+            [ResumedSpecialist()], store=self.store,
+            agent_retries=0, judge=ApprovingJudge(),
+        )
+        findings = second.review_with_context(
+            "loop-resume", diff, parsed, repository="org/repo"
+        )
+        checkpoints = self.store.load_checkpoints("loop-resume")
+        kinds = [
+            item["kind"] for item in self.store.get("loop-resume")["collaboration"]
+        ]
+
+        self.assertEqual({"SEC-EVAL"}, {item.rule_id for item in findings})
+        self.assertNotIn("loop:A01", checkpoints)
+        self.assertIn("reviewer:A01", checkpoints)
+        self.assertIn("agent_loop_checkpoint_restored", kinds)
 
     def test_coordinator_restores_matching_judge_decision_without_calling_llm(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"

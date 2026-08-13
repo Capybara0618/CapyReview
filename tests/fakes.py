@@ -399,6 +399,14 @@ class InMemoryTaskStore:
         with self._lock:
             return deepcopy(self.checkpoints.get(task_id, {}))
 
+    def delete_checkpoint(self, task_id: str, node: str) -> bool:
+        with self._lock:
+            values = self.checkpoints.get(task_id, {})
+            if node not in values:
+                return False
+            del values[node]
+            return True
+
     def request_cancel(self, task_id: str) -> bool:
         with self._lock:
             task = self.tasks.get(task_id)

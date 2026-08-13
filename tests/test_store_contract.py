@@ -76,6 +76,7 @@ CORE_METHODS = {
     "get_task_payload",
     "save_checkpoint",
     "load_checkpoints",
+    "delete_checkpoint",
     "request_cancel",
     "is_cancelled",
     "cancel",
@@ -144,6 +145,10 @@ class InMemoryStoreContractTests(unittest.TestCase):
         self.assertEqual("high", resumed["input"]["risk"])
         self.assertEqual("security", resumed["collaboration"][0]["content"]["domain"])
         self.assertEqual(2, self.store.load_checkpoints("task-1")["review"]["attempt"])
+        self.store.save_checkpoint("task-1", "loop:A01", {"next_step": 2})
+        self.assertTrue(self.store.delete_checkpoint("task-1", "loop:A01"))
+        self.assertFalse(self.store.delete_checkpoint("task-1", "loop:A01"))
+        self.assertIn("review", self.store.load_checkpoints("task-1"))
         self.assertIn("diff --git", self.store.get_task_payload("task-1"))
 
         report = ReviewReport(
