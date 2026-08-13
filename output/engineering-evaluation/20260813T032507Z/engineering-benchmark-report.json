@@ -397,7 +397,7 @@
     "cases": 30,
     "compression_activation_rate": 1.0,
     "context_max_tokens": 1024,
-    "generated_at": "2026-08-09T04:19:09.926079+00:00",
+    "generated_at": "2026-08-13T03:25:07.013793+00:00",
     "reserved_tokens": 256,
     "risk_evidence_retention_rate": 1.0,
     "schema_version": 1
@@ -2750,11 +2750,262 @@
     "expected_terminal_cases": 10,
     "fault_containment_rate": 1.0,
     "fault_recovery_rate": 1.0,
-    "generated_at": "2026-08-09T04:19:09.804926+00:00",
+    "generated_at": "2026-08-13T03:25:06.889771+00:00",
     "recoverable_cases": 40,
     "schema_version": 1,
     "state_consistency_rate": 1.0,
     "trace_completeness_rate": 1.0
   },
-  "schema_version": 1
+  "fine_grained_recovery": {
+    "case_results": [
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-01",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-02",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-03",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-04",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-05",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-06",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-07",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-08",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-09",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-10",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-01",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-02",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-03",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-04",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-05",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-06",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-07",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-08",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-09",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-10",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-01",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-02",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-03",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-04",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-05",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-06",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-07",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-08",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-09",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-10",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      }
+    ],
+    "cases": 30,
+    "duplicate_llm_calls": 0,
+    "generated_at": "2026-08-13T03:25:06.903920+00:00",
+    "recovery_rate": 1.0,
+    "schema_version": 1,
+    "state_consistency_rate": 1.0,
+    "trace_completeness_rate": 1.0
+  },
+  "schema_version": 2
 }

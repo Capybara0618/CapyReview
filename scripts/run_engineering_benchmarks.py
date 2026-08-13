@@ -14,6 +14,7 @@ from capyreview.engineering_benchmark import (  # noqa: E402
     markdown_report,
     run_context_stress_benchmark,
     run_fault_injection_benchmark,
+    run_fine_grained_recovery_benchmark,
 )
 
 
@@ -26,10 +27,12 @@ def main() -> None:
     args = parser.parse_args()
 
     faults = run_fault_injection_benchmark()
+    fine_grained = run_fine_grained_recovery_benchmark()
     context = run_context_stress_benchmark()
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "fault_injection": faults,
+        "fine_grained_recovery": fine_grained,
         "context_stress": context,
     }
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -41,9 +44,16 @@ def main() -> None:
         json.dump(report, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     with open(markdown_path, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(markdown_report(faults, context))
+        handle.write(markdown_report(faults, context, fine_grained))
 
     print("report:", json_path)
+    print(
+        "fine-grained recovery=%.1f%% duplicate llm calls=%d"
+        % (
+            fine_grained["recovery_rate"] * 100,
+            fine_grained["duplicate_llm_calls"],
+        )
+    )
     print(
         "fault recovery=%.1f%% containment=%.1f%% state consistency=%.1f%%"
         % (

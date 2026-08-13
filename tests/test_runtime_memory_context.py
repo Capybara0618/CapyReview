@@ -452,6 +452,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         findings = second.review_with_context(
             "loop-resume", diff, parsed, repository="org/repo"
         )
+        recovery = second.collaboration_summary("loop-resume")["recovery"]
         checkpoints = self.store.load_checkpoints("loop-resume")
         kinds = [
             item["kind"] for item in self.store.get("loop-resume")["collaboration"]
@@ -461,6 +462,9 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertNotIn("loop:A01", checkpoints)
         self.assertIn("reviewer:A01", checkpoints)
         self.assertIn("agent_loop_checkpoint_restored", kinds)
+        self.assertGreaterEqual(recovery["checkpoints_saved"], 2)
+        self.assertEqual(1, recovery["checkpoints_restored"])
+        self.assertEqual(1, recovery["checkpoints_cleared"])
 
     def test_coordinator_restores_matching_judge_decision_without_calling_llm(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"

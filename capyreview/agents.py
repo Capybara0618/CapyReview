@@ -5,7 +5,6 @@ reviewers under bounded tool loops, validates changed-line evidence, and delegat
 semantic approval to one independent judge. Runtime events and hand-offs are
 persisted when a task store is available.
 """
-import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -138,8 +137,7 @@ class CollaborationState(TypedDict, total=False):
 
 
 def finding_key(finding: Finding) -> str:
-    raw = "%s:%s:%s" % (finding.path, finding.line, finding.rule_id)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return "%s:%s:%s" % (finding.path, finding.line, finding.rule_id)
 
 
 class AssignmentRouter:
@@ -1194,6 +1192,17 @@ class MultiAgentCoordinator(Reviewer):
             ) + int(bool(judge_context.get("compressed"))),
             "judge_context": judge_context,
             "usage": usage,
+            "recovery": {
+                "checkpoints_saved": (
+                    self._bus(state).count("checkpoint_saved")
+                    + self._bus(state).count("agent_loop_checkpoint_saved")
+                ),
+                "checkpoints_restored": (
+                    self._bus(state).count("checkpoint_restored")
+                    + self._bus(state).count("agent_loop_checkpoint_restored")
+                ),
+                "checkpoints_cleared": self._bus(state).count("checkpoint_cleared"),
+            },
             "memories_recalled": sum(
                 int((item.get("execution") or {}).get("memories_recalled", 0))
                 for item in outcomes

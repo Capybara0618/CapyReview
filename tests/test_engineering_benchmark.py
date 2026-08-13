@@ -3,6 +3,7 @@ import unittest
 from capyreview.engineering_benchmark import (
     run_context_stress_benchmark,
     run_fault_injection_benchmark,
+    run_fine_grained_recovery_benchmark,
 )
 
 
@@ -40,6 +41,19 @@ class EngineeringBenchmarkTests(unittest.TestCase):
         self.assertEqual(
             {"medium", "large", "xlarge"},
             {item["size_tier"] for item in report["case_results"]},
+        )
+
+    def test_fine_grained_recovery_covers_loop_reviewer_and_judge_boundaries(self):
+        report = run_fine_grained_recovery_benchmark()
+
+        self.assertEqual(30, report["cases"])
+        self.assertEqual(1.0, report["recovery_rate"])
+        self.assertEqual(1.0, report["state_consistency_rate"])
+        self.assertEqual(1.0, report["trace_completeness_rate"])
+        self.assertEqual(0, report["duplicate_llm_calls"])
+        self.assertEqual(
+            {"agent_loop_observation", "reviewer_final", "judge_decision"},
+            {item["scenario"] for item in report["case_results"]},
         )
 
 

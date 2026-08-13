@@ -1,5 +1,4 @@
 import json
-import hashlib
 import socket
 import time
 import urllib.error
@@ -250,8 +249,7 @@ one decision for every candidate id."""
 
     @staticmethod
     def _candidate_id(finding: Finding) -> str:
-        raw = "%s:%s:%s" % (finding.path, finding.line, finding.rule_id)
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return "%s:%s:%s" % (finding.path, finding.line, finding.rule_id)
 
     def judge(self, diff: str, _parsed: ParsedDiff, findings, evidence) -> Dict[str, dict]:
         decisions: Dict[str, dict] = {}

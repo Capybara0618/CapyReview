@@ -83,6 +83,13 @@ class ConfidenceJudge:
 
 
 class LeanAgentArchitectureTests(unittest.TestCase):
+    def test_finding_identity_is_readable_without_an_opaque_hash(self):
+        finding = CannedSpecialist(
+            "security-specialist", ("security",), "CWE-95"
+        ).review(RISK_DIFF, parse_unified_diff(RISK_DIFF))[0]
+
+        self.assertEqual("app.py:1:CWE-95", finding_key(finding))
+
     def test_router_uses_only_correctness_specialist_for_routine_diff(self):
         security = CannedSpecialist("security-specialist", ("security",))
         correctness = CannedSpecialist(

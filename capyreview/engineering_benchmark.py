@@ -2,7 +2,10 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from .agents import MultiAgentCoordinator, finding_key
 from .context_manager import ContextManager
+from .diff_parser import parse_unified_diff
+from .models import Finding, Severity
 from .runtime import (
     AgentLoop,
     AgentRuntime,
@@ -16,6 +19,7 @@ from .runtime import (
 class _MemoryCheckpointStore:
     def __init__(self):
         self.values: Dict[str, Dict[str, dict]] = {}
+        self.messages: Dict[str, List[dict]] = {}
 
     def load_checkpoints(self, task_id: str) -> Dict[str, dict]:
         return {
@@ -31,6 +35,16 @@ class _MemoryCheckpointStore:
             "status": status, "attempt": attempt, "state": dict(state),
             "error": error,
         }
+
+    def delete_checkpoint(self, task_id: str, node: str) -> bool:
+        values = self.values.get(task_id, {})
+        if node not in values:
+            return False
+        del values[node]
+        return True
+
+    def record_agent_message(self, task_id: str, message: Dict[str, Any]) -> None:
+        self.messages.setdefault(task_id, []).append(dict(message))
 
 
 def _ratio(numerator: int, denominator: int) -> float:
@@ -248,6 +262,186 @@ def run_fault_injection_benchmark() -> Dict[str, Any]:
     }
 
 
+_RECOVERY_DIFF = """--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-old = value
++result = eval(value)
+"""
+
+
+def _benchmark_finding() -> Finding:
+    return Finding(
+        "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+        "The added line executes input as code.",
+        "app.py", 1, "result = eval(value)",
+        "Replace eval with an allow-listed parser.",
+        "Add an untrusted-input regression test.", 0.9,
+    )
+
+
+class _ApprovingJudge:
+    name = "benchmark-judge"
+
+    def judge(self, _diff, _parsed, _findings, evidence):
+        return {
+            key: {"approved": report.grounded, "reasons": [], "confidence": 0.9}
+            for key, report in evidence.items()
+        }
+
+
+def _agent_loop_observation_case(index: int) -> dict:
+    calls = []
+    checkpoints = []
+    events = []
+    loop = AgentLoop(max_steps=3, timeout_seconds=5)
+
+    def interrupted(state):
+        if not state.get("observations"):
+            return {
+                "action": "tool", "tool": "lookup",
+                "arguments": {"key": "item-%02d" % index},
+            }
+        raise ConnectionError("injected provider interruption")
+
+    try:
+        loop.run(
+            interrupted,
+            {"lookup": lambda key: calls.append(key) or "value:%s" % key},
+            {},
+            event_sink=lambda kind, detail: events.append({"kind": kind, **detail}),
+            checkpoint_sink=checkpoints.append,
+        )
+    except ConnectionError:
+        pass
+    result = loop.run(
+        lambda state: {
+            "action": "final", "output": state["observations"][0]["result"]
+        },
+        {"lookup": lambda key: calls.append(key) or "value:%s" % key},
+        {}, resume_state=checkpoints[-1],
+    )
+    expected = "item-%02d" % index
+    return {
+        "id": "loop-observation-%02d" % index,
+        "scenario": "agent_loop_observation",
+        "recovered": result.output == "value:%s" % expected,
+        "state_consistent": result.steps == 2 and len(result.observations) == 1,
+        "trace_complete": bool(
+            checkpoints and any(item["kind"] == "agent_loop_observation" for item in events)
+        ),
+        "duplicate_llm_calls": max(0, len(calls) - 1),
+    }
+
+
+def _reviewer_final_case(index: int) -> dict:
+    store = _MemoryCheckpointStore()
+    task_id = "reviewer-final-%02d" % index
+    finding = _benchmark_finding()
+    store.save_checkpoint(task_id, "reviewer:A01", {
+        "agent": "security-specialist",
+        "findings": [finding.to_dict()],
+        "attempts": 1,
+        "execution": {"loop_steps": 1, "tool_calls": 0},
+        "substituted_for": "",
+    })
+    calls = []
+
+    class MustNotRunReviewer:
+        name = "security-specialist"
+        domains = ("security",)
+
+        def review(self, _diff, _parsed):
+            calls.append("reviewer")
+            raise AssertionError("reviewer checkpoint was ignored")
+
+    coordinator = MultiAgentCoordinator(
+        [MustNotRunReviewer()], store=store, judge=_ApprovingJudge()
+    )
+    result = coordinator.review_with_context(
+        task_id, _RECOVERY_DIFF, parse_unified_diff(_RECOVERY_DIFF), "org/repo"
+    )
+    kinds = [item.get("kind") for item in store.messages.get(task_id, [])]
+    return {
+        "id": task_id, "scenario": "reviewer_final",
+        "recovered": [item.rule_id for item in result] == ["SEC-EVAL"],
+        "state_consistent": not calls,
+        "trace_complete": "checkpoint_restored" in kinds,
+        "duplicate_llm_calls": len(calls),
+    }
+
+
+def _judge_decision_case(index: int) -> dict:
+    store = _MemoryCheckpointStore()
+    task_id = "judge-decision-%02d" % index
+    finding = _benchmark_finding()
+    key = finding_key(finding)
+    store.save_checkpoint(task_id, "judge", {
+        "candidate_keys": [key],
+        "decisions": {
+            key: {
+                "finding_key": key, "approved": True,
+                "reasons": [], "confidence": 0.9,
+            },
+        },
+        "judge_context": {"restored": True},
+        "usage": {},
+    })
+    judge_calls = []
+
+    class Reviewer:
+        name = "security-specialist"
+        domains = ("security",)
+
+        def review(self, _diff, _parsed):
+            return [finding]
+
+    class MustNotRunJudge:
+        name = "benchmark-judge"
+
+        def judge(self, _diff, _parsed, _findings, _evidence):
+            judge_calls.append("judge")
+            raise AssertionError("judge checkpoint was ignored")
+
+    coordinator = MultiAgentCoordinator(
+        [Reviewer()], store=store, judge=MustNotRunJudge()
+    )
+    result = coordinator.review_with_context(
+        task_id, _RECOVERY_DIFF, parse_unified_diff(_RECOVERY_DIFF), "org/repo"
+    )
+    kinds = [item.get("kind") for item in store.messages.get(task_id, [])]
+    return {
+        "id": task_id, "scenario": "judge_decision",
+        "recovered": [item.rule_id for item in result] == ["SEC-EVAL"],
+        "state_consistent": not judge_calls,
+        "trace_complete": "checkpoint_restored" in kinds,
+        "duplicate_llm_calls": len(judge_calls),
+    }
+
+
+def run_fine_grained_recovery_benchmark() -> Dict[str, Any]:
+    """Exercise the three persisted boundaries added inside the review execution."""
+    results = []
+    for factory in (
+        _agent_loop_observation_case, _reviewer_final_case, _judge_decision_case,
+    ):
+        results.extend(factory(index) for index in range(1, 11))
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cases": len(results),
+        "recovery_rate": _ratio(sum(item["recovered"] for item in results), len(results)),
+        "state_consistency_rate": _ratio(
+            sum(item["state_consistent"] for item in results), len(results)
+        ),
+        "trace_completeness_rate": _ratio(
+            sum(item["trace_complete"] for item in results), len(results)
+        ),
+        "duplicate_llm_calls": sum(item["duplicate_llm_calls"] for item in results),
+        "case_results": results,
+    }
+
+
 def _large_diff(index: int, line_count: int, position: int) -> tuple:
     marker = "eval(untrusted_payload_marker_%02d)" % index
     risk_index = (0, line_count // 2, line_count - 1)[position]
@@ -317,7 +511,7 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
     }
 
 
-def markdown_report(faults: dict, context: dict) -> str:
+def markdown_report(faults: dict, context: dict, fine_grained: dict) -> str:
     percent = lambda value: "%.1f%%" % (100 * value)
     return "\n".join([
         "# CapyReview 工程能力基准报告",
@@ -337,6 +531,18 @@ def markdown_report(faults: dict, context: dict) -> str:
         "故障类型覆盖瞬时节点失败、工具参数错误、Checkpoint 断点恢复、"
         "重复投递以及执行预算耗尽。恢复率仅以可恢复的前四类 40 条为分母；"
         "预算耗尽的 10 条按是否正确停止并保存已完成状态计算隔离率。",
+        "",
+        "## 细粒度 Agent 恢复",
+        "",
+        "- 样本：%d 条（Agent Loop Observation、Reviewer Final、Judge Decision 各 10 条）"
+        % fine_grained["cases"],
+        "- 恢复成功率：%s" % percent(fine_grained["recovery_rate"]),
+        "- 状态一致率：%s" % percent(fine_grained["state_consistency_rate"]),
+        "- Trace 完整率：%s" % percent(fine_grained["trace_completeness_rate"]),
+        "- 重复 LLM 调用：%d 次" % fine_grained["duplicate_llm_calls"],
+        "",
+        "该组测试验证工具 Observation 后续跑、Reviewer 最终结果复用和 Judge 决策复用；"
+        "它不宣称生成中 Token 级恢复。",
         "",
         "## 大 Diff 上下文压力",
         "",

@@ -24,13 +24,17 @@ PR Diff / GitHub Webhook
 
 核心模块包括：
 
-- 有界 Agent Runtime：步骤与时间预算、节点重试、Checkpoint、取消、续跑和 Run Trace。
+- 有界 Agent Runtime：步骤与时间预算、节点重试、取消、续跑和 Run Trace；Checkpoint
+  覆盖 Agent Loop Observation、Reviewer Final 与 Judge Decision 三个细粒度边界。
 - 风险路由：普通变更只调用 Correctness Reviewer；高风险或复杂变更才并行调用 Security
   与 Correctness Reviewer。
-- 证据与裁决：Finding 必须定位到新增行并携带原始证据，再由独立 LLM Judge 进行语义复核。
+- 证据与裁决：Finding 必须通过路径、行号和引用文本的统一校验，再由独立 LLM Judge
+  语义复核；Webhook 任务还可读取固定到 PR Head Commit 的有限文件上下文。
 - Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级审查记忆。
 - ReviewPolicy Evolution：人工反馈生成候选策略，经 Validation/Holdout 门禁后才能激活，
   支持版本追踪与回滚。
+- 可复现执行：任务创建时冻结模型名与 ReviewPolicy 版本，并在结果中汇总真实 LLM 调用数、
+  Prompt/Completion Token 和请求延迟。
 - 单系统 Evaluation：对完整 CapyReview 工作流运行一次 100 条受控 Diff 评测，不设置对比组。
 
 ## 快速开始
@@ -101,7 +105,8 @@ Invoke-WebRequest http://127.0.0.1:8080/v1/tasks/<task-id>/report
 
 CapyReview 接收 GitHub `pull_request` Webhook，并处理 `opened`、`reopened` 和
 `synchronize` 三种动作。请求会经过 HMAC-SHA256 签名校验、时间窗口校验和 Delivery ID
-幂等校验，然后异步下载 Diff 并创建审查任务。
+幂等校验，然后异步下载 Diff 并创建审查任务。任务会保存 PR Head Commit，使
+`read_file_context` 工具始终读取同一版本的代码，而不是随默认分支漂移。
 
 在 `.env` 中配置：
 
@@ -152,10 +157,12 @@ https://<你的公网HTTPS地址>/webhooks/github
 python scripts/run_engineering_benchmarks.py
 ```
 
-该命令生成 50 轮 Runtime 故障注入和 30 条大 Diff 上下文压力测试的 JSON/Markdown
-报告。现有可复现报告显示：可恢复故障恢复率、状态一致率、Trace 完整率、风险证据保留率
-与 Token 预算满足率均为 100%，平均输入 Token 缩减 95.2%，重复副作用为 0。以上均为
-受控工程测试，不代表线上可用性或真实 PR 检出效果。
+该命令生成三组 JSON/Markdown 证据：50 轮任务级 Runtime 故障注入、30 轮细粒度 Agent
+恢复测试，以及 30 条大 Diff 上下文压力测试。细粒度测试分别覆盖 Agent Loop
+Observation、Reviewer Final 和 Judge Decision；当前报告中恢复成功率、状态一致率与
+Trace 完整率均为 100%，重复 LLM 调用为 0。上下文测试的风险证据保留率与 Token 预算
+满足率均为 100%，平均输入 Token 缩减 95.2%。以上均为受控工程测试，不代表线上 SLA
+或真实 PR 检出效果。
 
 ### 100 条单系统 LLM 评测
 

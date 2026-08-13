@@ -11,6 +11,16 @@
 
 故障类型覆盖瞬时节点失败、工具参数错误、Checkpoint 断点恢复、重复投递以及执行预算耗尽。恢复率仅以可恢复的前四类 40 条为分母；预算耗尽的 10 条按是否正确停止并保存已完成状态计算隔离率。
 
+## 细粒度 Agent 恢复
+
+- 样本：30 条（Agent Loop Observation、Reviewer Final、Judge Decision 各 10 条）
+- 恢复成功率：100.0%
+- 状态一致率：100.0%
+- Trace 完整率：100.0%
+- 重复 LLM 调用：0 次
+
+该组测试验证工具 Observation 后续跑、Reviewer 最终结果复用和 Judge 决策复用；它不宣称生成中 Token 级恢复。
+
 ## 大 Diff 上下文压力
 
 - 样本：30 条（medium/large/xlarge 各 10 条）
