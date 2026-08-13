@@ -287,6 +287,55 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         )
         self.assertEqual([], working)
 
+    def test_agent_loop_exposes_commit_pinned_repository_context_tool(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -3 +3 @@\n-old\n+result = helper(data)\n"
+        parsed = parse_unified_diff(diff)
+        reads = []
+
+        def read_context(repository, path, ref, line, radius=20):
+            reads.append((repository, path, ref, line, radius))
+            return {
+                "path": path, "ref": ref, "start_line": 2, "end_line": 4,
+                "content": "def helper(value):\n    return eval(value)\n",
+            }
+
+        class RepositoryAwareSpecialist:
+            name = "correctness-specialist"
+            domains = ("correctness",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    self.assert_tool(state)
+                    return {
+                        "action": "tool", "tool": "read_file_context",
+                        "arguments": {"path": "app.py", "line": 3, "radius": 1},
+                    }
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "COR-HELPER", Severity.HIGH, "Unsafe helper call",
+                    "The called helper dynamically executes its input.",
+                    line.path, line.line, line.content,
+                    "Replace the helper with a typed parser.",
+                    "Add an untrusted-input regression test.", 0.9,
+                )]}
+
+            @staticmethod
+            def assert_tool(state):
+                names = {item["name"] for item in state["available_tools"]}
+                if "read_file_context" not in names:
+                    raise AssertionError("repository context tool is unavailable")
+
+        coordinator = MultiAgentCoordinator(
+            [RepositoryAwareSpecialist()], judge=ApprovingJudge(),
+            repository_reader=read_context,
+        )
+        findings = coordinator.review_with_context(
+            "", diff, parsed, repository="org/repo", head_commit="abc123"
+        )
+
+        self.assertEqual({"COR-HELPER"}, {item.rule_id for item in findings})
+        self.assertEqual([("org/repo", "app.py", "abc123", 3, 1)], reads)
+
     def test_coordinator_restores_completed_reviewer_result_without_calling_llm(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
         parsed = parse_unified_diff(diff)

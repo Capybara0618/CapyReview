@@ -1,5 +1,4 @@
 """Application service for CapyReview's core PR-review workflow."""
-import hashlib
 import uuid
 from typing import Any, Dict, Optional
 
@@ -173,6 +172,7 @@ class ReviewService:
             agent_loop_max_steps=self.settings.agent_loop_max_steps,
             agent_loop_timeout_seconds=self.settings.agent_loop_timeout_seconds,
             judge=self._build_llm_judge(),
+            repository_reader=self.github.read_file_context,
         )
 
     def _ensure_harness(self) -> ReviewHarness:
@@ -208,7 +208,6 @@ class ReviewService:
             {
                 "source": source,
                 "diff_bytes": len(encoded),
-                "diff_sha256": hashlib.sha256(encoded).hexdigest(),
             },
         )
         self.store.save_task_payload(task_id, diff)
@@ -270,7 +269,6 @@ class ReviewService:
             self.store.update_task_input(task_id, {
                 "diff_pending": False,
                 "diff_bytes": len(encoded),
-                "diff_sha256": hashlib.sha256(encoded).hexdigest(),
             })
         if diff is None:
             raise PermanentTaskError("task payload no longer exists")
@@ -280,6 +278,7 @@ class ReviewService:
             payload["repository"],
             payload.get("pull_request"),
             diff,
+            str(payload.get("head_commit") or task.get("input", {}).get("head_commit") or ""),
         )
         if payload.get("github_issue_url") and self.settings.auto_post_review:
             self.github.upsert_comment(
@@ -333,14 +332,15 @@ class ReviewService:
         repository = (payload.get("repository") or {}).get("full_name", "")
         number = payload.get("number")
         diff_url = pull.get("diff_url")
-        if not repository or not isinstance(number, int) or not diff_url:
+        head_commit = str((pull.get("head") or {}).get("sha", "")).strip()
+        if not repository or not isinstance(number, int) or not diff_url or not head_commit:
             raise ValueError("invalid GitHub pull_request payload")
         self._ensure_harness()
         task_id = self._create_deferred_task(
             repository,
             number,
             "github-webhook",
-            {"diff_url": diff_url},
+            {"diff_url": diff_url, "head_commit": head_commit},
         )
         self.queue.submit(
             {
@@ -349,6 +349,7 @@ class ReviewService:
                 "pull_request": number,
                 "github_issue_url": pull.get("issue_url", ""),
                 "diff_url": diff_url,
+                "head_commit": head_commit,
             },
             message_id=task_id,
         )
@@ -395,6 +396,7 @@ class ReviewService:
                 "task_id": task_id,
                 "repository": task["repository"],
                 "pull_request": task.get("pull_request"),
+                "head_commit": str(task.get("input", {}).get("head_commit", "")),
             },
             message_id=task_id,
         )

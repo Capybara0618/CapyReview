@@ -12,7 +12,9 @@ DIFF = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
 class FakeCoordinator:
     name = "fake-llm-coordinator"
 
-    def review_with_context(self, task_id, _diff, parsed, repository=""):
+    def review_with_context(
+        self, task_id, _diff, parsed, repository="", head_commit="",
+    ):
         line = parsed.added_lines[0]
         return [Finding(
             "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
@@ -144,6 +146,7 @@ class ServiceTests(unittest.TestCase):
             "pull_request": {
                 "diff_url": "https://api.github.test/pulls/7.diff",
                 "issue_url": "https://api.github.test/issues/7",
+                "head": {"sha": "abc123"},
             },
         }
         try:
@@ -155,6 +158,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(first["task_id"], second["task_id"])
         self.assertTrue(second["duplicate"])
         self.assertEqual(1, len(queue.messages))
+        task = service.store.get(first["task_id"])
+        self.assertEqual("abc123", task["input"]["head_commit"])
+        self.assertEqual("abc123", queue.messages[0][1]["head_commit"])
 
     def test_cancelled_task_can_be_prepared_and_requeued_for_resume(self):
         queue = CapturingQueue()

@@ -9,7 +9,7 @@ import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from .context_manager import ContextManager
 from .diff_parser import ParsedDiff
@@ -122,6 +122,7 @@ class CollaborationState(TypedDict, total=False):
     parsed: ParsedDiff
     task_id: str
     repository: str
+    head_commit: str
     bus: CollaborationBus
     plan: ReviewPlan
     specialist_findings: List[Finding]
@@ -308,7 +309,7 @@ class MultiAgentCoordinator(Reviewer):
         context_manager: Optional[ContextManager] = None,
         memory_manager: Optional[MemoryManager] = None,
         agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 45,
-        judge=None,
+        judge=None, repository_reader: Optional[Callable[..., dict]] = None,
     ):
         if not agents:
             raise ValueError("at least one LLM reviewer is required")
@@ -328,6 +329,7 @@ class MultiAgentCoordinator(Reviewer):
         self.evidence_agent = self.evidence_validator
         self.test_agent = self.evidence_validator
         self.judge = judge
+        self.repository_reader = repository_reader
         self._summaries: Dict[str, dict] = {}
         self._last_summary: Dict[str, Any] = {}
         self._summary_lock = threading.Lock()
@@ -338,14 +340,14 @@ class MultiAgentCoordinator(Reviewer):
 
     def review_with_context(
         self, task_id: str, diff: str, parsed: ParsedDiff,
-        repository: str = "",
+        repository: str = "", head_commit: str = "",
     ) -> List[Finding]:
         checkpoints = {}
         if self.store is not None and task_id:
             checkpoints = self.store.load_checkpoints(task_id)
         state: CollaborationState = {
             "task_id": task_id, "diff": diff, "parsed": parsed,
-            "repository": repository,
+            "repository": repository, "head_commit": head_commit,
             "bus": CollaborationBus(task_id, self.store),
             "checkpoints": checkpoints,
         }
@@ -514,7 +516,7 @@ class MultiAgentCoordinator(Reviewer):
                 limit=max(1, min(int(limit), 10)),
             )
 
-        return ToolRegistry([
+        tool_definitions = [
             AgentTool(
                 "search_diff",
                 "Search the PR diff for an exact case-insensitive text fragment.",
@@ -563,7 +565,32 @@ class MultiAgentCoordinator(Reviewer):
                 },
                 recall_memory,
             ),
-        ])
+        ]
+        if self.repository_reader is not None and state.get("head_commit"):
+            def read_file_context(path: str, line: int, radius: int = 20):
+                value = str(path)
+                if value not in assignment.files:
+                    raise ValueError("read_file_context path must be assigned to this reviewer")
+                return self.repository_reader(
+                    state.get("repository", ""), value,
+                    state.get("head_commit", ""), int(line), int(radius),
+                )
+
+            tool_definitions.append(AgentTool(
+                "read_file_context",
+                "Read a bounded source window from an assigned file at the PR head commit.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "line": {"type": "integer", "minimum": 1},
+                        "radius": {"type": "integer", "minimum": 0, "maximum": 50},
+                    },
+                    "required": ["path", "line"], "additionalProperties": False,
+                },
+                read_file_context,
+            ))
+        return ToolRegistry(tool_definitions)
 
     def _run_agent_loop(
         self, state: CollaborationState, agent: Reviewer,

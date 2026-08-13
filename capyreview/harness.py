@@ -23,6 +23,7 @@ class RuntimeState(TypedDict, total=False):
     task_id: str
     repository: str
     pull_request: Optional[int]
+    head_commit: str
     diff: str
     parsed: Dict[str, Any]
     findings: list
@@ -51,6 +52,7 @@ class ReviewHarness:
 
     def run(
         self, task_id: str, repository: str, pull_request: Optional[int], diff: str,
+        head_commit: str = "",
     ) -> ReviewReport:
         task = self.store.get(task_id)
         if task and task.get("state") == TaskState.SUCCESS.value and task.get("report"):
@@ -58,6 +60,7 @@ class ReviewHarness:
         state: RuntimeState = {
             "task_id": task_id, "repository": repository,
             "pull_request": pull_request, "diff": diff,
+            "head_commit": head_commit,
         }
         self._ctx.step = max([item["step"] for item in (task or {}).get("trace", [])] or [0])
         self._ctx.task_id = task_id
@@ -109,8 +112,9 @@ class ReviewHarness:
 
     def resume(
         self, task_id: str, repository: str, pull_request: Optional[int], diff: str,
+        head_commit: str = "",
     ) -> ReviewReport:
-        return self.run(task_id, repository, pull_request, diff)
+        return self.run(task_id, repository, pull_request, diff, head_commit)
 
     def _planning(self, state: RuntimeState) -> Dict[str, Any]:
         parsed = parse_unified_diff(state["diff"])
@@ -129,6 +133,7 @@ class ReviewHarness:
             contextual(
                 state["task_id"], state["diff"], parsed,
                 repository=state["repository"],
+                head_commit=state.get("head_commit", ""),
             )
             if contextual else self.reviewer.review(state["diff"], parsed)
         )
