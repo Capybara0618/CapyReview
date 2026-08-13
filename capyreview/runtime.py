@@ -229,6 +229,7 @@ class AgentLoopResult:
     steps: int
     observations: List[Dict[str, Any]]
     stop_reason: str
+    usage: Dict[str, int]
 
 
 class AgentLoop:
@@ -258,6 +259,13 @@ class AgentLoop:
         observations = list(
             resume.get("observations", state.get("observations") or [])
         )
+        usage = {
+            key: max(0, int((resume.get("usage") or {}).get(key, 0)))
+            for key in (
+                "llm_calls", "prompt_tokens", "completion_tokens",
+                "total_tokens", "latency_ms",
+            )
+        }
         if not all(isinstance(item, dict) for item in observations):
             raise AgentLoopProtocolError("resumed observations must be objects")
         next_step = int(resume.get("next_step", 1))
@@ -279,11 +287,14 @@ class AgentLoop:
             if not isinstance(action, dict):
                 raise AgentLoopProtocolError("agent loop action must be an object")
             kind = str(action.get("action", "")).strip().lower()
+            action_usage = action.get("usage") or {}
+            for key in usage:
+                usage[key] += max(0, int(action_usage.get(key, 0)))
             emit("agent_loop_action", step=step, action=kind)
             if kind == "final":
                 return AgentLoopResult(
                     action.get("findings", action.get("output")), step,
-                    observations, "final",
+                    observations, "final", usage,
                 )
             if kind != "tool":
                 raise AgentLoopProtocolError("unsupported agent loop action: %s" % kind)
@@ -318,6 +329,7 @@ class AgentLoop:
                 checkpoint_sink({
                     "next_step": step + 1,
                     "observations": [dict(item) for item in observations],
+                    "usage": dict(usage),
                 })
         emit("agent_loop_budget_exhausted", step=self.max_steps, budget="steps")
         raise RuntimeBudgetExceeded("agent loop step budget exceeded")

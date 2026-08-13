@@ -51,8 +51,22 @@ class RuntimeMemoryContextTests(unittest.TestCase):
     def test_agent_loop_executes_tool_then_returns_final_output(self):
         def stepper(state):
             if not state.get("observations"):
-                return {"action": "tool", "tool": "lookup", "arguments": {"key": "x"}}
-            return {"action": "final", "output": state["observations"][0]["result"]}
+                return {
+                    "action": "tool", "tool": "lookup", "arguments": {"key": "x"},
+                    "usage": {
+                        "llm_calls": 1, "prompt_tokens": 10,
+                        "completion_tokens": 4, "total_tokens": 14,
+                        "latency_ms": 20,
+                    },
+                }
+            return {
+                "action": "final", "output": state["observations"][0]["result"],
+                "usage": {
+                    "llm_calls": 1, "prompt_tokens": 12,
+                    "completion_tokens": 3, "total_tokens": 15,
+                    "latency_ms": 15,
+                },
+            }
 
         result = AgentLoop(max_steps=3, timeout_seconds=5).run(
             stepper, {"lookup": lambda key: "value:%s" % key}, {}
@@ -61,6 +75,11 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual("value:x", result.output)
         self.assertEqual(2, result.steps)
         self.assertEqual("lookup", result.observations[0]["tool"])
+        self.assertEqual({
+            "llm_calls": 2, "prompt_tokens": 22,
+            "completion_tokens": 7, "total_tokens": 29,
+            "latency_ms": 35,
+        }, result.usage)
 
     def test_agent_loop_resumes_from_persisted_observation_without_repeating_tool(self):
         tool_calls = []
@@ -536,14 +555,38 @@ class RuntimeMemoryContextTests(unittest.TestCase):
                 ]
 
             def _request_json(self, _payload):
+                self._last_usage = {
+                    "llm_calls": 1, "prompt_tokens": 20,
+                    "completion_tokens": 5, "total_tokens": 25,
+                    "latency_ms": 10,
+                }
                 return self.responses.pop(0)
 
+        class UsageJudge(ApprovingJudge):
+            def __init__(self):
+                self.usage = {
+                    "llm_calls": 1, "prompt_tokens": 30,
+                    "completion_tokens": 6, "total_tokens": 36,
+                    "latency_ms": 12,
+                }
+
+            def consume_usage(self):
+                value = dict(self.usage)
+                self.usage = {}
+                return value
+
         coordinator = MultiAgentCoordinator(
-            [CannedReviewer()], judge=ApprovingJudge()
+            [CannedReviewer()], judge=UsageJudge()
         )
         findings = coordinator.review(diff, parsed)
+        usage = coordinator.collaboration_summary("")["usage"]
 
         self.assertEqual({"SEC-EVAL"}, {item.rule_id for item in findings})
+        self.assertEqual({
+            "llm_calls": 3, "prompt_tokens": 70,
+            "completion_tokens": 16, "total_tokens": 86,
+            "latency_ms": 32,
+        }, usage)
 
 
 if __name__ == "__main__":

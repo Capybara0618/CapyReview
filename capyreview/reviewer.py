@@ -1,6 +1,7 @@
 import json
 import hashlib
 import socket
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -35,6 +36,12 @@ class OpenAICompatibleReviewer(Reviewer):
         self.provider = provider
         self.name = "%s:%s" % (provider, model)
         self.extra_headers = extra_headers or {}
+        self._last_usage: Dict[str, int] = {}
+
+    def consume_usage(self) -> Dict[str, int]:
+        usage = dict(self._last_usage)
+        self._last_usage = {}
+        return usage
 
     def review(self, diff: str, parsed: ParsedDiff) -> List[Finding]:
         return self._review(diff, parsed, "")
@@ -94,18 +101,25 @@ class OpenAICompatibleReviewer(Reviewer):
             "response_format": {"type": "json_object"},
         }
         result = self._request_json(payload)
+        usage = self.consume_usage()
         action = str(result.get("action", "")).lower()
         if action == "tool":
-            return {
+            value = {
                 "action": "tool", "tool": str(result.get("tool", "")),
                 "arguments": result.get("arguments") or {},
                 "reason": str(result.get("reason", ""))[:500],
             }
+            if usage:
+                value["usage"] = usage
+            return value
         if action in {"", "final"} and "findings" in result:
-            return {
+            value = {
                 "action": "final",
                 "findings": self._parse_findings(result, state["parsed"]),
             }
+            if usage:
+                value["usage"] = usage
+            return value
         raise RuntimeError("%s returned an invalid agent loop action" % self.provider)
 
     def _review(
@@ -138,6 +152,7 @@ class OpenAICompatibleReviewer(Reviewer):
         return self._parse_findings(result, parsed)
 
     def _request_json(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        self._last_usage = {}
         headers = {
             "Authorization": "Bearer " + self.api_key,
             "Content-Type": "application/json",
@@ -150,6 +165,7 @@ class OpenAICompatibleReviewer(Reviewer):
             headers=headers,
             method="POST",
         )
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
@@ -165,6 +181,14 @@ class OpenAICompatibleReviewer(Reviewer):
             raise RuntimeError("%s returned an invalid JSON review response" % self.provider) from exc
         if not isinstance(result, dict):
             raise RuntimeError("%s returned a non-object JSON response" % self.provider)
+        raw_usage = body.get("usage") or {}
+        self._last_usage = {
+            "llm_calls": 1,
+            "prompt_tokens": max(0, int(raw_usage.get("prompt_tokens", 0))),
+            "completion_tokens": max(0, int(raw_usage.get("completion_tokens", 0))),
+            "total_tokens": max(0, int(raw_usage.get("total_tokens", 0))),
+            "latency_ms": max(0, int((time.monotonic() - started) * 1000)),
+        }
         return result
 
     @staticmethod
@@ -293,4 +317,3 @@ one decision for every candidate id."""
                 "confidence": 0.0,
             })
         return decisions
-

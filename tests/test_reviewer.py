@@ -1,4 +1,6 @@
 import unittest
+import json
+from unittest.mock import patch
 
 from capyreview.diff_parser import parse_unified_diff
 from capyreview.reviewer import OpenAICompatibleReviewer
@@ -42,6 +44,40 @@ class OpenAICompatibleReviewerTests(unittest.TestCase):
         self.assertEqual(1, len(findings))
         self.assertEqual("CWE-95", findings[0].rule_id)
         self.assertEqual(2, findings[0].line)
+
+    def test_provider_usage_and_latency_are_available_once_per_llm_call(self):
+        body = json.dumps({
+            "choices": [{"message": {"content": '{"findings":[]}'}}],
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "total_tokens": 150,
+            },
+        }).encode("utf-8")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return body
+
+        reviewer = OpenAICompatibleReviewer(
+            "https://example.invalid", "key", "model"
+        )
+        with patch("urllib.request.urlopen", return_value=Response()):
+            reviewer._request_json({"model": "model", "messages": []})
+
+        usage = reviewer.consume_usage()
+        self.assertEqual(1, usage["llm_calls"])
+        self.assertEqual(120, usage["prompt_tokens"])
+        self.assertEqual(30, usage["completion_tokens"])
+        self.assertEqual(150, usage["total_tokens"])
+        self.assertGreaterEqual(usage["latency_ms"], 0)
+        self.assertEqual({}, reviewer.consume_usage())
 
 
 if __name__ == "__main__":

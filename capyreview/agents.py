@@ -131,6 +131,7 @@ class CollaborationState(TypedDict, total=False):
     reproductions: Dict[str, EvidenceReport]
     judge_context: Dict[str, Any]
     decisions: Dict[str, VerificationDecision]
+    judge_usage: Dict[str, int]
     verified: List[Finding]
     agent_outcomes: List[dict]
     checkpoints: Dict[str, Dict[str, Any]]
@@ -701,6 +702,7 @@ class MultiAgentCoordinator(Reviewer):
             "context": last_context["metadata"], "memories_recalled": len(memories),
             "tools_available": len(tools.names()),
             "tool_calls": len(result.observations),
+            "usage": dict(result.usage),
         }
 
     def _invoke_agent(
@@ -730,6 +732,9 @@ class MultiAgentCoordinator(Reviewer):
                         )
                     else:
                         findings = agent.review(state["diff"], state["parsed"])
+                    consume_usage = getattr(agent, "consume_usage", None)
+                    if consume_usage:
+                        execution["usage"] = consume_usage()
                 self._emit(
                     state, agent.name, self.judge.name, "reviewer_candidates",
                     {
@@ -941,6 +946,7 @@ class MultiAgentCoordinator(Reviewer):
                 return {
                     "decisions": decisions,
                     "judge_context": dict(checkpoint.get("judge_context") or {}),
+                    "judge_usage": dict(checkpoint.get("usage") or {}),
                 }
         plan = state.get("plan")
         risk_domains = sorted({
@@ -979,6 +985,8 @@ class MultiAgentCoordinator(Reviewer):
             judge_bundle.text, state["parsed"], candidates,
             state["reproductions"],
         )
+        consume_judge_usage = getattr(self.judge, "consume_usage", None)
+        judge_usage = consume_judge_usage() if consume_judge_usage else {}
         for finding in candidates:
             key = finding_key(finding)
             raw = dict(raw_decisions.get(key) or {})
@@ -1001,6 +1009,7 @@ class MultiAgentCoordinator(Reviewer):
         result = {
             "decisions": decisions,
             "judge_context": judge_bundle.metadata(),
+            "judge_usage": judge_usage,
         }
         self._save_completed_checkpoint(
             state, "judge",
@@ -1010,6 +1019,7 @@ class MultiAgentCoordinator(Reviewer):
                     key: asdict(decision) for key, decision in decisions.items()
                 },
                 "judge_context": result["judge_context"],
+                "usage": judge_usage,
             },
         )
         return result
@@ -1133,6 +1143,17 @@ class MultiAgentCoordinator(Reviewer):
             "final_findings": final_findings,
         }
         judge_context = dict(state.get("judge_context") or {})
+        usage_keys = (
+            "llm_calls", "prompt_tokens", "completion_tokens",
+            "total_tokens", "latency_ms",
+        )
+        usage = {
+            key: sum(
+                int(((item.get("execution") or {}).get("usage") or {}).get(key, 0))
+                for item in outcomes
+            ) + int((state.get("judge_usage") or {}).get(key, 0))
+            for key in usage_keys
+        }
         return {
             "protocol": "route-review-evidence-judge",
             "roles": [
@@ -1172,6 +1193,7 @@ class MultiAgentCoordinator(Reviewer):
                 for item in outcomes
             ) + int(bool(judge_context.get("compressed"))),
             "judge_context": judge_context,
+            "usage": usage,
             "memories_recalled": sum(
                 int((item.get("execution") or {}).get("memories_recalled", 0))
                 for item in outcomes
