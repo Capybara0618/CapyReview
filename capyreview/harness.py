@@ -104,7 +104,10 @@ class ReviewHarness:
             )
             try:
                 self.store.record_failure_case(
-                    task_id, "execution_error", {"error": str(exc)[:1000]}
+                    task_id, "execution_error", {
+                        "error": str(exc)[:1000],
+                        "evolution_eligible": False,
+                    }
                 )
             except Exception:
                 pass

@@ -34,8 +34,8 @@ PR Diff / GitHub Webhook
   CI 失败和 Code Scanning 告警；仓库、PR 与 Head Commit 由任务注入，不交给模型填写。
   Finding 仍须通过路径、行号和引用文本校验，再由独立 LLM Judge 语义复核。
 - Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级审查记忆。
-- 正式 Review Skills：按风险信号选择 `SKILL.md` 专业工作流；Evidence/Judge 驳回会回流原
-  Reviewer 一次，跨任务失败案例由 LLM 生成候选 Skill 包，经 Validation/Holdout 门禁后激活。
+- 正式 Review Skills：按风险信号选择 `SKILL.md` 专业工作流；Evidence/Judge 驳回会先回流原
+  Reviewer 一次，只有仍未解决的语义失败和人工误报/漏报才会推动对应 Skill 演化。
 - 可复现执行：任务创建时冻结模型名与 Skill 版本集合，并在结果中汇总真实 LLM 调用数、
   Prompt/Completion Token 和请求延迟。
 - 单系统 Evaluation：对完整 CapyReview 工作流运行一次 100 条受控 Diff 评测，不设置对比组。
@@ -154,15 +154,15 @@ Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗�
 参考资料由 Reviewer 通过 `read_skill_reference` 按需读取。
 
 Evidence Validator 或 Judge 驳回候选后，系统把结构化原因返回原 Reviewer 一次，并保存独立
-Reflection Checkpoint。未解决的反思失败与人工 `false_positive`、`missed_issue` 反馈进入失败
-案例库；每累计 3 条，通过 Redis Streams 异步调用 LLM 生成一个完整候选 Skill 包。候选不能
-直接生效，必须满足：
+Reflection Checkpoint。修正成功不进入演化；仍未解决的反思失败与人工 `false_positive`、
+`missed_issue` 反馈绑定到当时激活的 Skill。同一 Skill 每累计 3 条，通过 Redis Streams 异步
+调用 LLM 在当前版本基础上生成候选包。工具、模型或基础设施错误只进入 Trace，不参与 Skill
+演化。候选不能直接生效，必须满足：
 
 1. `SKILL.md`、frontmatter 和引用文件通过格式、安全与非执行性检查；
-2. Validation 得分达到配置的最小提升；
-3. Validation 受保护指标不退化；
-4. Holdout 指标不退化；
-5. 评测过程没有模型或运行时错误。
+2. Validation 综合得分达到配置的最小提升；
+3. Validation/Holdout 的综合分、高风险召回和干净样本准确率不退化；
+4. 评测过程没有模型或运行时错误；若发生临时错误则标记 `deferred`，稍后重试。
 
 相关接口：
 

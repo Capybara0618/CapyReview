@@ -14,7 +14,7 @@ metadata:
 2. Check retry bounds, idempotency and duplicate-delivery behavior.
 3. Inspect cancellation, timeout, lease recovery and partial failures.
 4. Verify shared state updates are atomic or consistently locked.
-5. Report a concrete interleaving or failure path grounded on changed lines.
+5. Report a concrete interleaving or failure path with exact changed-line evidence.
 
 ## Tool guidance
 

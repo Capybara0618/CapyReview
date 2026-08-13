@@ -65,7 +65,7 @@ class ReviewService:
         self.review_skills = ReviewSkillRegistry(self.review_skills_root)
         self._injected_reviewer = reviewer
         self._skill_versions: Dict[str, int] = {}
-        self._evolution_scheduled_count = 0
+        self._evolution_scheduled_batches: Dict[str, tuple] = {}
         self._harness_cache: Dict[tuple, ReviewHarness] = {}
         self.reviewer = reviewer
         self.harness = self._new_harness(reviewer) if reviewer is not None else None
@@ -84,6 +84,7 @@ class ReviewService:
             min_improvement=settings.eval_min_improvement,
             min_holdout_cases=settings.eval_min_holdout_cases,
             max_metric_regression=settings.eval_max_metric_regression,
+            base_skill_provider=self._builtin_skill_package,
         )
         self.queue = queue or TaskQueue(
             self._process_queued,
@@ -162,6 +163,12 @@ class ReviewService:
             self._package_from_record(record)
             for record in self.store.list_active_skill_versions()
         ]
+
+    def _builtin_skill_package(self, skill_name: str) -> Optional[dict]:
+        try:
+            return self.review_skills.export_package(skill_name)
+        except ValueError:
+            return None
 
     def _skill_packages_for_versions(self, versions: Dict[str, int]) -> list:
         packages = []
@@ -330,7 +337,7 @@ class ReviewService:
     def _process_queued(self, payload: Dict[str, Any]) -> None:
         if payload.get("kind") == "skill-evolution":
             self.evolution.auto_propose(
-                str(payload.get("skill_name") or "review-evolved-patterns")
+                str(payload.get("skill_name") or "")
             )
             return
         task_id = str(payload.get("task_id", ""))
@@ -368,22 +375,34 @@ class ReviewService:
 
     def _schedule_skill_evolution(self) -> bool:
         cases = self.store.list_failure_cases(True, 100)
-        count = len(cases)
-        if (
-            not self.evolution.should_auto_propose()
-            or count == self._evolution_scheduled_count
-        ):
-            return False
-        self._evolution_scheduled_count = count
-        self.queue.submit(
-            {
-                "kind": "skill-evolution",
-                "skill_name": "review-evolved-patterns",
-                "failure_cases": count,
-            },
-            message_id="skill-evolution-%s" % count,
-        )
-        return True
+        cases_by_skill: Dict[str, list] = {}
+        for case in cases:
+            payload = case.get("payload") or {}
+            if not payload.get("evolution_eligible"):
+                continue
+            skill_name = str(payload.get("skill_name", "")).strip()
+            if skill_name:
+                cases_by_skill.setdefault(skill_name, []).append(case)
+        scheduled = False
+        for skill_name, skill_cases in sorted(cases_by_skill.items()):
+            count = len(skill_cases)
+            batch = tuple(sorted(int(case["id"]) for case in skill_cases))
+            if (
+                not self.evolution.should_auto_propose(skill_name)
+                or batch == self._evolution_scheduled_batches.get(skill_name)
+            ):
+                continue
+            self._evolution_scheduled_batches[skill_name] = batch
+            self.queue.submit(
+                {
+                    "kind": "skill-evolution",
+                    "skill_name": skill_name,
+                    "failure_cases": count,
+                },
+                message_id="skill-evolution-%s-%s" % (skill_name, count),
+            )
+            scheduled = True
+        return scheduled
 
     def _on_terminal_failure(self, payload: Dict[str, Any], error: str) -> None:
         task_id = str(payload.get("task_id", ""))
@@ -470,10 +489,16 @@ class ReviewService:
         if category not in {"false_positive", "missed_issue", "accepted"}:
             raise ValueError("unsupported feedback category")
         if category in {"false_positive", "missed_issue"}:
+            skill_name = self._feedback_skill(task, finding)
             self.store.record_failure_case(
                 task_id,
                 category,
-                {"finding": finding, "note": note[:2000]},
+                {
+                    "finding": finding,
+                    "note": note[:2000],
+                    "skill_name": skill_name,
+                    "evolution_eligible": bool(skill_name),
+                },
             )
         self.memory.remember_feedback(
             task["repository"], task_id, category, finding, note[:2000]
@@ -481,6 +506,34 @@ class ReviewService:
         if category != "accepted":
             self._schedule_skill_evolution()
         return {"recorded": True, "category": category}
+
+    @staticmethod
+    def _feedback_skill(task: Dict[str, Any], finding: Optional[dict]) -> str:
+        versions = list((task.get("input") or {}).get("skill_versions") or {})
+        versions.extend(
+            str(item).rsplit("@", 1)[0]
+            for item in ((task.get("report") or {}).get("collaboration") or {}).get(
+                "activated_skills", []
+            )
+        )
+        versions = list(dict.fromkeys(versions))
+        if not versions:
+            return ""
+        rule_id = str((finding or {}).get("rule_id", "")).upper()
+        path = str((finding or {}).get("path", "")).lower()
+        if any(token in rule_id or token in path for token in (
+            "SEC", "AUTH", "TOKEN", "PERMISSION", "CREDENTIAL",
+        )) and "review-auth-security" in versions:
+            return "review-auth-security"
+        if any(token in rule_id or token in path for token in (
+            "SQL", "DB", "MIGRATION", "SCHEMA",
+        )) and "review-database-migration" in versions:
+            return "review-database-migration"
+        if any(token in rule_id or token in path for token in (
+            "ASYNC", "RETRY", "QUEUE", "LOCK", "STREAM", "WORKER",
+        )) and "review-async-reliability" in versions:
+            return "review-async-reliability"
+        return versions[0] if len(versions) == 1 else ""
 
     def resume_task(self, task_id: str) -> dict:
         task = self.store.get(task_id)

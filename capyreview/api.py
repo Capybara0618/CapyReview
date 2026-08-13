@@ -46,7 +46,7 @@ class FeedbackRequest(BaseModel):
 class SkillProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    skill_name: str = "review-evolved-patterns"
+    skill_name: str = "review-auth-security"
     package: Dict[str, Any]
     regression_score: Optional[float] = None
 
@@ -54,7 +54,7 @@ class SkillProposalRequest(BaseModel):
 class EvolutionAutoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    skill_name: str = "review-evolved-patterns"
+    skill_name: str = "review-auth-security"
 
 
 def _http_error(exc: Exception) -> HTTPException:

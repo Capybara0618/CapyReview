@@ -91,6 +91,28 @@ class FormalSkillEvolutionTests(unittest.TestCase):
         self.assertIn("SKILL.md", calls[0]["messages"][0]["content"])
         self.assertNotIn("prompt", package)
 
+    def test_llm_proposer_receives_the_complete_active_skill_as_revision_baseline(self):
+        calls = []
+
+        def request_json(payload):
+            calls.append(payload)
+            return {"package": candidate_package()}
+
+        proposer = ReviewSkillCandidateProposer(request_json)
+        proposer.propose(
+            [{
+                "id": 7, "category": "missed_issue",
+                "payload": {"note": "Confirmed ownership check was missed."},
+            }],
+            [{**candidate_package(), "version": 3}],
+            "review-auth-security",
+        )
+
+        user_payload = calls[0]["messages"][1]["content"]
+        self.assertIn("# Authorization Review", user_payload)
+        self.assertIn("references/confirmed-patterns.md", user_payload)
+        self.assertIn("revise that package", calls[0]["messages"][0]["content"])
+
     def test_evaluation_prompt_uses_skill_body_as_bounded_context(self):
         prompt = compose_evaluation_prompt("Base review contract.", candidate_package())
 

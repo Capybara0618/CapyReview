@@ -202,6 +202,7 @@ class EvolutionEngine:
         min_cases: int = 3, max_cases: int = 5, min_improvement: float = 0.01,
         min_holdout_cases: int = 0, max_metric_regression: float = 0.0,
         min_failure_cases: int = 3, seed_defaults: bool = True,
+        base_skill_provider: Optional[Callable[[str], Optional[dict]]] = None,
     ):
         self.store = store
         self.reviewer_factory = reviewer_factory
@@ -212,6 +213,7 @@ class EvolutionEngine:
         self.min_holdout_cases = min_holdout_cases
         self.max_metric_regression = max_metric_regression
         self.min_failure_cases = max(1, int(min_failure_cases))
+        self.base_skill_provider = base_skill_provider
         self._lock = threading.RLock()
         if seed_defaults:
             self._seed_default_cases()
@@ -377,22 +379,27 @@ class EvolutionEngine:
                 or baseline_holdout["errors"] or candidate_holdout["errors"]
             )
             improved = candidate_metrics["score"] >= baseline_metrics["score"] + self.min_improvement
-            validation_safe = self._non_regressing(candidate_metrics, baseline_metrics)
-            holdout_safe = self._non_regressing(candidate_holdout, baseline_holdout)
+            validation_safe = self._core_non_regressing(
+                candidate_metrics, baseline_metrics,
+            )
+            holdout_safe = self._core_non_regressing(
+                candidate_holdout, baseline_holdout,
+            )
             gates.update({
                 "evaluation_success": no_errors,
                 "validation_improvement": improved,
                 "validation_non_regression": validation_safe,
                 "holdout_non_regression": holdout_safe,
             })
-            if no_errors and improved and validation_safe and holdout_safe:
+            if not no_errors:
+                decision = "deferred"
+                reason = "replay evaluation did not complete successfully; retry later"
+            elif improved and validation_safe and holdout_safe:
                 decision = "activated"
                 reason = "candidate improved on validation and passed the non-regression holdout gate"
             else:
                 decision = "rejected"
                 reasons = []
-                if not no_errors:
-                    reasons.append("one or more baseline or candidate evaluations failed")
                 if not improved:
                     reasons.append("score improvement was below the configured threshold")
                 if not validation_safe:
@@ -447,14 +454,28 @@ class EvolutionEngine:
         with self._lock:
             return self.store.activate_skill_version(skill_name, version)
 
-    def should_auto_propose(self) -> bool:
-        count = len(self.store.list_failure_cases(True, 100))
+    @staticmethod
+    def _eligible_cases(cases: List[dict], skill_name: str) -> List[dict]:
+        return [
+            case for case in cases
+            if bool((case.get("payload") or {}).get("evolution_eligible"))
+            and str((case.get("payload") or {}).get("skill_name", "")) == skill_name
+        ]
+
+    def should_auto_propose(self, skill_name: str) -> bool:
+        count = len(self._eligible_cases(
+            self.store.list_failure_cases(True, 100), skill_name,
+        ))
         return count >= self.min_failure_cases and count % self.min_failure_cases == 0
 
     def auto_propose(
-        self, skill_name: str = "review-evolved-patterns",
+        self, skill_name: str,
     ) -> Dict[str, Any]:
-        cases = self.store.list_failure_cases(True, 100)
+        if not skill_name.strip():
+            raise ValueError("skill_name is required for automatic evolution")
+        cases = self._eligible_cases(
+            self.store.list_failure_cases(True, 100), skill_name,
+        )
         counts = {}
         for case in cases:
             counts[case["category"]] = counts.get(case["category"], 0) + 1
@@ -487,6 +508,15 @@ class EvolutionEngine:
                 "learned_categories": counts,
             }
         active = self.store.get_active_skill_version(skill_name)
+        if active is None and self.base_skill_provider is not None:
+            base_package = self.base_skill_provider(skill_name)
+            if base_package is not None:
+                active = self.store.save_skill_version(
+                    skill_name,
+                    validate_skill_package(base_package, skill_name),
+                    0.0,
+                    True,
+                )
         candidate = self.candidate_proposer.propose(
             cases,
             [{**active["package"], "version": active["version"]}]
@@ -512,12 +542,10 @@ class EvolutionEngine:
             "successful_cases": 0, "success_rate": 0.0, "errors": [], "case_results": [],
         }
 
-    def _non_regressing(self, candidate: Dict[str, Any], baseline: Dict[str, Any]) -> bool:
-        protected = ["score", "precision", "recall", "high_severity_recall"]
-        if baseline.get("positive_cases", 0):
-            protected.append("severity_accuracy")
-        if baseline.get("clean_cases", 0):
-            protected.append("clean_accuracy")
+    def _core_non_regressing(
+        self, candidate: Dict[str, Any], baseline: Dict[str, Any],
+    ) -> bool:
+        protected = ["score", "high_severity_recall", "clean_accuracy"]
         return all(
             float(candidate.get(metric, 0.0)) + self.max_metric_regression
             >= float(baseline.get(metric, 0.0))

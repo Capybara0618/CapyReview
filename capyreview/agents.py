@@ -138,6 +138,7 @@ class CollaborationState(TypedDict, total=False):
     verified: List[Finding]
     agent_outcomes: List[dict]
     checkpoints: Dict[str, Dict[str, Any]]
+    activated_skills_by_agent: Dict[str, List[str]]
 
 
 def finding_key(finding: Finding) -> str:
@@ -562,6 +563,10 @@ class MultiAgentCoordinator(Reviewer):
     ) -> tuple:
         memories = self._recall_memories(state, assignment)
         activated_skills = self._activate_review_skills(state, assignment)
+        with self._checkpoint_lock:
+            state.setdefault("activated_skills_by_agent", {})[agent.name] = [
+                item.name for item in activated_skills
+            ]
         bundle = self.context_manager.build(state["diff"], assignment.to_dict(), memories)
         self._emit(
             state, "context-manager", agent.name, "context_prepared",
@@ -596,6 +601,7 @@ class MultiAgentCoordinator(Reviewer):
                         "reviewer": agent.name,
                         "tool": str(detail.get("tool", ""))[:120],
                         "error": str(detail.get("error", ""))[:1000],
+                        "evolution_eligible": False,
                     },
                 )
 
@@ -946,17 +952,6 @@ class MultiAgentCoordinator(Reviewer):
                 "reason": str(reason)[:500],
                 "instruction": "Correct this candidate once; do not repeat it unchanged.",
             }, ensure_ascii=False) for finding, reason in failures]
-            if self.store is not None and state.get("task_id"):
-                for finding, reason in failures:
-                    self.store.record_failure_case(
-                        state["task_id"], "%s_rejected" % stage,
-                        {
-                            "stage": stage,
-                            "reviewer": agent_name,
-                            "finding": finding.to_dict(),
-                            "reason": str(reason)[:1000],
-                        },
-                    )
             self._emit(
                 state, stage, agent_name, "reflection_requested",
                 {"stage": stage, "candidates": len(failures), "reasons": [
@@ -1014,6 +1009,63 @@ class MultiAgentCoordinator(Reviewer):
             )
         return corrections, sources
 
+    def _skill_for_reviewer(
+        self, state: CollaborationState, reviewer: str,
+    ) -> str:
+        selected = list(
+            (state.get("activated_skills_by_agent") or {}).get(reviewer, [])
+        )
+        if not selected:
+            for outcome in state.get("agent_outcomes", []):
+                if outcome.get("agent") != reviewer:
+                    continue
+                selected = [
+                    str(item).rsplit("@", 1)[0]
+                    for item in (outcome.get("execution") or {}).get(
+                        "activated_skills", []
+                    )
+                ]
+                break
+        return selected[0] if selected else ""
+
+    def _archive_unresolved_failures(
+        self, state: CollaborationState, failures: List[tuple], stage: str,
+        resolved_findings: List[Finding],
+    ) -> None:
+        if self.store is None or not state.get("task_id") or not failures:
+            return
+        resolved_locations = {
+            (finding.path, finding.line) for finding in resolved_findings
+        }
+        existing = {
+            (
+                item.get("category"),
+                finding_key(self._finding_from_dict(item["payload"]["finding"])),
+            )
+            for item in self.store.list_task_failure_cases(state["task_id"])
+            if isinstance((item.get("payload") or {}).get("finding"), dict)
+        }
+        for finding, reason in failures:
+            if (finding.path, finding.line) in resolved_locations:
+                continue
+            sources = state.get("finding_sources", {}).get(finding_key(finding), [])
+            reviewer = sources[0] if sources else ""
+            skill_name = self._skill_for_reviewer(state, reviewer)
+            identity = ("%s_rejected" % stage, finding_key(finding))
+            if identity in existing:
+                continue
+            self.store.record_failure_case(
+                state["task_id"], identity[0],
+                {
+                    "stage": stage,
+                    "reviewer": reviewer,
+                    "finding": finding.to_dict(),
+                    "reason": str(reason)[:1000],
+                    "skill_name": skill_name,
+                    "evolution_eligible": bool(skill_name),
+                },
+            )
+
     def _evidence_node(self, state: CollaborationState) -> Dict[str, Any]:
         grounded = []
         rejected = []
@@ -1054,6 +1106,9 @@ class MultiAgentCoordinator(Reviewer):
                 sources[reproduction.finding_key] = corrected_sources.get(
                     reproduction.finding_key, []
                 )
+        self._archive_unresolved_failures(
+            state, rejected, "evidence", grounded_corrections,
+        )
         candidates = grounded + grounded_corrections
         return {
             "specialist_findings": candidates,
@@ -1205,6 +1260,7 @@ class MultiAgentCoordinator(Reviewer):
         corrected, corrected_sources = self._reflect_rejected(
             state, rejected, "judge",
         ) if rejected else ([], {})
+        resolved_reflections = []
         if corrected:
             approved = [
                 finding for finding in candidates
@@ -1230,6 +1286,10 @@ class MultiAgentCoordinator(Reviewer):
                     for finding in approved
                 }
                 decisions.update(corrected_decisions)
+                resolved_reflections = [
+                    finding for finding in grounded_corrections
+                    if corrected_decisions[finding_key(finding)].approved
+                ]
                 for key, value in corrected_usage.items():
                     judge_usage[key] = int(judge_usage.get(key, 0)) + int(value)
             else:
@@ -1254,6 +1314,9 @@ class MultiAgentCoordinator(Reviewer):
             }
             reproductions.update(corrected_evidence)
             candidate_keys = sorted(finding_key(item) for item in candidates)
+        self._archive_unresolved_failures(
+            state, rejected, "judge", resolved_reflections,
+        )
         result = {
             "decisions": decisions,
             "judge_context": judge_bundle.metadata(),

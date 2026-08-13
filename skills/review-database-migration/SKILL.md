@@ -14,7 +14,7 @@ metadata:
 2. Check locking, transaction boundaries, rollback and partial-failure behavior.
 3. Inspect callers when a constraint or column contract changes.
 4. Distinguish deployment-order failures from query correctness defects.
-5. Report only changed-line defects with a reproducible failure path.
+5. Report only changed-line defects with exact evidence and a reproducible failure path.
 
 ## Tool guidance
 

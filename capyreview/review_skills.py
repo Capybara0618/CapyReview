@@ -85,6 +85,26 @@ class ReviewSkillRegistry:
                 )
         return ActivatedReviewSkill(metadata, body, references)
 
+    def export_package(self, name: str) -> dict:
+        """Return one complete formal package for versioning or evolution."""
+        if name in self.packages:
+            package = self.packages[name]
+            return {
+                "name": package["name"],
+                "skill_md": package["skill_md"],
+                "references": dict(package["references"]),
+            }
+        directory = self._package(name)
+        activated = self.activate(name)
+        return {
+            "name": name,
+            "skill_md": (directory / "SKILL.md").read_text(encoding="utf-8-sig"),
+            "references": {
+                relative: (directory / relative).read_text(encoding="utf-8")
+                for relative in activated.references
+            },
+        }
+
     def read_reference(self, name: str, relative_path: str) -> str:
         activated = self.activate(name)
         relative = self._safe_reference(relative_path)

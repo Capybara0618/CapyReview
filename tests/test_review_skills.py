@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from capyreview.review_skills import ReviewSkillRegistry, ReviewSkillSelector
+from capyreview.skill_evolution import validate_skill_package
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,16 @@ def write_skill(root: Path, name: str, description: str, domains: str, signals: 
 
 
 class ReviewSkillRegistryTests(unittest.TestCase):
+    def test_all_checked_in_skills_are_valid_evolution_baselines(self):
+        registry = ReviewSkillRegistry(ROOT / "skills")
+
+        for metadata in registry.discover():
+            package = registry.export_package(metadata.name)
+            self.assertEqual(
+                metadata.name,
+                validate_skill_package(package, metadata.name)["name"],
+            )
+
     def test_discovery_loads_only_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

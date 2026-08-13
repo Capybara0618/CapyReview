@@ -408,6 +408,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual([], client.calls)
         self.assertEqual("tool_error", cases[0]["category"])
         self.assertEqual("read_code_context", cases[0]["payload"]["tool"])
+        self.assertFalse(cases[0]["payload"]["evolution_eligible"])
 
     def test_security_reviewer_activates_formal_skill_and_loads_reference_on_demand(self):
         diff = "--- a/capyreview/github.py\n+++ b/capyreview/github.py\n@@ -10 +10,3 @@\n-old\n+if signature == 'bypass':\n+    return True\n"
@@ -742,8 +743,8 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         )
 
         self.assertEqual("eval(data)", findings[0].evidence)
-        self.assertEqual("evidence_rejected", archived_before_resume[0]["category"])
-        self.assertEqual(1, len(archived_after_resume))
+        self.assertEqual([], archived_before_resume)
+        self.assertEqual([], archived_after_resume)
         self.assertTrue(any(
             item["kind"] == "checkpoint_restored"
             and item["content"].get("node") == "reflection:evidence:A01"

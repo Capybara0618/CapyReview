@@ -130,10 +130,10 @@
             <div class="panel-head"><div><span class="eyebrow">GATE STATUS</span><h3>演化状态</h3></div><button class="button secondary" id="auto-evolve" type="button">从反馈生成候选</button></div>
             <pre id="evolution-status">正在读取门禁状态…</pre>
             <form id="evolution-form">
-              <label>Skill 名称<input name="skill_name" value="review-evolved-patterns" required></label>
+              <label>Skill 名称<input name="skill_name" value="review-auth-security" required></label>
               <label>候选 Skill 包（JSON）<textarea name="package" rows="12" required>{
-  "name": "review-evolved-patterns",
-  "skill_md": "---\nname: review-evolved-patterns\ndescription: Review recurring defects confirmed by prior PR feedback.\nmetadata:\n  capyreview-domains: security correctness reliability\n  capyreview-signals: auth error retry boundary\n---\n\n# Evolved Review Patterns\n\nRequire exact changed-line evidence before reporting a concrete defect.\n",
+  "name": "review-auth-security",
+  "skill_md": "---\nname: review-auth-security\ndescription: Review authentication and authorization changes using confirmed feedback.\nmetadata:\n  capyreview-domains: security\n  capyreview-signals: auth permission token signature\n---\n\n# Authentication Security Review\n\nRequire exact changed-line evidence before reporting a concrete defect.\n",
   "references": {}
 }</textarea></label>
               <button class="button" type="submit">执行门禁评测</button>

@@ -273,7 +273,11 @@ class ServiceTests(unittest.TestCase):
                 task_id = "failure-%s" % index
                 service.store.create(task_id, "org/repo", index, {})
                 service.store.record_failure_case(
-                    task_id, "judge_rejected", {"reason": "confirmed"}
+                    task_id, "judge_rejected", {
+                        "reason": "confirmed",
+                        "skill_name": "review-auth-security",
+                        "evolution_eligible": True,
+                    }
                 )
             service._schedule_skill_evolution()
             message = queue.messages[0][1]
@@ -282,7 +286,41 @@ class ServiceTests(unittest.TestCase):
             service.close()
 
         self.assertEqual("skill-evolution", message["kind"])
-        self.assertEqual(["review-evolved-patterns"], calls)
+        self.assertEqual("review-auth-security", message["skill_name"])
+        self.assertEqual(["review-auth-security"], calls)
+
+    def test_new_skill_batch_with_the_same_count_is_scheduled_after_resolution(self):
+        queue = CapturingQueue()
+        service = ReviewService(
+            self.settings, reviewer=FakeCoordinator(),
+            store=InMemoryTaskStore(), queue=queue,
+        )
+        try:
+            first_ids = []
+            for index in range(3):
+                task_id = "first-batch-%s" % index
+                service.store.create(task_id, "org/repo", index, {})
+                service.store.record_failure_case(task_id, "judge_rejected", {
+                    "skill_name": "review-auth-security",
+                    "evolution_eligible": True,
+                })
+                first_ids.append(
+                    service.store.list_task_failure_cases(task_id)[0]["id"]
+                )
+            self.assertTrue(service._schedule_skill_evolution())
+            service.store.resolve_failure_cases(first_ids)
+            for index in range(3):
+                task_id = "second-batch-%s" % index
+                service.store.create(task_id, "org/repo", index, {})
+                service.store.record_failure_case(task_id, "judge_rejected", {
+                    "skill_name": "review-auth-security",
+                    "evolution_eligible": True,
+                })
+            self.assertTrue(service._schedule_skill_evolution())
+        finally:
+            service.close()
+
+        self.assertEqual(2, len(queue.messages))
 
 
 if __name__ == "__main__":

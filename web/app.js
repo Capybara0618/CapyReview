@@ -179,11 +179,11 @@ async function loadEvolution() {
   try {
     const [status, runs, versions] = await Promise.all([
       api("/v1/evolution/status"), api("/v1/evolution/runs?limit=10"),
-      api("/v1/skills/review-evolved-patterns/versions"),
+      api("/v1/skills/review-auth-security/versions"),
     ]);
     $("#evolution-status").textContent = formatJson(status);
     const versionRows = (versions.versions || []).map((version) => `
-      <div class="history-row"><strong>Prompt V${escapeHtml(version.version)} ${version.active ? "· ACTIVE" : ""}</strong>
+      <div class="history-row"><strong>Skill V${escapeHtml(version.version)} ${version.active ? "· ACTIVE" : ""}</strong>
       ${version.active ? '<span>当前版本</span>' : `<button class="link" type="button" data-activate-version="${escapeHtml(version.version)}">回滚至此版本</button>`}</div>`).join("");
     const runRows = (runs.runs || []).map((run) => `
       <div class="history-row"><strong>V${escapeHtml(run.candidate_version || "-")} · ${escapeHtml(run.decision)}</strong>
@@ -199,10 +199,10 @@ async function loadEvolution() {
 
 async function activatePromptVersion(version) {
   try {
-    await api(`/v1/skills/review-evolved-patterns/versions/${encodeURIComponent(version)}/activate`, {
+    await api(`/v1/skills/review-auth-security/versions/${encodeURIComponent(version)}/activate`, {
       method: "POST", body: "{}",
     });
-    toast(`已激活 Prompt V${version}`, "success");
+    toast(`已激活 Skill V${version}`, "success");
     await loadEvolution();
   } catch (error) { toast(error.message, "error"); }
 }
@@ -343,7 +343,7 @@ $("#auto-evolve").addEventListener("click", async () => {
   output.textContent = "正在从确认反馈生成候选…";
   try {
     const data = await api("/v1/evolution/auto", {
-      method: "POST", body: JSON.stringify({ skill_name: "review-evolved-patterns" }),
+      method: "POST", body: JSON.stringify({ skill_name: "review-auth-security" }),
     });
     output.textContent = formatJson(data);
     await loadEvolution();
