@@ -189,6 +189,21 @@ class LeanAgentArchitectureTests(unittest.TestCase):
 
         self.assertFalse(report.grounded)
 
+    def test_evidence_validator_does_not_trust_rule_specific_signatures(self):
+        parsed = parse_unified_diff(RISK_DIFF)
+        line = parsed.added_lines[0]
+        finding = Finding(
+            "SEC-EVAL", Severity.HIGH, "Dynamic execution",
+            "The changed line executes input as code without a trust boundary.",
+            line.path, line.line, "eval(other_input)",
+            "Replace eval with a constrained parser.",
+            "Add a malicious-input regression test.", 0.9,
+        )
+
+        report = EvidenceValidator().validate(finding, parsed)
+
+        self.assertFalse(report.grounded)
+
     def test_review_funnel_reconciles_evidence_judge_and_deduplication(self):
         class MixedSpecialist:
             name = "mixed-security-specialist"

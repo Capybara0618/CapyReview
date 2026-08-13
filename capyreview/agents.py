@@ -283,23 +283,17 @@ class EvidenceValidator:
             (item.content for item in parsed.added_lines
              if item.path == finding.path and item.line == finding.line), ""
         )
-        normalized = line.replace(" ", "")
-        signatures = {
-            "SEC-EVAL": ("eval(" in line or "exec(" in line),
-            "SEC-SUBPROCESS-SHELL": "shell=True" in normalized,
-            "SEC-HARDCODED-SECRET": any(
-                token in line.lower() for token in ("password", "secret", "token", "api_key")
-            ),
-            "SEC-SQL-CONCAT": any(token in line for token in ("execute(", "query(")),
-            "REL-DEBUG-PRINT": "print(" in line or "console.log(" in line,
-            "REL-EMPTY-EXCEPT": "except" in line,
-        }
-        exact_evidence = bool(line and finding.evidence and finding.evidence.strip() in line.strip())
-        reproducible = signatures.get(finding.rule_id, exact_evidence)
+        normalized_line = "".join(line.split())
+        normalized_evidence = "".join(str(finding.evidence or "").split())
+        grounded = bool(
+            normalized_line
+            and normalized_evidence
+            and normalized_evidence in normalized_line
+        )
         return EvidenceReport(
-            finding_key(finding), reproducible,
-            "independent changed-line evidence check",
-            line.strip()[:240] if reproducible else "No independently matching changed-line evidence.",
+            finding_key(finding), grounded,
+            "path-line-quote match",
+            line.strip()[:240] if grounded else "No matching quote on the reported changed line.",
         )
 
 
