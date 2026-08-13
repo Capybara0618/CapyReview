@@ -1,6 +1,6 @@
 import unittest
 
-from capyreview.agents import MultiAgentCoordinator
+from capyreview.agents import MultiAgentCoordinator, finding_key
 from capyreview.context_manager import ContextManager
 from capyreview.diff_parser import parse_unified_diff
 from capyreview.memory import MemoryManager
@@ -254,6 +254,104 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             "org/repo", ("working",), 10
         )
         self.assertEqual([], working)
+
+    def test_coordinator_restores_completed_reviewer_result_without_calling_llm(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("reviewer-resume", "org/repo", 8, {})
+        finding = Finding(
+            "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+            "The changed line executes data as code.",
+            "app.py", 1, "eval(data)",
+            "Replace eval with an allow-listed parser.",
+            "Add an untrusted-input regression test.", 0.9,
+        )
+        self.store.save_checkpoint(
+            "reviewer-resume", "reviewer:A01",
+            {
+                "agent": "security-specialist",
+                "findings": [finding.to_dict()],
+                "attempts": 1,
+                "execution": {"steps": 1, "tool_calls": 0},
+                "substituted_for": "",
+            },
+        )
+
+        class MustNotRunSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def review(self, _diff, _parsed):
+                raise AssertionError("completed reviewer checkpoint was ignored")
+
+        coordinator = MultiAgentCoordinator(
+            [MustNotRunSpecialist()], store=self.store, judge=ApprovingJudge()
+        )
+        findings = coordinator.review_with_context(
+            "reviewer-resume", diff, parsed, repository="org/repo"
+        )
+        events = self.store.get("reviewer-resume")["collaboration"]
+
+        self.assertEqual([finding.to_dict()], [item.to_dict() for item in findings])
+        self.assertTrue(any(
+            item["kind"] == "checkpoint_restored"
+            and item["content"].get("node") == "reviewer:A01"
+            for item in events
+        ))
+
+    def test_coordinator_restores_matching_judge_decision_without_calling_llm(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("judge-resume", "org/repo", 9, {})
+        finding = Finding(
+            "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+            "The changed line executes data as code.",
+            "app.py", 1, "eval(data)",
+            "Replace eval with an allow-listed parser.",
+            "Add an untrusted-input regression test.", 0.9,
+        )
+        key = finding_key(finding)
+        self.store.save_checkpoint(
+            "judge-resume", "judge",
+            {
+                "candidate_keys": [key],
+                "decisions": {
+                    key: {
+                        "finding_key": key, "approved": True,
+                        "reasons": [], "confidence": 0.95,
+                    },
+                },
+                "judge_context": {"restored": True},
+            },
+        )
+
+        class SecuritySpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def review(self, _diff, _parsed):
+                return [finding]
+
+        class MustNotRunJudge:
+            name = "llm-review-judge"
+
+            def judge(self, _diff, _parsed, _findings, _evidence):
+                raise AssertionError("matching judge checkpoint was ignored")
+
+        coordinator = MultiAgentCoordinator(
+            [SecuritySpecialist()], store=self.store, judge=MustNotRunJudge()
+        )
+        findings = coordinator.review_with_context(
+            "judge-resume", diff, parsed, repository="org/repo"
+        )
+        events = self.store.get("judge-resume")["collaboration"]
+
+        self.assertEqual([finding.to_dict()], [item.to_dict() for item in findings])
+        self.assertTrue(any(
+            item["kind"] == "checkpoint_restored"
+            and item["content"].get("node") == "judge"
+            for item in events
+        ))
 
     def test_memory_recall_purges_expired_records(self):
         self.store.save_agent_memory({

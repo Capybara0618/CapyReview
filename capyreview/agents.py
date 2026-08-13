@@ -132,6 +132,7 @@ class CollaborationState(TypedDict, total=False):
     decisions: Dict[str, VerificationDecision]
     verified: List[Finding]
     agent_outcomes: List[dict]
+    checkpoints: Dict[str, Dict[str, Any]]
 
 
 def finding_key(finding: Finding) -> str:
@@ -336,6 +337,7 @@ class MultiAgentCoordinator(Reviewer):
         self._summaries: Dict[str, dict] = {}
         self._last_summary: Dict[str, Any] = {}
         self._summary_lock = threading.Lock()
+        self._checkpoint_lock = threading.Lock()
 
     def review(self, diff: str, parsed: ParsedDiff) -> List[Finding]:
         return self.review_with_context("", diff, parsed)
@@ -344,10 +346,14 @@ class MultiAgentCoordinator(Reviewer):
         self, task_id: str, diff: str, parsed: ParsedDiff,
         repository: str = "",
     ) -> List[Finding]:
+        checkpoints = {}
+        if self.store is not None and task_id:
+            checkpoints = self.store.load_checkpoints(task_id)
         state: CollaborationState = {
             "task_id": task_id, "diff": diff, "parsed": parsed,
             "repository": repository,
             "bus": CollaborationBus(task_id, self.store),
+            "checkpoints": checkpoints,
         }
         result = self.runtime.execute(
             state,
@@ -380,6 +386,50 @@ class MultiAgentCoordinator(Reviewer):
         kind: str, content: Dict[str, Any], correlation_id: str = "",
     ) -> None:
         self._bus(state).send(sender, recipient, kind, content, correlation_id)
+
+    def _completed_checkpoint(
+        self, state: CollaborationState, node: str,
+    ) -> Optional[Dict[str, Any]]:
+        checkpoint = (state.get("checkpoints") or {}).get(node)
+        if not checkpoint or checkpoint.get("status") != "completed":
+            return None
+        value = checkpoint.get("state")
+        return dict(value) if isinstance(value, dict) else None
+
+    def _save_completed_checkpoint(
+        self, state: CollaborationState, node: str,
+        value: Dict[str, Any], attempt: int = 1,
+    ) -> None:
+        task_id = state.get("task_id", "")
+        if self.store is None or not task_id:
+            return
+        self.store.save_checkpoint(
+            task_id, node, value, status="completed", attempt=attempt,
+        )
+        with self._checkpoint_lock:
+            state.setdefault("checkpoints", {})[node] = {
+                "status": "completed", "attempt": attempt,
+                "state": dict(value), "error": None,
+            }
+        self._emit(
+            state, "agent-runtime", "coordinator", "checkpoint_saved",
+            {"node": node, "status": "completed"}, node,
+        )
+
+    @staticmethod
+    def _finding_from_dict(value: Dict[str, Any]) -> Finding:
+        data = dict(value)
+        data["severity"] = Severity(data["severity"])
+        return Finding(**data)
+
+    @staticmethod
+    def _decision_from_dict(value: Dict[str, Any]) -> VerificationDecision:
+        return VerificationDecision(
+            finding_key=str(value["finding_key"]),
+            approved=bool(value.get("approved", False)),
+            reasons=[str(item)[:500] for item in value.get("reasons", [])],
+            confidence=max(0.0, min(1.0, float(value.get("confidence", 0.0)))),
+        )
 
     def _plan_node(self, state: CollaborationState) -> Dict[str, Any]:
         plan = self.router.route(state["parsed"], self.agents)
@@ -631,6 +681,42 @@ class MultiAgentCoordinator(Reviewer):
         self, state: CollaborationState, assignment: ReviewAssignment,
         agent: Reviewer,
     ) -> dict:
+        checkpoint_node = "reviewer:%s" % assignment.assignment_id
+        checkpoint = self._completed_checkpoint(state, checkpoint_node)
+        known_agents = {item.name for item in self.agents}
+        if checkpoint and checkpoint.get("agent") in known_agents:
+            restored_findings = [
+                self._finding_from_dict(item)
+                for item in checkpoint.get("findings", [])
+            ]
+            restored_agent = str(checkpoint["agent"])
+            restored_assignment = assignment
+            if restored_agent != assignment.agent:
+                restored_assignment = ReviewAssignment(
+                    agent=restored_agent,
+                    objective=assignment.objective,
+                    files=list(assignment.files),
+                    risk_domains=list(assignment.risk_domains),
+                    assignment_id=assignment.assignment_id,
+                    round=max(assignment.round, 2),
+                    reason="restored-handoff",
+                )
+            self._emit(
+                state, "agent-runtime", "coordinator", "checkpoint_restored",
+                {"node": checkpoint_node, "agent": restored_agent},
+                assignment.assignment_id,
+            )
+            return {
+                "agent": restored_agent,
+                "assignment_id": assignment.assignment_id,
+                "attempts": int(checkpoint.get("attempts", 1)),
+                "status": "completed", "findings": restored_findings,
+                "error": "",
+                "substituted_for": str(checkpoint.get("substituted_for", "")),
+                "assignment": restored_assignment,
+                "execution": dict(checkpoint.get("execution") or {}),
+                "restored": True,
+            }
         findings, attempts, error, execution = self._invoke_agent(
             state, agent, assignment
         )
@@ -641,6 +727,17 @@ class MultiAgentCoordinator(Reviewer):
             "assignment": assignment, "execution": execution,
         }
         if not error:
+            self._save_completed_checkpoint(
+                state, checkpoint_node,
+                {
+                    "agent": result["agent"],
+                    "findings": [item.to_dict() for item in findings],
+                    "attempts": attempts,
+                    "execution": execution,
+                    "substituted_for": "",
+                },
+                attempt=attempts,
+            )
             return result
         replacement = self.router.replan(
             assignment, self._replacement_candidates(agent), error
@@ -661,7 +758,7 @@ class MultiAgentCoordinator(Reviewer):
         findings, replacement_attempts, replacement_error, replacement_execution = self._invoke_agent(
             state, substitute, replacement, ["Take over after %s failed: %s" % (agent.name, error)]
         )
-        return {
+        result = {
             "agent": substitute.name, "assignment_id": assignment.assignment_id,
             "attempts": attempts + replacement_attempts,
             "status": "completed" if not replacement_error else "failed",
@@ -669,6 +766,19 @@ class MultiAgentCoordinator(Reviewer):
             "substituted_for": agent.name,
             "assignment": replacement, "execution": replacement_execution,
         }
+        if not replacement_error:
+            self._save_completed_checkpoint(
+                state, checkpoint_node,
+                {
+                    "agent": result["agent"],
+                    "findings": [item.to_dict() for item in findings],
+                    "attempts": result["attempts"],
+                    "execution": replacement_execution,
+                    "substituted_for": agent.name,
+                },
+                attempt=result["attempts"],
+            )
+        return result
 
     def _specialist_node(self, state: CollaborationState) -> Dict[str, Any]:
         outcomes = []
@@ -717,6 +827,36 @@ class MultiAgentCoordinator(Reviewer):
 
     def _judge_node(self, state: CollaborationState) -> Dict[str, Any]:
         candidates = state["specialist_findings"]
+        candidate_keys = sorted(finding_key(item) for item in candidates)
+        checkpoint = self._completed_checkpoint(state, "judge")
+        if checkpoint and checkpoint.get("candidate_keys") == candidate_keys:
+            stored = checkpoint.get("decisions") or {}
+            if sorted(stored) == candidate_keys:
+                decisions = {}
+                for finding in candidates:
+                    key = finding_key(finding)
+                    decision = self._decision_from_dict(stored[key])
+                    evidence = state["reproductions"][key]
+                    decision.approved = decision.approved and evidence.grounded
+                    if not evidence.grounded and not any(
+                        "evidence" in reason.lower() for reason in decision.reasons
+                    ):
+                        decision.reasons.append(
+                            "evidence is not grounded on the reported changed line"
+                        )
+                    decisions[key] = decision
+                    self._emit(
+                        state, self.judge.name, "review-report", "judge_decision",
+                        asdict(decision), key,
+                    )
+                self._emit(
+                    state, "agent-runtime", "coordinator", "checkpoint_restored",
+                    {"node": "judge", "candidates": len(candidate_keys)}, "judge",
+                )
+                return {
+                    "decisions": decisions,
+                    "judge_context": dict(checkpoint.get("judge_context") or {}),
+                }
         plan = state.get("plan")
         risk_domains = sorted({
             domain
@@ -773,10 +913,21 @@ class MultiAgentCoordinator(Reviewer):
                 state, self.judge.name, "review-report", "judge_decision",
                 asdict(decision), key,
             )
-        return {
+        result = {
             "decisions": decisions,
             "judge_context": judge_bundle.metadata(),
         }
+        self._save_completed_checkpoint(
+            state, "judge",
+            {
+                "candidate_keys": candidate_keys,
+                "decisions": {
+                    key: asdict(decision) for key, decision in decisions.items()
+                },
+                "judge_context": result["judge_context"],
+            },
+        )
+        return result
 
     def _arbitrate_node(self, state: CollaborationState) -> Dict[str, Any]:
         merged: Dict[tuple, Finding] = {}
