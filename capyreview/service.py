@@ -57,6 +57,7 @@ class ReviewService:
         self.github = GitHubClient(settings.github_token)
         self._injected_reviewer = reviewer
         self._policy_version: Optional[int] = None
+        self._harness_cache: Dict[tuple, ReviewHarness] = {}
         self.reviewer = reviewer
         self.harness = self._new_harness(reviewer) if reviewer is not None else None
         self.evolution = EvolutionEngine(
@@ -91,12 +92,13 @@ class ReviewService:
 
     def _build_llm_reviewer(
         self, prompt: str, name: str, domains: tuple,
+        model: str = "",
     ) -> OpenAICompatibleReviewer:
         config = self._llm_config()
         reviewer = OpenAICompatibleReviewer(
             str(config["base_url"]),
             str(config["api_key"]),
-            str(config["model"]),
+            model or str(config["model"]),
             self.settings.timeout_seconds,
             system_prompt=prompt,
             provider="deepseek",
@@ -112,33 +114,49 @@ class ReviewService:
             ("security", "correctness", "reliability", "regression"),
         )
 
-    def _build_llm_judge(self) -> OpenAICompatibleJudge:
+    def _build_llm_judge(self, model: str = "") -> OpenAICompatibleJudge:
         config = self._llm_config()
         return OpenAICompatibleJudge(
             str(config["base_url"]),
             str(config["api_key"]),
-            str(config["model"]),
+            model or str(config["model"]),
             self.settings.timeout_seconds,
             provider="deepseek",
         )
 
-    def _active_policy(self) -> tuple:
-        active = self.store.get_active_skill_version("llm-review")
-        if not active:
-            return None, None
-        policy = ReviewPolicy({
+    @staticmethod
+    def _policy_from_record(record: dict) -> ReviewPolicy:
+        return ReviewPolicy({
             "name": "evolved-review",
             "description": "Replay-gated instructions learned from review feedback",
             "instructions": [{
                 "rule_id": "POLICY-REVIEW",
                 "severity": "medium",
                 "domains": ["security", "correctness", "reliability", "regression"],
-                "instruction": str(active["prompt"]),
+                "instruction": str(record["prompt"]),
             }],
-        }, int(active["version"]))
-        return int(active["version"]), policy
+        }, int(record["version"]))
 
-    def _build_coordinator(self, policy: Optional[ReviewPolicy] = None) -> MultiAgentCoordinator:
+    def _active_policy(self) -> tuple:
+        active = self.store.get_active_skill_version("llm-review")
+        if not active:
+            return None, None
+        return int(active["version"]), self._policy_from_record(active)
+
+    def _policy_for_version(self, version: Optional[int]) -> Optional[ReviewPolicy]:
+        if version is None:
+            return None
+        record = next((
+            item for item in self.store.list_skill_versions("llm-review")
+            if int(item["version"]) == int(version)
+        ), None)
+        if record is None:
+            raise ValueError("frozen review policy version is unavailable: %s" % version)
+        return self._policy_from_record(record)
+
+    def _build_coordinator(
+        self, policy: Optional[ReviewPolicy] = None, model: str = "",
+    ) -> MultiAgentCoordinator:
         security_prompt = (
             policy.compose_system_prompt(SECURITY_REVIEW_PROMPT, ("security",))
             if policy else SECURITY_REVIEW_PROMPT
@@ -155,11 +173,13 @@ class ReviewService:
                 security_prompt,
                 "llm-security-specialist",
                 ("security",),
+                model,
             ),
             self._build_llm_reviewer(
                 correctness_prompt,
                 "llm-correctness-specialist",
                 ("correctness", "reliability", "regression"),
+                model,
             ),
         ]
         return MultiAgentCoordinator(
@@ -171,7 +191,7 @@ class ReviewService:
             memory_manager=self.memory,
             agent_loop_max_steps=self.settings.agent_loop_max_steps,
             agent_loop_timeout_seconds=self.settings.agent_loop_timeout_seconds,
-            judge=self._build_llm_judge(),
+            judge=self._build_llm_judge(model),
             repository_reader=self.github.read_file_context,
         )
 
@@ -179,11 +199,38 @@ class ReviewService:
         if self._injected_reviewer is not None:
             return self.harness
         version, policy = self._active_policy()
-        if self.harness is None or version != self._policy_version:
-            self.reviewer = self._build_coordinator(policy)
-            self.harness = self._new_harness(self.reviewer)
-            self._policy_version = version
+        model = self.settings.deepseek_model
+        key = (model, version)
+        if key not in self._harness_cache:
+            reviewer = self._build_coordinator(policy, model)
+            self._harness_cache[key] = self._new_harness(reviewer)
+        self.harness = self._harness_cache[key]
+        self.reviewer = self.harness.reviewer
+        self._policy_version = version
         return self.harness
+
+    def _harness_for_task(self, task: Dict[str, Any]) -> ReviewHarness:
+        if self._injected_reviewer is not None:
+            return self.harness
+        task_input = task.get("input") or {}
+        if "model" not in task_input and "policy_version" not in task_input:
+            return self._ensure_harness()
+        model = str(task_input.get("model") or self.settings.deepseek_model)
+        version = task_input.get("policy_version")
+        version = int(version) if version is not None else None
+        key = (model, version)
+        if key not in self._harness_cache:
+            reviewer = self._build_coordinator(
+                self._policy_for_version(version), model
+            )
+            self._harness_cache[key] = self._new_harness(reviewer)
+        return self._harness_cache[key]
+
+    def _execution_snapshot(self) -> Dict[str, Any]:
+        return {
+            "model": self.settings.deepseek_model,
+            "policy_version": self._policy_version,
+        }
 
     def _validate_review(self, repository: str, diff: str) -> None:
         if not repository or len(repository) > 250:
@@ -208,6 +255,7 @@ class ReviewService:
             {
                 "source": source,
                 "diff_bytes": len(encoded),
+                **self._execution_snapshot(),
             },
         )
         self.store.save_task_payload(task_id, diff)
@@ -222,7 +270,10 @@ class ReviewService:
             task_id,
             repository,
             pull_request,
-            {"source": source, "diff_pending": True, **task_input},
+            {
+                "source": source, "diff_pending": True,
+                **self._execution_snapshot(), **task_input,
+            },
         )
         return task_id
 
@@ -273,7 +324,7 @@ class ReviewService:
         if diff is None:
             raise PermanentTaskError("task payload no longer exists")
 
-        report = self._ensure_harness().run(
+        report = self._harness_for_task(task).run(
             task_id,
             payload["repository"],
             payload.get("pull_request"),

@@ -106,6 +106,48 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(all("evolved-review@1" in prompt for prompt in prompts))
         self.assertTrue(all("POLICY-REVIEW" in prompt for prompt in prompts))
 
+    def test_queued_task_keeps_the_model_and_policy_version_from_creation(self):
+        settings = Settings(
+            deepseek_api_key="test-key",
+            deepseek_model="deepseek-chat-test",
+        )
+        queue = CapturingQueue()
+        service = ReviewService(
+            settings, store=InMemoryTaskStore(), queue=queue
+        )
+        calls = []
+
+        class PolicyCoordinator(FakeCoordinator):
+            def __init__(self, version, model):
+                self.version = version
+                self.model = model
+                self.name = "policy-%s:%s" % (version, model)
+
+            def review_with_context(self, *args, **kwargs):
+                calls.append((self.version, self.model))
+                return super().review_with_context(*args, **kwargs)
+
+        service._build_coordinator = lambda policy=None, model="": PolicyCoordinator(
+            getattr(policy, "version", None), model
+        )
+        try:
+            version_one = service.store.save_skill_version(
+                "llm-review", "first policy", 0.8, activate=True
+            )
+            pending = service.enqueue_review("org/repo", DIFF, 1)
+            service.store.save_skill_version(
+                "llm-review", "second policy", 0.9, activate=True
+            )
+            message = queue.messages[0][1]
+            service._process_queued(message)
+            task = service.store.get(pending["task_id"])
+        finally:
+            service.close()
+
+        self.assertEqual(version_one["version"], task["input"]["policy_version"])
+        self.assertEqual("deepseek-chat-test", task["input"]["model"])
+        self.assertEqual([(version_one["version"], "deepseek-chat-test")], calls)
+
     def test_rejects_large_diff_before_creating_a_task(self):
         service = self.service(reviewer=FakeCoordinator())
         try:
