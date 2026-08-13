@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import base64
 import unittest
 from unittest.mock import patch
 
@@ -37,6 +38,34 @@ class GitHubSignatureTests(unittest.TestCase):
             ("PATCH", "https://api.github.test/comments/1", {"body": "<!-- marker -->\nnew"}),
             request.call_args_list[1].args,
         )
+
+    def test_read_file_context_is_pinned_to_commit_and_bounded_to_line_window(self):
+        client = GitHubClient("token")
+        source = "first\nsecond\nthird\nfourth\nfifth\n"
+        with patch.object(client, "_json") as request:
+            request.return_value = {
+                "type": "file",
+                "encoding": "base64",
+                "content": base64.b64encode(source.encode("utf-8")).decode("ascii"),
+            }
+            context = client.read_file_context(
+                "org/repo", "src/app.py", "abc123", line=3, radius=1
+            )
+
+        self.assertEqual(
+            ("GET", "https://api.github.com/repos/org/repo/contents/src/app.py?ref=abc123"),
+            request.call_args.args,
+        )
+        self.assertEqual(2, context["start_line"])
+        self.assertEqual(4, context["end_line"])
+        self.assertEqual("second\nthird\nfourth", context["content"])
+
+    def test_read_file_context_rejects_unpinned_or_unsafe_paths(self):
+        client = GitHubClient("token")
+        for path, ref in (("../secret", "abc123"), ("/etc/passwd", "abc123"), ("app.py", "")):
+            with self.subTest(path=path, ref=ref):
+                with self.assertRaises(ValueError):
+                    client.read_file_context("org/repo", path, ref, line=1)
 
 
 if __name__ == "__main__":
