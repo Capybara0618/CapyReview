@@ -9,6 +9,7 @@ from .evolution import EvolutionEngine
 from .github import GitHubClient
 from .harness import ReviewHarness
 from .memory import MemoryManager
+from .mcp import GitHubMcpClient, GitHubMcpToolProvider
 from .models import TaskState, TraceEvent
 from .postgres_store import create_store
 from .report import to_markdown
@@ -55,6 +56,9 @@ class ReviewService:
             settings.memory_working_ttl_seconds,
         )
         self.github = GitHubClient(settings.github_token)
+        self.mcp_tools = GitHubMcpToolProvider(
+            GitHubMcpClient(settings.github_token)
+        )
         self._injected_reviewer = reviewer
         self._policy_version: Optional[int] = None
         self._harness_cache: Dict[tuple, ReviewHarness] = {}
@@ -84,7 +88,7 @@ class ReviewService:
             self.store,
             reviewer,
             self.settings.max_steps,
-            self.settings.timeout_seconds,
+            self.settings.timeout_seconds * 3,
         )
 
     def _llm_config(self) -> Dict[str, object]:
@@ -190,9 +194,10 @@ class ReviewService:
             context_manager=self.context_manager,
             memory_manager=self.memory,
             agent_loop_max_steps=self.settings.agent_loop_max_steps,
-            agent_loop_timeout_seconds=self.settings.agent_loop_timeout_seconds,
+            agent_loop_timeout_seconds=self.settings.timeout_seconds * 2,
+            runtime_timeout_seconds=self.settings.timeout_seconds * 3,
             judge=self._build_llm_judge(model),
-            repository_reader=self.github.read_file_context,
+            tool_provider=self.mcp_tools,
         )
 
     def _ensure_harness(self) -> ReviewHarness:

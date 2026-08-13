@@ -1,6 +1,5 @@
 """Token-aware deterministic context construction for PR review agents."""
 from dataclasses import asdict, dataclass, field
-import hashlib
 import json
 import re
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -22,7 +21,6 @@ class ContextBundle:
     omitted_files: List[str] = field(default_factory=list)
     omitted_hunks: int = 0
     strategy: str = "full-diff"
-    source_sha256: str = ""
 
     def metadata(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -81,12 +79,11 @@ class ContextManager:
         memories: Sequence[Dict[str, Any]] = (),
     ) -> ContextBundle:
         original_tokens = self.estimate_tokens(diff)
-        digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
         available_tokens = self.max_tokens - self.reserved_tokens
         if original_tokens <= available_tokens:
             return ContextBundle(
                 diff, False, original_tokens, original_tokens,
-                strategy="full-diff", source_sha256=digest,
+                strategy="full-diff",
             )
 
         assignment = assignment or {}
@@ -141,7 +138,7 @@ class ContextManager:
         return ContextBundle(
             compressed, True, original_tokens, final_tokens,
             omitted_files=omitted_files, omitted_hunks=omitted_hunks,
-            strategy="risk-ranked-hunk-compression", source_sha256=digest,
+            strategy="risk-ranked-hunk-compression",
         )
 
     def compose(

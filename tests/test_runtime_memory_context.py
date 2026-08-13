@@ -4,11 +4,23 @@ from capyreview.agents import MultiAgentCoordinator, finding_key
 from capyreview.context_manager import ContextManager
 from capyreview.diff_parser import parse_unified_diff
 from capyreview.memory import MemoryManager
+from capyreview.mcp import GitHubMcpToolProvider
 from capyreview.models import Finding, Severity
 from capyreview.reviewer import OpenAICompatibleReviewer
 from capyreview.runtime import AgentLoop, AgentRuntime, AgentTool, RuntimeNode, ToolRegistry
 from capyreview.store import utc_now
 from tests.fakes import InMemoryTaskStore
+
+
+class FakeGitHubMcpClient:
+    def __init__(self):
+        self.calls = []
+
+    def call_tool(self, name, arguments):
+        self.calls.append((name, dict(arguments)))
+        if name == "get_file_contents":
+            return {"content": "old\neval(data)\nresult = helper(data)\n"}
+        return {}
 
 
 class ApprovingJudge:
@@ -165,14 +177,17 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             "content": "memory-%02d %s" % (i, "y" * 200),
         } for i in range(12)]
         observations = [{
-            "step": i, "tool": "search_diff", "ok": True,
+            "step": i, "tool": "search_repository", "ok": True,
             "result": "observation-%02d %s" % (i, "z" * 200),
         } for i in range(12)]
 
         managed = manager.compose(
             bundle, {"agent": "security", "objective": "review risky additions"},
             feedback=feedback, memories=memories, observations=observations,
-            tools=[{"name": "search_diff", "description": "Search diff", "parameters": {}}],
+            tools=[{
+                "name": "search_repository", "description": "Search repository",
+                "parameters": {},
+            }],
         )
 
         self.assertLessEqual(managed.estimated_tokens, 512)
@@ -266,7 +281,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             def agent_step(self, state):
                 if not state.get("observations"):
                     return {
-                        "action": "tool", "tool": "changed_line",
+                        "action": "tool", "tool": "read_code_context",
                         "arguments": {"path": "app.py", "line": 1},
                     }
                 line = state["parsed"].added_lines[0]
@@ -282,9 +297,10 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             [LoopSpecialist()], store=self.store, memory_manager=memory,
             context_manager=ContextManager(max_tokens=1024, reserved_tokens=128),
             judge=ApprovingJudge(),
+            tool_provider=GitHubMcpToolProvider(FakeGitHubMcpClient()),
         )
         findings = coordinator.review_with_context(
-            "loop-task", diff, parsed, repository="org/repo"
+            "loop-task", diff, parsed, repository="org/repo", head_commit="abc123"
         )
         summary = coordinator.collaboration_summary("loop-task")
         kinds = {item["kind"] for item in self.store.get("loop-task")["collaboration"]}
@@ -309,14 +325,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
     def test_agent_loop_exposes_commit_pinned_repository_context_tool(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -3 +3 @@\n-old\n+result = helper(data)\n"
         parsed = parse_unified_diff(diff)
-        reads = []
-
-        def read_context(repository, path, ref, line, radius=20):
-            reads.append((repository, path, ref, line, radius))
-            return {
-                "path": path, "ref": ref, "start_line": 2, "end_line": 4,
-                "content": "def helper(value):\n    return eval(value)\n",
-            }
+        client = FakeGitHubMcpClient()
 
         class RepositoryAwareSpecialist:
             name = "correctness-specialist"
@@ -326,8 +335,8 @@ class RuntimeMemoryContextTests(unittest.TestCase):
                 if not state.get("observations"):
                     self.assert_tool(state)
                     return {
-                        "action": "tool", "tool": "read_file_context",
-                        "arguments": {"path": "app.py", "line": 3, "radius": 1},
+                        "action": "tool", "tool": "read_code_context",
+                        "arguments": {"path": "app.py", "line": 3},
                     }
                 line = state["parsed"].added_lines[0]
                 return {"action": "final", "findings": [Finding(
@@ -341,19 +350,60 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             @staticmethod
             def assert_tool(state):
                 names = {item["name"] for item in state["available_tools"]}
-                if "read_file_context" not in names:
+                if "read_code_context" not in names:
                     raise AssertionError("repository context tool is unavailable")
 
         coordinator = MultiAgentCoordinator(
             [RepositoryAwareSpecialist()], judge=ApprovingJudge(),
-            repository_reader=read_context,
+            tool_provider=GitHubMcpToolProvider(client),
         )
+        findings = coordinator.review_with_context(
+            "", diff, parsed, repository="org/repo", head_commit="abc123",
+            pull_request=7,
+        )
+
+        self.assertEqual({"COR-HELPER"}, {item.rule_id for item in findings})
+        self.assertEqual([(
+            "get_file_contents",
+            {"owner": "org", "repo": "repo", "path": "app.py", "sha": "abc123"},
+        )], client.calls)
+
+    def test_coordinator_reserves_the_last_loop_step_for_final_output(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        client = FakeGitHubMcpClient()
+
+        class EvidenceHungrySpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if state.get("available_tools"):
+                    return {
+                        "action": "tool", "tool": "read_code_context",
+                        "arguments": {"path": "app.py", "line": 1},
+                    }
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+                    "The changed line executes data as code.",
+                    line.path, line.line, line.content,
+                    "Replace eval with a parser.", "Add an input test.", 0.9,
+                )]}
+
+        coordinator = MultiAgentCoordinator(
+            [EvidenceHungrySpecialist()], judge=ApprovingJudge(),
+            agent_loop_max_steps=3,
+            tool_provider=GitHubMcpToolProvider(client),
+        )
+
         findings = coordinator.review_with_context(
             "", diff, parsed, repository="org/repo", head_commit="abc123"
         )
 
-        self.assertEqual({"COR-HELPER"}, {item.rule_id for item in findings})
-        self.assertEqual([("org/repo", "app.py", "abc123", 3, 1)], reads)
+        self.assertEqual({"SEC-EVAL"}, {item.rule_id for item in findings})
+        self.assertEqual(2, len(client.calls))
+        self.assertEqual(2, coordinator.collaboration_summary("")["tool_calls"])
 
     def test_coordinator_restores_completed_reviewer_result_without_calling_llm(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
@@ -411,18 +461,21 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             def agent_step(self, state):
                 if not state.get("observations"):
                     return {
-                        "action": "tool", "tool": "changed_line",
+                        "action": "tool", "tool": "read_code_context",
                         "arguments": {"path": "app.py", "line": 1},
                     }
                 raise RuntimeError("provider interrupted after observation")
 
+        mcp_client = FakeGitHubMcpClient()
         first = MultiAgentCoordinator(
             [InterruptedSpecialist()], store=self.store,
             agent_retries=0, judge=ApprovingJudge(),
+            tool_provider=GitHubMcpToolProvider(mcp_client),
         )
         with self.assertRaisesRegex(RuntimeError, "provider interrupted"):
             first.review_with_context(
-                "loop-resume", diff, parsed, repository="org/repo"
+                "loop-resume", diff, parsed, repository="org/repo",
+                head_commit="abc123",
             )
 
         loop_checkpoint = self.store.load_checkpoints("loop-resume")["loop:A01"]
@@ -448,9 +501,11 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         second = MultiAgentCoordinator(
             [ResumedSpecialist()], store=self.store,
             agent_retries=0, judge=ApprovingJudge(),
+            tool_provider=GitHubMcpToolProvider(mcp_client),
         )
         findings = second.review_with_context(
-            "loop-resume", diff, parsed, repository="org/repo"
+            "loop-resume", diff, parsed, repository="org/repo",
+            head_commit="abc123",
         )
         recovery = second.collaboration_summary("loop-resume")["recovery"]
         checkpoints = self.store.load_checkpoints("loop-resume")
@@ -465,6 +520,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertGreaterEqual(recovery["checkpoints_saved"], 2)
         self.assertEqual(1, recovery["checkpoints_restored"])
         self.assertEqual(1, recovery["checkpoints_cleared"])
+        self.assertEqual(1, len(mcp_client.calls))
 
     def test_coordinator_restores_matching_judge_decision_without_calling_llm(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
@@ -544,7 +600,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
                 super().__init__("https://example.invalid", "key", "model")
                 self.responses = [
                     {
-                        "action": "tool", "tool": "changed_line",
+                        "action": "tool", "tool": "read_code_context",
                         "arguments": {"path": "app.py", "line": 1},
                     },
                     {"action": "final", "findings": [{
@@ -580,9 +636,12 @@ class RuntimeMemoryContextTests(unittest.TestCase):
                 return value
 
         coordinator = MultiAgentCoordinator(
-            [CannedReviewer()], judge=UsageJudge()
+            [CannedReviewer()], judge=UsageJudge(),
+            tool_provider=GitHubMcpToolProvider(FakeGitHubMcpClient()),
         )
-        findings = coordinator.review(diff, parsed)
+        findings = coordinator.review_with_context(
+            "", diff, parsed, repository="org/repo", head_commit="abc123"
+        )
         usage = coordinator.collaboration_summary("")["usage"]
 
         self.assertEqual({"SEC-EVAL"}, {item.rule_id for item in findings})

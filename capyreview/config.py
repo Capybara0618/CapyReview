@@ -80,7 +80,6 @@ class Settings:
     agent_max_workers: int = 2
     agent_retries: int = 1
     agent_loop_max_steps: int = 4
-    agent_loop_timeout_seconds: int = 45
     context_max_tokens: int = 12000
     context_reserved_tokens: int = 2500
     memory_enabled: bool = True
@@ -163,7 +162,6 @@ class Settings:
             agent_max_workers=_int("CAPYREVIEW_AGENT_MAX_WORKERS", 2),
             agent_retries=_non_negative_int("CAPYREVIEW_AGENT_RETRIES", 1),
             agent_loop_max_steps=_int("CAPYREVIEW_AGENT_LOOP_MAX_STEPS", 4),
-            agent_loop_timeout_seconds=_int("CAPYREVIEW_AGENT_LOOP_TIMEOUT_SECONDS", 45),
             context_max_tokens=_int("CAPYREVIEW_CONTEXT_MAX_TOKENS", 12000),
             context_reserved_tokens=_non_negative_int(
                 "CAPYREVIEW_CONTEXT_RESERVED_TOKENS", 2500

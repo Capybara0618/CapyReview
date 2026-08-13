@@ -67,7 +67,7 @@ updated_at
 细粒度恢复稳定后，按顺序继续：
 
 1. 删除 Evidence Validator 对固定 `rule_id` 的硬编码，只保留通用证据来源校验；
-2. 增加固定到 PR Head Commit 的只读 `read_file_context` 工具；
+2. 增加固定到 PR Head Commit 的只读 `read_code_context` GitHub MCP 工具；
 3. 必要时再增加受限 `search_repository`，不提供 Shell；
 4. 记录每个任务的 LLM 调用次数、Token、延迟、重试、工具调用和恢复次数；
 5. 重新运行工程故障注入与正式单系统评测。
@@ -114,7 +114,8 @@ capyreview/runtime.py          通用 AgentRuntime 与 AgentLoop
 capyreview/harness.py          PR 审查外层三阶段生命周期
 capyreview/agents.py           Router、Reviewer 协作、Validator、Judge
 capyreview/postgres_store.py   PostgreSQL Checkpoint 与任务状态
-capyreview/github.py           GitHub Diff、评论和后续只读仓库内容访问
+capyreview/github.py           GitHub Diff 与评论固定工作流
+capyreview/mcp.py              GitHub MCP 只读取证工具与可信任务参数绑定
 tests/                         单元与基础设施集成测试
 docs/                          架构、评测和面试说明
 tasks/                         当前实施计划与任务清单

@@ -1,11 +1,8 @@
 import hashlib
 import hmac
 import json
-import base64
-import re
 import urllib.error
 import urllib.request
-import urllib.parse
 import random
 import time
 from typing import Dict
@@ -46,54 +43,6 @@ class GitHubClient:
                 self._json("PATCH", comment["url"], {"body": body})
                 return
         self._json("POST", comments_url, {"body": body})
-
-    def read_file_context(
-        self, repository: str, path: str, ref: str,
-        line: int, radius: int = 20,
-    ) -> dict:
-        """Read a small source window from one explicit Git commit or ref."""
-        repository = str(repository).strip()
-        path = str(path).strip()
-        ref = str(ref).strip()
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-            raise ValueError("repository must be owner/name")
-        components = path.split("/")
-        if (
-            not path or path.startswith("/") or "\\" in path
-            or any(item in {"", ".", ".."} for item in components)
-        ):
-            raise ValueError("path must be a repository-relative file path")
-        if not ref:
-            raise ValueError("read_file_context requires an explicit commit or ref")
-        line = int(line)
-        radius = int(radius)
-        if line < 1:
-            raise ValueError("line must be at least 1")
-        if radius < 0 or radius > 50:
-            raise ValueError("radius must be between 0 and 50")
-        url = "https://api.github.com/repos/%s/contents/%s?%s" % (
-            repository,
-            urllib.parse.quote(path, safe="/"),
-            urllib.parse.urlencode({"ref": ref}),
-        )
-        value = self._json("GET", url)
-        if value.get("type") != "file" or value.get("encoding") != "base64":
-            raise ValueError("GitHub path is not a base64 encoded file")
-        try:
-            raw = base64.b64decode(str(value.get("content", "")), validate=False)
-        except (ValueError, TypeError) as exc:
-            raise ValueError("GitHub returned invalid file content") from exc
-        if len(raw) > 2 * 1024 * 1024:
-            raise ValueError("repository file exceeds the 2 MiB context limit")
-        lines = raw.decode("utf-8", errors="replace").splitlines()
-        start = max(1, line - radius)
-        end = min(len(lines), line + radius)
-        content = "\n".join(lines[start - 1:end])[:12000]
-        return {
-            "path": path, "ref": ref,
-            "start_line": start, "end_line": end,
-            "content": content,
-        }
 
     def _json(self, method: str, url: str, payload=None):
         return self._request(method, url, payload)

@@ -15,6 +15,8 @@ PR Diff / GitHub Webhook
        ├─ routine ───────► Correctness Reviewer
        └─ high risk ─────► Security Reviewer + Correctness Reviewer
                                   │
+                                  ├─ read-only GitHub MCP evidence
+                                  │
                                   ▼
                   Evidence Validator ─► Independent LLM Judge
                                   │
@@ -28,8 +30,9 @@ PR Diff / GitHub Webhook
   覆盖 Agent Loop Observation、Reviewer Final 与 Judge Decision 三个细粒度边界。
 - 风险路由：普通变更只调用 Correctness Reviewer；高风险或复杂变更才并行调用 Security
   与 Correctness Reviewer。
-- 证据与裁决：Finding 必须通过路径、行号和引用文本的统一校验，再由独立 LLM Judge
-  语义复核；Webhook 任务还可读取固定到 PR Head Commit 的有限文件上下文。
+- 工具与证据：Reviewer 通过官方 GitHub MCP 按需读取代码上下文、仓库搜索、文件历史、
+  CI 失败和 Code Scanning 告警；仓库、PR 与 Head Commit 由任务注入，不交给模型填写。
+  Finding 仍须通过路径、行号和引用文本校验，再由独立 LLM Judge 语义复核。
 - Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级审查记忆。
 - ReviewPolicy Evolution：人工反馈生成候选策略，经 Validation/Holdout 门禁后才能激活，
   支持版本追踪与回滚。
@@ -106,13 +109,13 @@ Invoke-WebRequest http://127.0.0.1:8080/v1/tasks/<task-id>/report
 CapyReview 接收 GitHub `pull_request` Webhook，并处理 `opened`、`reopened` 和
 `synchronize` 三种动作。请求会经过 HMAC-SHA256 签名校验、时间窗口校验和 Delivery ID
 幂等校验，然后异步下载 Diff 并创建审查任务。任务会保存 PR Head Commit，使
-`read_file_context` 工具始终读取同一版本的代码，而不是随默认分支漂移。
+`read_code_context` 与文件历史读取始终固定到同一版本，而不是随默认分支漂移。
 
 在 `.env` 中配置：
 
 ```env
 CAPYREVIEW_GITHUB_WEBHOOK_SECRET=一个随机且足够长的Webhook密钥
-CAPYREVIEW_GITHUB_TOKEN=可选的fine-grained PAT
+CAPYREVIEW_GITHUB_TOKEN=用于GitHub MCP与PR集成的fine-grained PAT
 CAPYREVIEW_AUTO_POST_REVIEW=false
 ```
 
@@ -122,8 +125,27 @@ GitHub Webhook 地址：
 https://<你的公网HTTPS地址>/webhooks/github
 ```
 
-私有仓库需要具有目标仓库读取权限的 fine-grained PAT。若希望审查完成后更新 PR 评论，
-将 `CAPYREVIEW_AUTO_POST_REVIEW` 设为 `true`，并授予 Pull requests 写权限。
+手动提交 Diff 时可以不配置 GitHub Token；Webhook 审查若要使用远程仓库工具，则需要具有
+目标仓库读取权限的 fine-grained PAT。若希望审查完成后更新 PR 评论，将
+`CAPYREVIEW_AUTO_POST_REVIEW` 设为 `true`，并授予 Pull requests 写权限。
+
+### GitHub MCP 工具边界
+
+CapyReview 是 MCP Client，不是 MCP Server。项目使用官方 Python SDK `mcp>=2,<3`，固定连接
+GitHub 官方远程端点 `https://api.githubcopilot.com/mcp/`，并通过 `X-MCP-Tools` 只开放所需的
+只读底层工具。模型实际看到的是五个字段精简的领域工具：
+
+- `read_code_context(path, line)`：读取分配文件在 PR Head Commit 的固定 41 行窗口；
+- `search_repository(query, path?)`：搜索当前仓库，仓库限定由系统追加；
+- `read_file_history(path)`：读取分配文件在当前 Head 之前的最近 5 次提交；
+- `read_ci_failure(check_name?)`：读取当前 Head 的失败 CI 与末尾日志；
+- `read_code_scanning_findings(severity?)`：读取并过滤到当前 Head 的开放扫描告警。
+
+Security Reviewer 获得代码上下文、仓库搜索、文件历史和扫描告警；Correctness Reviewer 将
+扫描告警替换为 CI 失败。Memory 在 Reviewer 执行前自动召回，不是 Tool；`changed_line` 只属于
+Evidence Validator。MCP 参数错误、认证失败或上游错误会变成下一轮可见的失败 Observation，
+不会回退到本地规则或旧工具；Observation 保存后，任务恢复不会重复同一次外部调用。Agent
+Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗在连续取证上。
 
 ## ReviewPolicy Evolution
 
@@ -246,6 +268,16 @@ docker compose -f docker-compose.yml -f docker-compose.integration.yml up -d pos
 $env:CAPYREVIEW_TEST_DATABASE_URL='postgresql://capyreview:capyreview-local@127.0.0.1:55432/capyreview'
 $env:CAPYREVIEW_TEST_REDIS_URL='redis://127.0.0.1:56379/15'
 python -m unittest tests.test_infrastructure_integration -v
+```
+
+官方远程 GitHub MCP 契约测试是显式 opt-in，避免普通单测访问公网：
+
+```powershell
+$env:CAPYREVIEW_TEST_GITHUB_TOKEN='只读测试Token'
+$env:CAPYREVIEW_TEST_GITHUB_REPOSITORY='owner/repo'
+$env:CAPYREVIEW_TEST_GITHUB_HEAD_COMMIT='完整CommitSHA'
+$env:CAPYREVIEW_TEST_GITHUB_FILE='README.md'
+python -m unittest tests.integration.test_github_mcp -v
 ```
 
 更多材料：

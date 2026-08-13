@@ -14,6 +14,7 @@ class FakeCoordinator:
 
     def review_with_context(
         self, task_id, _diff, parsed, repository="", head_commit="",
+        pull_request=None,
     ):
         line = parsed.added_lines[0]
         return [Finding(

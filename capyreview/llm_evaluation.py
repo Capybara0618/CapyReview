@@ -44,7 +44,7 @@ class EvaluationLLMReviewer(OpenAICompatibleReviewer):
 
 def build_llm_evaluation_reviewer(
     config: Dict[str, object], timeout: int = 60, agent_retries: int = 1,
-    agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 45,
+    agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 240,
 ) -> MultiAgentCoordinator:
     """Build the same risk-routed LLM shape used by the application."""
     security = EvaluationLLMReviewer(

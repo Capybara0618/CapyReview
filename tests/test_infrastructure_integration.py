@@ -49,20 +49,26 @@ class PostgreSQLIntegrationTests(unittest.TestCase):
 class RedisStreamsIntegrationTests(unittest.TestCase):
     def test_consumer_group_delivers_and_acknowledges_task(self):
         task_id = "integration-%s" % uuid.uuid4()
+        queue_namespace = uuid.uuid4().hex
         delivered = threading.Event()
         received = []
+
+        class IsolatedTaskQueue(TaskQueue):
+            STREAM = "capyreview:test:%s:stream" % queue_namespace
+            GROUP = "capyreview-test-%s" % queue_namespace
 
         def handler(payload):
             received.append(payload)
             if payload.get("task_id") == task_id:
                 delivered.set()
 
-        queue = TaskQueue(handler, REDIS_URL, max_attempts=2, lease_seconds=2)
+        queue = IsolatedTaskQueue(handler, REDIS_URL, max_attempts=2, lease_seconds=2)
         try:
             queue.submit({"task_id": task_id}, message_id=task_id)
             self.assertTrue(delivered.wait(10), "Redis Streams task was not delivered")
         finally:
             queue.close()
+            queue._redis.delete(queue.STREAM)
 
         self.assertEqual("redis-streams", queue.backend)
         self.assertTrue(any(item.get("task_id") == task_id for item in received))

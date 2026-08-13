@@ -8,14 +8,15 @@ persisted when a task store is available.
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 from .context_manager import ContextManager
 from .diff_parser import ParsedDiff
 from .memory import MemoryManager
+from .mcp import ReviewToolContext
 from .models import Finding, Severity
 from .reviewer import Reviewer
-from .runtime import AgentLoop, AgentRuntime, AgentTool, RuntimeNode, ToolRegistry
+from .runtime import AgentLoop, AgentRuntime, RuntimeNode, ToolRegistry
 
 
 @dataclass
@@ -121,6 +122,7 @@ class CollaborationState(TypedDict, total=False):
     parsed: ParsedDiff
     task_id: str
     repository: str
+    pull_request: Optional[int]
     head_commit: str
     bus: CollaborationBus
     plan: ReviewPlan
@@ -307,8 +309,9 @@ class MultiAgentCoordinator(Reviewer):
         agent_retries: int = 1,
         context_manager: Optional[ContextManager] = None,
         memory_manager: Optional[MemoryManager] = None,
-        agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 45,
-        judge=None, repository_reader: Optional[Callable[..., dict]] = None,
+        agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 240,
+        runtime_timeout_seconds: int = 360,
+        judge=None, tool_provider=None,
     ):
         if not agents:
             raise ValueError("at least one LLM reviewer is required")
@@ -321,14 +324,16 @@ class MultiAgentCoordinator(Reviewer):
         self.context_manager = context_manager or ContextManager()
         self.memory_manager = memory_manager
         self.agent_loop = AgentLoop(agent_loop_max_steps, agent_loop_timeout_seconds)
-        self.runtime = AgentRuntime(max_steps=8, timeout_seconds=120)
+        self.runtime = AgentRuntime(
+            max_steps=8, timeout_seconds=runtime_timeout_seconds
+        )
         self.router = RiskRouter()
         self.planner = self.router
         self.evidence_validator = EvidenceValidator()
         self.evidence_agent = self.evidence_validator
         self.test_agent = self.evidence_validator
         self.judge = judge
-        self.repository_reader = repository_reader
+        self.tool_provider = tool_provider
         self._summaries: Dict[str, dict] = {}
         self._last_summary: Dict[str, Any] = {}
         self._summary_lock = threading.Lock()
@@ -340,13 +345,15 @@ class MultiAgentCoordinator(Reviewer):
     def review_with_context(
         self, task_id: str, diff: str, parsed: ParsedDiff,
         repository: str = "", head_commit: str = "",
+        pull_request: Optional[int] = None,
     ) -> List[Finding]:
         checkpoints = {}
         if self.store is not None and task_id:
             checkpoints = self.store.load_checkpoints(task_id)
         state: CollaborationState = {
             "task_id": task_id, "diff": diff, "parsed": parsed,
-            "repository": repository, "head_commit": head_commit,
+            "repository": repository, "pull_request": pull_request,
+            "head_commit": head_commit,
             "bus": CollaborationBus(task_id, self.store),
             "checkpoints": checkpoints,
         }
@@ -480,116 +487,18 @@ class MultiAgentCoordinator(Reviewer):
     def _agent_tools(
         self, state: CollaborationState, assignment: ReviewAssignment,
     ) -> ToolRegistry:
-        def search_diff(query: str, limit: int = 20):
-            value = str(query).strip().lower()
-            if not value:
-                raise ValueError("search_diff query is required")
-            hits = []
-            for index, line in enumerate(state["diff"].splitlines(), 1):
-                if value in line.lower():
-                    hits.append({"diff_line": index, "content": line[:500]})
-                if len(hits) >= max(1, min(int(limit), 50)):
-                    break
-            return hits
-
-        def changed_line(path: str, line: int):
-            match = next((
-                item for item in state["parsed"].added_lines
-                if item.path == str(path) and item.line == int(line)
-            ), None)
-            if match is None:
-                return {"found": False, "path": path, "line": line}
-            return {
-                "found": True, "path": match.path, "line": match.line,
-                "content": match.content,
-            }
-
-        def list_changed_files():
-            return list(state["parsed"].files)
-
-        def recall_memory(query: str, limit: int = 5):
-            if not self.memory_manager or not state.get("repository"):
-                return []
-            return self.memory_manager.recall(
-                state["repository"], str(query),
-                limit=max(1, min(int(limit), 10)),
-            )
-
-        tool_definitions = [
-            AgentTool(
-                "search_diff",
-                "Search the PR diff for an exact case-insensitive text fragment.",
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                    },
-                    "required": ["query"], "additionalProperties": False,
-                },
-                search_diff,
-            ),
-            AgentTool(
-                "changed_line",
-                "Read one added line by new-file path and line number.",
-                {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "line": {"type": "integer", "minimum": 1},
-                    },
-                    "required": ["path", "line"], "additionalProperties": False,
-                },
-                changed_line,
-            ),
-            AgentTool(
-                "list_changed_files",
-                "List files changed by this PR.",
-                {
-                    "type": "object", "properties": {},
-                    "additionalProperties": False,
-                },
-                list_changed_files,
-            ),
-            AgentTool(
-                "recall_memory",
-                "Recall repository-scoped review experience relevant to a query.",
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string"},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 10},
-                    },
-                    "required": ["query"], "additionalProperties": False,
-                },
-                recall_memory,
-            ),
-        ]
-        if self.repository_reader is not None and state.get("head_commit"):
-            def read_file_context(path: str, line: int, radius: int = 20):
-                value = str(path)
-                if value not in assignment.files:
-                    raise ValueError("read_file_context path must be assigned to this reviewer")
-                return self.repository_reader(
-                    state.get("repository", ""), value,
-                    state.get("head_commit", ""), int(line), int(radius),
-                )
-
-            tool_definitions.append(AgentTool(
-                "read_file_context",
-                "Read a bounded source window from an assigned file at the PR head commit.",
-                {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "line": {"type": "integer", "minimum": 1},
-                        "radius": {"type": "integer", "minimum": 0, "maximum": 50},
-                    },
-                    "required": ["path", "line"], "additionalProperties": False,
-                },
-                read_file_context,
-            ))
-        return ToolRegistry(tool_definitions)
+        if (
+            self.tool_provider is None or not state.get("repository")
+            or not state.get("head_commit")
+        ):
+            return ToolRegistry()
+        return self.tool_provider.registry(ReviewToolContext(
+            repository=state["repository"],
+            head_commit=state["head_commit"],
+            pull_request=state.get("pull_request"),
+            files=tuple(assignment.files),
+            domains=tuple(assignment.risk_domains),
+        ))
 
     def _run_agent_loop(
         self, state: CollaborationState, agent: Reviewer,
@@ -669,11 +578,13 @@ class MultiAgentCoordinator(Reviewer):
             )
 
         def managed_step(loop_iteration: Dict[str, Any]) -> Dict[str, Any]:
+            final_only = int(loop_iteration.get("loop_step", 1)) >= self.agent_loop.max_steps
+            active_tools = [] if final_only else tools.catalog()
             managed = self.context_manager.compose(
                 bundle, assignment.to_dict(), feedback=list(feedback or []),
                 inbox=loop_iteration.get("inbox") or [], memories=memories,
                 observations=loop_iteration.get("observations") or [],
-                tools=tools.catalog(),
+                tools=active_tools,
             )
             metadata = managed.metadata()
             last_context["metadata"] = metadata
@@ -685,6 +596,7 @@ class MultiAgentCoordinator(Reviewer):
             prepared["context"] = managed.text
             prepared["managed_context"] = managed.text
             prepared["context_metadata"] = metadata
+            prepared["available_tools"] = active_tools
             return getattr(agent, "agent_step")(prepared)
 
         result = self.agent_loop.run(
@@ -1184,6 +1096,10 @@ class MultiAgentCoordinator(Reviewer):
             ],
             "agent_loop_steps": sum(
                 int((item.get("execution") or {}).get("loop_steps", 0))
+                for item in outcomes
+            ),
+            "tool_calls": sum(
+                int((item.get("execution") or {}).get("tool_calls", 0))
                 for item in outcomes
             ),
             "context_compressions": sum(

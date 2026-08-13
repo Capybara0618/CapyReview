@@ -134,6 +134,7 @@ class ReviewHarness:
                 state["task_id"], state["diff"], parsed,
                 repository=state["repository"],
                 head_commit=state.get("head_commit", ""),
+                pull_request=state.get("pull_request"),
             )
             if contextual else self.reviewer.review(state["diff"], parsed)
         )
