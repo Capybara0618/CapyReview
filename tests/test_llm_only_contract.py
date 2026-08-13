@@ -61,56 +61,34 @@ class LLMOnlyContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "all review assignments failed"):
             coordinator.review(RISK_DIFF, parse_unified_diff(RISK_DIFF))
 
-    def test_review_policy_is_versioned_prompt_data_not_a_reviewer(self):
-        self.assertTrue(hasattr(skill_evolution, "ReviewPolicy"))
-        normalized = skill_evolution.validate_artifact({
-            "name": "evolved-review",
-            "description": "Confirmed project review guidance",
-            "instructions": [{
-                "rule_id": "SEC-DANGEROUS-CALL",
-                "severity": "high",
-                "domains": ["security"],
-                "instruction": (
-                    "Report dangerous dynamic calls only when the added line "
-                    "shows a concrete untrusted-data path."
-                ),
-            }],
-        }, "evolved-review")
+    def test_evolution_artifact_is_a_formal_skill_package_not_a_reviewer(self):
+        package = skill_evolution.validate_skill_package({
+            "name": "review-dangerous-calls",
+            "skill_md": """---
+name: review-dangerous-calls
+description: Review confirmed dangerous-call regressions in changed code.
+metadata:
+  capyreview-domains: security
+  capyreview-signals: eval exec shell
+---
 
-        policy = skill_evolution.ReviewPolicy(normalized, version=3)
+# Dangerous Calls
 
-        self.assertEqual(2, normalized["schema_version"])
-        self.assertNotIn("rules", normalized)
-        self.assertEqual("evolved-review@3", policy.name)
-        self.assertFalse(isinstance(policy, Reviewer))
-        self.assertFalse(hasattr(policy, "review"))
-        security_prompt = policy.compose_system_prompt(
-            "Base security prompt.", ("security",)
-        )
-        correctness_prompt = policy.compose_system_prompt(
-            "Base correctness prompt.", ("correctness",)
-        )
-        self.assertIn("SEC-DANGEROUS-CALL", security_prompt)
-        self.assertIn("Base security prompt.", security_prompt)
-        self.assertEqual("Base correctness prompt.", correctness_prompt)
+Require exact changed-line evidence and a concrete untrusted-data path.
+""",
+            "references": {},
+        })
 
-    def test_review_policy_module_has_no_second_evolution_engine(self):
-        artifact = skill_evolution.validate_artifact({
-            "name": "evolved-review",
-            "instructions": [{
-                "rule_id": "SEC-DANGEROUS-CALL",
-                "severity": "high",
-                "domains": ["security"],
-                "instruction": "Review confirmed dangerous-call regressions.",
-            }],
-        }, "evolved-review")
-        policy = skill_evolution.ReviewPolicy(artifact, version=1)
+        self.assertIn("skill_md", package)
+        self.assertNotIn("prompt", package)
+        self.assertNotIn("instructions", package)
+        self.assertFalse(isinstance(package, Reviewer))
+        self.assertFalse(hasattr(skill_evolution, "ReviewPolicy"))
 
+    def test_formal_skill_module_has_no_executable_reviewer_or_second_engine(self):
         self.assertFalse(hasattr(skill_evolution, "SkillEvolutionEngine"))
-        prompt = skill_evolution.compose_system_prompt(
-            "Base security prompt.", [policy], ("security",)
-        )
-        self.assertIn("SEC-DANGEROUS-CALL", prompt)
+        self.assertFalse(hasattr(skill_evolution, "ReviewPolicy"))
+        self.assertFalse(hasattr(skill_evolution, "compose_system_prompt"))
 
 
 if __name__ == "__main__":

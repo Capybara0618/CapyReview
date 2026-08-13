@@ -69,6 +69,7 @@ CORE_METHODS = {
     "list_evolution_runs",
     "save_skill_version",
     "get_active_skill_version",
+    "list_active_skill_versions",
     "list_skill_versions",
     "activate_skill_version",
     "save_task_payload",
@@ -233,18 +234,28 @@ class InMemoryStoreContractTests(unittest.TestCase):
                 "case-1", "holdout", "changed", [{"rule_id": "SEC-2"}]
             )
 
+        package = {
+            "name": "review-auth-security",
+            "skill_md": "---\nname: review-auth-security\n---\nReview evidence.\n",
+            "references": {},
+        }
         version = self.store.save_skill_version(
-            "llm-review", "review security", 0.8, activate=True
+            "review-auth-security", package, 0.8, activate=True
         )
         self.assertEqual(1, version["version"])
+        self.assertEqual(package, version["package"])
+        self.assertNotIn("prompt", version)
         self.assertEqual(
-            1, self.store.get_active_skill_version("llm-review")["version"]
+            1,
+            self.store.get_active_skill_version("review-auth-security")["version"],
         )
-        self.assertTrue(self.store.activate_skill_version("llm-review", 1))
+        self.assertTrue(
+            self.store.activate_skill_version("review-auth-security", 1)
+        )
 
         run = {
             "id": "run-1",
-            "skill_name": "llm-review",
+            "skill_name": "review-auth-security",
             "candidate_version": 1,
             "baseline_version": None,
             "decision": "activated",
@@ -291,6 +302,8 @@ class PostgresStoreStaticContractTests(unittest.TestCase):
             "review_policy_runs",
         ):
             self.assertNotIn(removed, schema)
+        self.assertIn("package_json", schema)
+        self.assertNotIn("prompt text", schema)
 
         postgres_methods = public_methods(PostgresTaskStore)
         self.assertTrue(CORE_METHODS.issubset(postgres_methods))

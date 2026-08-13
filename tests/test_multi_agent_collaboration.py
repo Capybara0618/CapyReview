@@ -93,9 +93,18 @@ class MultiAgentCollaborationTests(unittest.TestCase):
                 )]
 
         specialist = UngroundedSpecialist()
+        class CountingJudge(ApprovingJudge):
+            def __init__(self):
+                self.calls = 0
+
+            def judge(self, *args):
+                self.calls += 1
+                return super().judge(*args)
+
+        judge = CountingJudge()
         self.store.create("task", "org/repo", 1, {})
         coordinator = MultiAgentCoordinator(
-            [specialist], store=self.store, judge=ApprovingJudge()
+            [specialist], store=self.store, judge=judge
         )
 
         findings = coordinator.review_with_context(
@@ -106,13 +115,14 @@ class MultiAgentCollaborationTests(unittest.TestCase):
         summary = coordinator.collaboration_summary("task")
 
         self.assertEqual([], findings)
-        self.assertEqual(1, specialist.calls)
+        self.assertEqual(2, specialist.calls)
         self.assertTrue({
             "assignment", "reviewer_candidates", "evidence_validation",
-            "judge_decision", "final_decision",
+            "reflection_requested", "reflection_completed", "final_decision",
         }.issubset(kinds))
         self.assertEqual(0, summary["dialogue_rounds"])
         self.assertEqual(0, summary["approved_findings"])
+        self.assertEqual(0, judge.calls)
 
     def test_failed_agent_is_retried_then_replanned_to_substitute(self):
         class BrokenSpecialist:

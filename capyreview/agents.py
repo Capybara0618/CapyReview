@@ -5,6 +5,7 @@ reviewers under bounded tool loops, validates changed-line evidence, and delegat
 semantic approval to one independent judge. Runtime events and hand-offs are
 persisted when a task store is available.
 """
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -16,7 +17,8 @@ from .memory import MemoryManager
 from .mcp import ReviewToolContext
 from .models import Finding, Severity
 from .reviewer import Reviewer
-from .runtime import AgentLoop, AgentRuntime, RuntimeNode, ToolRegistry
+from .review_skills import ReviewSkillSelector
+from .runtime import AgentLoop, AgentRuntime, AgentTool, RuntimeNode, ToolRegistry
 
 
 @dataclass
@@ -315,7 +317,7 @@ class MultiAgentCoordinator(Reviewer):
         memory_manager: Optional[MemoryManager] = None,
         agent_loop_max_steps: int = 4, agent_loop_timeout_seconds: int = 240,
         runtime_timeout_seconds: int = 360,
-        judge=None, tool_provider=None,
+        judge=None, tool_provider=None, skill_registry=None, skill_selector=None,
     ):
         if not agents:
             raise ValueError("at least one LLM reviewer is required")
@@ -338,6 +340,8 @@ class MultiAgentCoordinator(Reviewer):
         self.test_agent = self.evidence_validator
         self.judge = judge
         self.tool_provider = tool_provider
+        self.skill_registry = skill_registry
+        self.skill_selector = skill_selector or ReviewSkillSelector()
         self._summaries: Dict[str, dict] = {}
         self._last_summary: Dict[str, Any] = {}
         self._summary_lock = threading.Lock()
@@ -489,32 +493,85 @@ class MultiAgentCoordinator(Reviewer):
         return memories
 
     def _agent_tools(
-        self, state: CollaborationState, assignment: ReviewAssignment,
+        self, state: CollaborationState, assignment: ReviewAssignment, skills=(),
     ) -> ToolRegistry:
         if (
             self.tool_provider is None or not state.get("repository")
             or not state.get("head_commit")
         ):
-            return ToolRegistry()
-        return self.tool_provider.registry(ReviewToolContext(
-            repository=state["repository"],
-            head_commit=state["head_commit"],
-            pull_request=state.get("pull_request"),
-            files=tuple(assignment.files),
-            domains=tuple(assignment.risk_domains),
-        ))
+            tools = ToolRegistry()
+        else:
+            tools = self.tool_provider.registry(ReviewToolContext(
+                repository=state["repository"],
+                head_commit=state["head_commit"],
+                pull_request=state.get("pull_request"),
+                files=tuple(assignment.files),
+                domains=tuple(assignment.risk_domains),
+            ))
+        activated = {item.name: item for item in skills}
+        if activated:
+            def read_skill_reference(skill: str, path: str):
+                if skill not in activated:
+                    raise ValueError("only an activated review skill may be read")
+                if str(path) not in activated[skill].references:
+                    raise ValueError("reference is not declared by the activated review skill")
+                return {
+                    "skill": skill, "path": str(path),
+                    "content": self.skill_registry.read_reference(skill, str(path)),
+                }
+
+            tools.register(AgentTool(
+                "read_skill_reference",
+                "Read one declared reference from an activated review skill.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "skill": {"type": "string"},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["skill", "path"],
+                    "additionalProperties": False,
+                },
+                read_skill_reference,
+            ))
+        return tools
+
+    def _activate_review_skills(
+        self, state: CollaborationState, assignment: ReviewAssignment,
+    ) -> list:
+        if self.skill_registry is None:
+            return []
+        selected = self.skill_selector.select(
+            self.skill_registry.discover(), assignment.risk_domains,
+            assignment.files, state["diff"],
+        )
+        activated = [self.skill_registry.activate(item.name) for item in selected]
+        for skill in activated:
+            self._emit(
+                state, "skill-selector", assignment.agent, "skill_activated",
+                {
+                    "name": skill.name, "version": skill.version,
+                    "references": list(skill.references),
+                }, assignment.assignment_id,
+            )
+        return activated
 
     def _run_agent_loop(
         self, state: CollaborationState, agent: Reviewer,
         assignment: ReviewAssignment, feedback: Optional[List[str]],
     ) -> tuple:
         memories = self._recall_memories(state, assignment)
+        activated_skills = self._activate_review_skills(state, assignment)
         bundle = self.context_manager.build(state["diff"], assignment.to_dict(), memories)
         self._emit(
             state, "context-manager", agent.name, "context_prepared",
             bundle.metadata(), assignment.assignment_id,
         )
-        tools = self._agent_tools(state, assignment)
+        tools = self._agent_tools(state, assignment, activated_skills)
+        skill_context = [
+            {"name": item.name, "version": item.version, "body": item.body}
+            for item in activated_skills
+        ]
 
         def on_event(kind: str, detail: Dict[str, Any]) -> None:
             self._emit(
@@ -527,6 +584,20 @@ class MultiAgentCoordinator(Reviewer):
                     task_id=state["task_id"],
                     agent=agent.name, importance=0.3,
                 )
+            if (
+                kind == "agent_loop_observation"
+                and detail.get("ok") is False
+                and self.store is not None
+                and state.get("task_id")
+            ):
+                self.store.record_failure_case(
+                    state["task_id"], "tool_error",
+                    {
+                        "reviewer": agent.name,
+                        "tool": str(detail.get("tool", ""))[:120],
+                        "error": str(detail.get("error", ""))[:1000],
+                    },
+                )
 
         loop_state = {
             "diff": state["diff"], "context": bundle.text,
@@ -534,6 +605,7 @@ class MultiAgentCoordinator(Reviewer):
             "assignment": assignment.to_dict(), "feedback": list(feedback or []),
             "inbox": self._bus(state).inbox(agent.name, assignment.assignment_id),
             "memories": memories, "available_tools": tools.catalog(),
+            "activated_skills": skill_context,
         }
         last_context = {"metadata": bundle.metadata()}
         checkpoint_node = "loop:%s" % assignment.assignment_id
@@ -588,7 +660,7 @@ class MultiAgentCoordinator(Reviewer):
                 bundle, assignment.to_dict(), feedback=list(feedback or []),
                 inbox=loop_iteration.get("inbox") or [], memories=memories,
                 observations=loop_iteration.get("observations") or [],
-                tools=active_tools,
+                tools=active_tools, skills=skill_context,
             )
             metadata = managed.metadata()
             last_context["metadata"] = metadata
@@ -616,6 +688,9 @@ class MultiAgentCoordinator(Reviewer):
             "context": last_context["metadata"], "memories_recalled": len(memories),
             "tools_available": len(tools.names()),
             "tool_calls": len(result.observations),
+            "activated_skills": [
+                "%s@%s" % (item.name, item.version) for item in activated_skills
+            ],
             "usage": dict(result.usage),
         }
 
@@ -818,29 +893,212 @@ class MultiAgentCoordinator(Reviewer):
             "assignments_by_agent": assignment_map,
         }
 
+    def _reflect_rejected(
+        self, state: CollaborationState, rejected: List[tuple], stage: str,
+    ) -> tuple[List[Finding], Dict[str, List[str]]]:
+        """Give each originating reviewer one bounded correction round."""
+        grouped: Dict[str, List[tuple]] = {}
+        for finding, reason in rejected:
+            sources = state.get("finding_sources", {}).get(finding_key(finding), [])
+            if sources:
+                grouped.setdefault(sources[0], []).append((finding, reason))
+        corrections: List[Finding] = []
+        sources: Dict[str, List[str]] = {}
+        agents = {item.name: item for item in self.agents}
+        assignments = state.get("assignments_by_agent", {})
+        for agent_name, failures in grouped.items():
+            agent = agents.get(agent_name)
+            assignment = assignments.get(agent_name)
+            if agent is None or assignment is None:
+                continue
+            checkpoint_node = "reflection:%s:%s" % (
+                stage, assignment.assignment_id,
+            )
+            rejected_keys = sorted(finding_key(finding) for finding, _ in failures)
+            checkpoint = self._completed_checkpoint(state, checkpoint_node)
+            if (
+                checkpoint
+                and checkpoint.get("agent") == agent_name
+                and sorted(checkpoint.get("rejected_keys") or []) == rejected_keys
+            ):
+                restored = [
+                    self._finding_from_dict(item)
+                    for item in checkpoint.get("findings", [])
+                ]
+                corrections.extend(restored)
+                for finding in restored:
+                    sources.setdefault(finding_key(finding), []).append(agent_name)
+                execution = dict(checkpoint.get("execution") or {})
+                if execution:
+                    state.setdefault("reflection_executions", []).append(execution)
+                state["reflection_rounds"] = int(
+                    state.get("reflection_rounds", 0)
+                ) + 1
+                self._emit(
+                    state, "agent-runtime", "coordinator", "checkpoint_restored",
+                    {"node": checkpoint_node, "agent": agent_name},
+                    assignment.assignment_id,
+                )
+                continue
+            feedback = [json.dumps({
+                "stage": stage,
+                "finding": finding.to_dict(),
+                "reason": str(reason)[:500],
+                "instruction": "Correct this candidate once; do not repeat it unchanged.",
+            }, ensure_ascii=False) for finding, reason in failures]
+            if self.store is not None and state.get("task_id"):
+                for finding, reason in failures:
+                    self.store.record_failure_case(
+                        state["task_id"], "%s_rejected" % stage,
+                        {
+                            "stage": stage,
+                            "reviewer": agent_name,
+                            "finding": finding.to_dict(),
+                            "reason": str(reason)[:1000],
+                        },
+                    )
+            self._emit(
+                state, stage, agent_name, "reflection_requested",
+                {"stage": stage, "candidates": len(failures), "reasons": [
+                    str(reason)[:500] for _finding, reason in failures
+                ]}, assignment.assignment_id,
+            )
+            corrected, attempts, error, execution = self._invoke_agent(
+                state, agent, assignment, feedback,
+            )
+            state.setdefault("reflection_executions", []).append(execution)
+            state["reflection_rounds"] = int(state.get("reflection_rounds", 0)) + 1
+            if error:
+                corrected = []
+            selected = []
+            used = set()
+            for rejected_finding, _reason in failures:
+                exact_key = finding_key(rejected_finding)
+                match = next((
+                    finding for finding in corrected
+                    if finding_key(finding) == exact_key
+                    and finding_key(finding) not in used
+                ), None)
+                if match is None:
+                    match = next((
+                        finding for finding in corrected
+                        if finding.path == rejected_finding.path
+                        and finding.line == rejected_finding.line
+                        and finding_key(finding) not in used
+                    ), None)
+                if match is not None:
+                    selected.append(match)
+                    used.add(finding_key(match))
+            corrected = selected
+            corrections.extend(corrected)
+            for finding in corrected:
+                sources.setdefault(finding_key(finding), []).append(agent_name)
+            self._emit(
+                state, agent_name, stage, "reflection_completed",
+                {
+                    "stage": stage, "attempts": attempts,
+                    "findings": [item.to_dict() for item in corrected],
+                    "error": error[:500],
+                }, assignment.assignment_id,
+            )
+            self._save_completed_checkpoint(
+                state, checkpoint_node,
+                {
+                    "agent": agent_name,
+                    "findings": [item.to_dict() for item in corrected],
+                    "rejected_keys": rejected_keys,
+                    "feedback": feedback,
+                    "error": error,
+                    "execution": execution,
+                }, attempt=max(1, attempts),
+            )
+        return corrections, sources
+
     def _evidence_node(self, state: CollaborationState) -> Dict[str, Any]:
-        reproductions = {}
+        grounded = []
+        rejected = []
         for finding in state["specialist_findings"]:
             reproduction = self.evidence_validator.validate(finding, state["parsed"])
-            reproductions[reproduction.finding_key] = reproduction
             self._emit(
                 state, self.evidence_validator.name, self.judge.name, "evidence_validation",
                 asdict(reproduction), reproduction.finding_key,
             )
-        return {"reproductions": reproductions}
+            if reproduction.grounded:
+                grounded.append(finding)
+            else:
+                rejected.append((finding, reproduction.evidence))
+        corrected, corrected_sources = self._reflect_rejected(
+            state, rejected, "evidence",
+        ) if rejected else ([], {})
+        grounded_corrections = []
+        sources = {
+            finding_key(finding): list(
+                state.get("finding_sources", {}).get(finding_key(finding), [])
+            )
+            for finding in grounded
+        }
+        reproductions = {}
+        for finding in grounded:
+            reproduction = self.evidence_validator.validate(finding, state["parsed"])
+            reproductions[reproduction.finding_key] = reproduction
+        for finding in corrected:
+            reproduction = self.evidence_validator.validate(finding, state["parsed"])
+            self._emit(
+                state, self.evidence_validator.name, self.judge.name,
+                "evidence_revalidation", asdict(reproduction),
+                reproduction.finding_key,
+            )
+            if reproduction.grounded:
+                grounded_corrections.append(finding)
+                reproductions[reproduction.finding_key] = reproduction
+                sources[reproduction.finding_key] = corrected_sources.get(
+                    reproduction.finding_key, []
+                )
+        candidates = grounded + grounded_corrections
+        return {
+            "specialist_findings": candidates,
+            "finding_sources": sources,
+            "reproductions": reproductions,
+            "initial_reviewer_candidates": len(state["specialist_findings"]),
+            "evidence_rejected_count": max(
+                0, len(rejected) - len(grounded_corrections)
+            ),
+        }
 
     def _judge_node(self, state: CollaborationState) -> Dict[str, Any]:
         candidates = state["specialist_findings"]
+        if not candidates:
+            self._emit(
+                state, "coordinator", self.judge.name, "judge_skipped",
+                {"reason": "no grounded candidate"}, "judge",
+            )
+            return {"decisions": {}, "judge_context": {}, "judge_usage": {}}
         candidate_keys = sorted(finding_key(item) for item in candidates)
         checkpoint = self._completed_checkpoint(state, "judge")
         if checkpoint and checkpoint.get("candidate_keys") == candidate_keys:
             stored = checkpoint.get("decisions") or {}
             if sorted(stored) == candidate_keys:
+                restored_payload = checkpoint.get("findings") or []
+                restored_candidates = [
+                    self._finding_from_dict(item) for item in restored_payload
+                ]
+                if (
+                    restored_candidates
+                    and sorted(finding_key(item) for item in restored_candidates)
+                    == candidate_keys
+                ):
+                    candidates = restored_candidates
+                restored_evidence = {
+                    finding_key(finding): self.evidence_validator.validate(
+                        finding, state["parsed"]
+                    )
+                    for finding in candidates
+                }
                 decisions = {}
                 for finding in candidates:
                     key = finding_key(finding)
                     decision = self._decision_from_dict(stored[key])
-                    evidence = state["reproductions"][key]
+                    evidence = restored_evidence[key]
                     decision.approved = decision.approved and evidence.grounded
                     if not evidence.grounded and not any(
                         "evidence" in reason.lower() for reason in decision.reasons
@@ -857,11 +1115,20 @@ class MultiAgentCoordinator(Reviewer):
                     state, "agent-runtime", "coordinator", "checkpoint_restored",
                     {"node": "judge", "candidates": len(candidate_keys)}, "judge",
                 )
-                return {
+                result = {
                     "decisions": decisions,
                     "judge_context": dict(checkpoint.get("judge_context") or {}),
                     "judge_usage": dict(checkpoint.get("usage") or {}),
                 }
+                if restored_candidates:
+                    result.update({
+                        "specialist_findings": candidates,
+                        "finding_sources": dict(
+                            checkpoint.get("finding_sources") or {}
+                        ),
+                        "reproductions": restored_evidence,
+                    })
+                return result
         plan = state.get("plan")
         risk_domains = sorted({
             domain
@@ -894,43 +1161,125 @@ class MultiAgentCoordinator(Reviewer):
             "context_prepared",
             judge_bundle.metadata(),
         )
-        decisions = {}
-        raw_decisions = self.judge.judge(
-            judge_bundle.text, state["parsed"], candidates,
-            state["reproductions"],
-        )
-        consume_judge_usage = getattr(self.judge, "consume_usage", None)
-        judge_usage = consume_judge_usage() if consume_judge_usage else {}
-        for finding in candidates:
-            key = finding_key(finding)
-            raw = dict(raw_decisions.get(key) or {})
-            evidence = state["reproductions"][key]
-            approved = bool(raw.get("approved", False)) and evidence.grounded
-            reasons = [str(item)[:500] for item in raw.get("reasons", [])]
-            if not evidence.grounded and not any(
-                "evidence" in reason.lower() for reason in reasons
-            ):
-                reasons.append("evidence is not grounded on the reported changed line")
-            decision = VerificationDecision(
-                key, approved, reasons,
-                max(0.0, min(1.0, float(raw.get("confidence", finding.confidence)))),
+        def judge_once(
+            batch: List[Finding], evidence: Dict[str, EvidenceReport],
+        ) -> tuple[Dict[str, VerificationDecision], Dict[str, int]]:
+            raw_decisions = self.judge.judge(
+                judge_bundle.text, state["parsed"], batch, evidence,
             )
-            decisions[key] = decision
-            self._emit(
-                state, self.judge.name, "review-report", "judge_decision",
-                asdict(decision), key,
-            )
+            consume_judge_usage = getattr(self.judge, "consume_usage", None)
+            usage = consume_judge_usage() if consume_judge_usage else {}
+            batch_decisions: Dict[str, VerificationDecision] = {}
+            for finding in batch:
+                key = finding_key(finding)
+                raw = dict(raw_decisions.get(key) or {})
+                report = evidence[key]
+                approved = bool(raw.get("approved", False)) and report.grounded
+                reasons = [str(item)[:500] for item in raw.get("reasons", [])]
+                if not report.grounded and not any(
+                    "evidence" in reason.lower() for reason in reasons
+                ):
+                    reasons.append(
+                        "evidence is not grounded on the reported changed line"
+                    )
+                decision = VerificationDecision(
+                    key, approved, reasons,
+                    max(0.0, min(
+                        1.0, float(raw.get("confidence", finding.confidence))
+                    )),
+                )
+                batch_decisions[key] = decision
+                self._emit(
+                    state, self.judge.name, "review-report", "judge_decision",
+                    asdict(decision), key,
+                )
+            return batch_decisions, usage
+
+        decisions, judge_usage = judge_once(candidates, state["reproductions"])
+        rejected = [
+            (finding, "; ".join(decisions[finding_key(finding)].reasons))
+            for finding in candidates
+            if not decisions[finding_key(finding)].approved
+            and state["reproductions"][finding_key(finding)].grounded
+        ]
+        corrected, corrected_sources = self._reflect_rejected(
+            state, rejected, "judge",
+        ) if rejected else ([], {})
+        if corrected:
+            approved = [
+                finding for finding in candidates
+                if decisions[finding_key(finding)].approved
+            ]
+            corrected_evidence: Dict[str, EvidenceReport] = {}
+            grounded_corrections = []
+            for finding in corrected:
+                report = self.evidence_validator.validate(finding, state["parsed"])
+                self._emit(
+                    state, self.evidence_validator.name, self.judge.name,
+                    "evidence_revalidation", asdict(report), report.finding_key,
+                )
+                if report.grounded:
+                    grounded_corrections.append(finding)
+                    corrected_evidence[report.finding_key] = report
+            if grounded_corrections:
+                corrected_decisions, corrected_usage = judge_once(
+                    grounded_corrections, corrected_evidence,
+                )
+                decisions = {
+                    finding_key(finding): decisions[finding_key(finding)]
+                    for finding in approved
+                }
+                decisions.update(corrected_decisions)
+                for key, value in corrected_usage.items():
+                    judge_usage[key] = int(judge_usage.get(key, 0)) + int(value)
+            else:
+                decisions = {
+                    finding_key(finding): decisions[finding_key(finding)]
+                    for finding in approved
+                }
+            candidates = approved + grounded_corrections
+            sources = {
+                finding_key(finding): list(
+                    state.get("finding_sources", {}).get(finding_key(finding), [])
+                )
+                for finding in approved
+            }
+            sources.update({
+                key: value for key, value in corrected_sources.items()
+                if key in corrected_evidence
+            })
+            reproductions = {
+                finding_key(finding): state["reproductions"][finding_key(finding)]
+                for finding in approved
+            }
+            reproductions.update(corrected_evidence)
+            candidate_keys = sorted(finding_key(item) for item in candidates)
         result = {
             "decisions": decisions,
             "judge_context": judge_bundle.metadata(),
             "judge_usage": judge_usage,
         }
+        if corrected:
+            result.update({
+                "specialist_findings": candidates,
+                "finding_sources": sources,
+                "reproductions": reproductions,
+            })
         self._save_completed_checkpoint(
             state, "judge",
             {
                 "candidate_keys": candidate_keys,
                 "decisions": {
                     key: asdict(decision) for key, decision in decisions.items()
+                },
+                "findings": [item.to_dict() for item in candidates],
+                "finding_sources": {
+                    finding_key(item): list(
+                        (result.get("finding_sources") or state.get(
+                            "finding_sources", {}
+                        )).get(finding_key(item), [])
+                    )
+                    for item in candidates
                 },
                 "judge_context": result["judge_context"],
                 "usage": judge_usage,
@@ -993,18 +1342,21 @@ class MultiAgentCoordinator(Reviewer):
                 )
             if state.get("task_id"):
                 outcomes = state.get("agent_outcomes", [])
+                executions = [
+                    item.get("execution") or {} for item in outcomes
+                ] + list(state.get("reflection_executions", []))
                 memory_summary = {
                     "proposed_findings": len(state.get("specialist_findings", [])),
                     "approved_findings": len(verified),
                     "rejected_findings": len(rejected),
-                    "dialogue_rounds": 0,
+                    "dialogue_rounds": int(state.get("reflection_rounds", 0)),
                     "agent_loop_steps": sum(
-                        int((item.get("execution") or {}).get("loop_steps", 0))
-                        for item in outcomes
+                        int(execution.get("loop_steps", 0))
+                        for execution in executions
                     ),
                     "tool_calls": sum(
-                        int((item.get("execution") or {}).get("tool_calls", 0))
-                        for item in outcomes
+                        int(execution.get("tool_calls", 0))
+                        for execution in executions
                     ),
                 }
                 archived = self.memory_manager.consolidate_task(
@@ -1022,15 +1374,14 @@ class MultiAgentCoordinator(Reviewer):
 
     def _make_summary(self, state: CollaborationState) -> dict:
         outcomes = state.get("agent_outcomes", [])
+        reflection_executions = state.get("reflection_executions", [])
+        executions = [
+            item.get("execution") or {} for item in outcomes
+        ] + list(reflection_executions)
         decisions = state.get("decisions", {})
         candidates = state.get("specialist_findings", [])
         reproductions = state.get("reproductions", {})
-        evidence_rejected = sum(
-            1 for finding in candidates
-            if not reproductions.get(finding_key(finding), EvidenceReport(
-                finding_key(finding), False, "missing", ""
-            )).grounded
-        )
+        evidence_rejected = int(state.get("evidence_rejected_count", 0))
         judge_rejected = sum(
             1 for finding in candidates
             if reproductions.get(finding_key(finding))
@@ -1049,7 +1400,9 @@ class MultiAgentCoordinator(Reviewer):
         )
         final_findings = len(state.get("verified", []))
         funnel = {
-            "reviewer_candidates": len(candidates),
+            "reviewer_candidates": int(
+                state.get("initial_reviewer_candidates", len(candidates))
+            ),
             "evidence_rejected": evidence_rejected,
             "judge_rejected": judge_rejected,
             "approved_before_dedup": approved_before_dedup,
@@ -1063,8 +1416,8 @@ class MultiAgentCoordinator(Reviewer):
         )
         usage = {
             key: sum(
-                int(((item.get("execution") or {}).get("usage") or {}).get(key, 0))
-                for item in outcomes
+                int((execution.get("usage") or {}).get(key, 0))
+                for execution in executions
             ) + int((state.get("judge_usage") or {}).get(key, 0))
             for key in usage_keys
         }
@@ -1077,6 +1430,7 @@ class MultiAgentCoordinator(Reviewer):
             "route": state.get("plan").route if state.get("plan") else "unknown",
             "planned_assignments": len(state.get("plan").assignments) if state.get("plan") else 0,
             "dialogue_rounds": 0,
+            "reflection_rounds": int(state.get("reflection_rounds", 0)),
             "messages": self._bus(state).count(),
             "retries": self._bus(state).count("retry_request"),
             "handoffs": self._bus(state).count("assignment_handoff"),
@@ -1099,16 +1453,21 @@ class MultiAgentCoordinator(Reviewer):
                 for item in outcomes
             ],
             "agent_loop_steps": sum(
-                int((item.get("execution") or {}).get("loop_steps", 0))
-                for item in outcomes
+                int(execution.get("loop_steps", 0))
+                for execution in executions
             ),
             "tool_calls": sum(
-                int((item.get("execution") or {}).get("tool_calls", 0))
-                for item in outcomes
+                int(execution.get("tool_calls", 0))
+                for execution in executions
             ),
+            "activated_skills": sorted({
+                skill
+                for execution in executions
+                for skill in (execution.get("activated_skills") or [])
+            }),
             "context_compressions": sum(
-                bool(((item.get("execution") or {}).get("context") or {}).get("compressed"))
-                for item in outcomes
+                bool((execution.get("context") or {}).get("compressed"))
+                for execution in executions
             ) + int(bool(judge_context.get("compressed"))),
             "judge_context": judge_context,
             "usage": usage,
@@ -1124,8 +1483,8 @@ class MultiAgentCoordinator(Reviewer):
                 "checkpoints_cleared": self._bus(state).count("checkpoint_cleared"),
             },
             "memories_recalled": sum(
-                int((item.get("execution") or {}).get("memories_recalled", 0))
-                for item in outcomes
+                int(execution.get("memories_recalled", 0))
+                for execution in executions
             ),
             "proposed_findings": len(state.get("specialist_findings", [])),
             "approved_findings": sum(1 for item in decisions.values() if item.approved),

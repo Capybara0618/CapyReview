@@ -107,13 +107,17 @@ SCHEMA_STATEMENTS = (
         id BIGSERIAL PRIMARY KEY,
         skill_name TEXT NOT NULL,
         version INTEGER NOT NULL,
-        prompt TEXT NOT NULL,
+        package_json JSONB NOT NULL,
         score DOUBLE PRECISION NOT NULL,
         active BOOLEAN NOT NULL DEFAULT FALSE,
         parent_version INTEGER,
         created_at TIMESTAMPTZ NOT NULL,
         UNIQUE(skill_name, version)
     )""",
+    "ALTER TABLE skill_versions ADD COLUMN IF NOT EXISTS package_json JSONB",
+    "DELETE FROM skill_versions WHERE package_json IS NULL",
+    "ALTER TABLE skill_versions ALTER COLUMN package_json SET NOT NULL",
+    "ALTER TABLE skill_versions DROP COLUMN IF EXISTS prompt",
     "CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at)",
     """CREATE INDEX IF NOT EXISTS idx_agent_memories_lookup
         ON agent_memories(repository, scope, created_at)""",
@@ -570,7 +574,7 @@ class PostgresTaskStore:
     def save_skill_version(
         self,
         skill_name: str,
-        prompt: str,
+        package: dict,
         score: float,
         activate: bool = False,
     ) -> Dict[str, Any]:
@@ -593,13 +597,13 @@ class PostgresTaskStore:
                     (skill_name,),
                 )
             row = conn.execute(
-                "INSERT INTO skill_versions(skill_name,version,prompt,score,active,"
-                "parent_version,created_at) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                "INSERT INTO skill_versions(skill_name,version,package_json,score,active,"
+                "parent_version,created_at) VALUES (%s,%s,%s::jsonb,%s,%s,%s,%s) "
                 "RETURNING *",
                 (
                     skill_name,
                     version,
-                    prompt,
+                    json.dumps(package, ensure_ascii=False),
                     float(score),
                     activate,
                     parent["version"] if parent else None,
@@ -628,6 +632,14 @@ class PostgresTaskStore:
             ).fetchall()
         return [self._skill_from_row(row) for row in rows]
 
+    def list_active_skill_versions(self) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM skill_versions WHERE active=TRUE "
+                "ORDER BY skill_name, version DESC"
+            ).fetchall()
+        return [self._skill_from_row(row) for row in rows]
+
     def activate_skill_version(self, skill_name: str, version: int) -> bool:
         with self._connect() as conn:
             exists = conn.execute(
@@ -650,6 +662,7 @@ class PostgresTaskStore:
     @staticmethod
     def _skill_from_row(row) -> Dict[str, Any]:
         value = dict(row)
+        value["package"] = _json_value(value.pop("package_json"))
         value["created_at"] = _iso(value["created_at"])
         return value
 

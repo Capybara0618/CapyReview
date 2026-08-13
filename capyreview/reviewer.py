@@ -42,6 +42,10 @@ class OpenAICompatibleReviewer(Reviewer):
         self._last_usage = {}
         return usage
 
+    def request_json(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Send one schema-constrained JSON request for adjacent LLM workflows."""
+        return self._request_json(payload)
+
     def review(self, diff: str, parsed: ParsedDiff) -> List[Finding]:
         return self._review(diff, parsed, "")
 

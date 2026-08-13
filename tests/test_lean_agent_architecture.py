@@ -83,6 +83,95 @@ class ConfidenceJudge:
 
 
 class LeanAgentArchitectureTests(unittest.TestCase):
+    def test_evidence_rejection_returns_to_origin_reviewer_once(self):
+        class CorrectingSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def __init__(self):
+                self.calls = 0
+
+            def agent_step(self, state):
+                self.calls += 1
+                line = state["parsed"].added_lines[0]
+                evidence = line.content if state.get("feedback") else "eval(other)"
+                return {"action": "final", "findings": [Finding(
+                    "CWE-95", Severity.HIGH, "Dynamic execution",
+                    "The added line executes untrusted input as code.",
+                    line.path, line.line, evidence,
+                    "Use a constrained parser.", "Add an input test.", 0.9,
+                )]}
+
+        specialist = CorrectingSpecialist()
+        coordinator = MultiAgentCoordinator(
+            [specialist], judge=RecordingJudge(), agent_retries=0,
+        )
+
+        findings = coordinator.review(RISK_DIFF, parse_unified_diff(RISK_DIFF))
+        summary = coordinator.collaboration_summary("")
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual(2, specialist.calls)
+        self.assertEqual(1, summary["reflection_rounds"])
+        self.assertEqual(0, summary["review_funnel"]["evidence_rejected"])
+
+    def test_judge_rejection_returns_to_origin_reviewer_once(self):
+        class CorrectingSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def __init__(self):
+                self.calls = 0
+
+            def agent_step(self, state):
+                self.calls += 1
+                line = state["parsed"].added_lines[0]
+                explanation = (
+                    "An attacker can execute arbitrary code through the added eval call."
+                    if state.get("feedback")
+                    else "The call may be unsafe."
+                )
+                return {"action": "final", "findings": [Finding(
+                    "CWE-95", Severity.CRITICAL, "Dynamic execution",
+                    explanation, line.path, line.line, line.content,
+                    "Use a constrained parser.", "Add an input test.", 0.9,
+                )]}
+
+        class ReflectingJudge:
+            name = "review-judge"
+
+            def __init__(self):
+                self.calls = 0
+
+            def judge(self, _diff, _parsed, findings, evidence):
+                self.calls += 1
+                return {
+                    finding_key(finding): {
+                        "approved": self.calls > 1,
+                        "reasons": (
+                            [] if self.calls > 1
+                            else ["explanation lacks a concrete attacker path"]
+                        ),
+                        "confidence": 0.9,
+                    }
+                    for finding in findings
+                }
+
+        specialist = CorrectingSpecialist()
+        judge = ReflectingJudge()
+        coordinator = MultiAgentCoordinator(
+            [specialist], judge=judge, agent_retries=0,
+        )
+
+        findings = coordinator.review(RISK_DIFF, parse_unified_diff(RISK_DIFF))
+        summary = coordinator.collaboration_summary("")
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual(2, specialist.calls)
+        self.assertEqual(2, judge.calls)
+        self.assertEqual(1, summary["reflection_rounds"])
+        self.assertEqual(0, summary["review_funnel"]["judge_rejected"])
+
     def test_finding_identity_is_readable_without_an_opaque_hash(self):
         finding = CannedSpecialist(
             "security-specialist", ("security",), "CWE-95"

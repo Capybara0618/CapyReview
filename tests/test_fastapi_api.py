@@ -67,11 +67,11 @@ class FakeEvolution:
     def auto_propose(self, skill_name):
         return {"decision": "activated", "skill_name": skill_name}
 
-    def propose(self, skill_name, prompt, regression_score=None):
-        return {"decision": "activated", "skill_name": skill_name, "prompt": prompt}
+    def propose(self, skill_name, package, regression_score=None):
+        return {"decision": "activated", "skill_name": skill_name, "package": package}
 
     def rollback(self, skill_name, version):
-        return skill_name == "llm-review" and version == 1
+        return skill_name == "review-evolved-patterns" and version == 1
 
 
 class FakeService:
@@ -299,13 +299,20 @@ class FastApiContractTests(unittest.TestCase):
 
     def test_evolution_versions_and_evaluation_are_available(self):
         self.assertTrue(self.client.get("/v1/evolution/status").json()["ready"])
-        proposed = self.client.post("/v1/evolution/auto", json={"skill_name": "llm-review"})
+        proposed = self.client.post(
+            "/v1/evolution/auto",
+            json={"skill_name": "review-evolved-patterns"},
+        )
         self.assertEqual(proposed.status_code, 201)
         self.assertEqual(proposed.json()["decision"], "activated")
-        rollback = self.client.post("/v1/skills/llm-review/versions/1/activate", json={})
+        rollback = self.client.post(
+            "/v1/skills/review-evolved-patterns/versions/1/activate", json={}
+        )
         self.assertEqual(rollback.status_code, 200)
 
-        versions = self.client.get("/v1/skills/llm-review/versions")
+        versions = self.client.get(
+            "/v1/skills/review-evolved-patterns/versions"
+        )
         self.assertEqual(versions.json()["versions"][0]["version"], 1)
         self.assertEqual(self.client.get("/api/evaluation").status_code, 200)
 
@@ -321,7 +328,7 @@ class FastApiContractTests(unittest.TestCase):
     def test_core_console_uses_version_rollback_without_removed_enterprise_calls(self):
         with open(os.path.join(ROOT, "web", "app.js"), "r", encoding="utf-8") as handle:
             script = handle.read()
-        self.assertIn("/v1/skills/llm-review/versions", script)
+        self.assertIn("/v1/skills/review-evolved-patterns/versions", script)
         self.assertIn("data-activate-version", script)
         self.assertIn('data.status === "not_run"', script)
         self.assertIn("data.result", script)

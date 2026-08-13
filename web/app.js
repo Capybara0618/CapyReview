@@ -179,7 +179,7 @@ async function loadEvolution() {
   try {
     const [status, runs, versions] = await Promise.all([
       api("/v1/evolution/status"), api("/v1/evolution/runs?limit=10"),
-      api("/v1/skills/llm-review/versions"),
+      api("/v1/skills/review-evolved-patterns/versions"),
     ]);
     $("#evolution-status").textContent = formatJson(status);
     const versionRows = (versions.versions || []).map((version) => `
@@ -199,7 +199,7 @@ async function loadEvolution() {
 
 async function activatePromptVersion(version) {
   try {
-    await api(`/v1/skills/llm-review/versions/${encodeURIComponent(version)}/activate`, {
+    await api(`/v1/skills/review-evolved-patterns/versions/${encodeURIComponent(version)}/activate`, {
       method: "POST", body: "{}",
     });
     toast(`已激活 Prompt V${version}`, "success");
@@ -327,7 +327,10 @@ $("#evolution-form").addEventListener("submit", async (event) => {
   output.textContent = "正在执行 Validation / Holdout 门禁…";
   try {
     const data = await api("/v1/evolution/propose", {
-      method: "POST", body: JSON.stringify({ skill_name: values.get("skill_name"), prompt: values.get("prompt") }),
+      method: "POST", body: JSON.stringify({
+        skill_name: values.get("skill_name"),
+        package: JSON.parse(values.get("package")),
+      }),
     });
     output.textContent = formatJson(data);
     await loadEvolution();
@@ -340,7 +343,7 @@ $("#auto-evolve").addEventListener("click", async () => {
   output.textContent = "正在从确认反馈生成候选…";
   try {
     const data = await api("/v1/evolution/auto", {
-      method: "POST", body: JSON.stringify({ skill_name: "llm-review" }),
+      method: "POST", body: JSON.stringify({ skill_name: "review-evolved-patterns" }),
     });
     output.textContent = formatJson(data);
     await loadEvolution();

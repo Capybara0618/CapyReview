@@ -1,5 +1,6 @@
 """Application service for CapyReview's core PR-review workflow."""
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .agents import MultiAgentCoordinator
@@ -14,7 +15,8 @@ from .models import TaskState, TraceEvent
 from .postgres_store import create_store
 from .report import to_markdown
 from .reviewer import OpenAICompatibleJudge, OpenAICompatibleReviewer
-from .skill_evolution import ReviewPolicy
+from .review_skills import ReviewSkillRegistry, ReviewSkillSelector
+from .skill_evolution import ReviewSkillCandidateProposer
 from .store import utc_now
 from .task_queue import PermanentTaskError, TaskQueue
 
@@ -31,7 +33,7 @@ evidence and leave security-dominant findings to the security specialist."""
 
 
 class ReviewService:
-    """Coordinate storage, runtime, GitHub delivery, feedback, and policy evolution.
+    """Coordinate storage, runtime, GitHub delivery, feedback, and Skill evolution.
 
     A reviewer can be injected for deterministic tests. Production construction is
     intentionally lazy: the web server can expose health and configuration guidance
@@ -59,15 +61,23 @@ class ReviewService:
         self.mcp_tools = GitHubMcpToolProvider(
             GitHubMcpClient(settings.github_token)
         )
+        self.review_skills_root = Path(__file__).resolve().parents[1] / "skills"
+        self.review_skills = ReviewSkillRegistry(self.review_skills_root)
         self._injected_reviewer = reviewer
-        self._policy_version: Optional[int] = None
+        self._skill_versions: Dict[str, int] = {}
+        self._evolution_scheduled_count = 0
         self._harness_cache: Dict[tuple, ReviewHarness] = {}
         self.reviewer = reviewer
         self.harness = self._new_harness(reviewer) if reviewer is not None else None
         self.evolution = EvolutionEngine(
             self.store,
             reviewer_factory=(
-                self._build_policy_reviewer if settings.deepseek_api_key.strip() else None
+                self._build_evaluation_reviewer
+                if settings.deepseek_api_key.strip() else None
+            ),
+            candidate_proposer=(
+                self._build_skill_proposer()
+                if settings.deepseek_api_key.strip() else None
             ),
             min_cases=settings.eval_min_cases,
             max_cases=settings.eval_max_cases,
@@ -111,11 +121,22 @@ class ReviewService:
         reviewer.domains = domains
         return reviewer
 
-    def _build_policy_reviewer(self, prompt: str) -> OpenAICompatibleReviewer:
+    def _build_evaluation_reviewer(self, prompt: str) -> OpenAICompatibleReviewer:
         return self._build_llm_reviewer(
             prompt,
-            "llm-review-policy-evaluator",
+            "llm-review-skill-evaluator",
             ("security", "correctness", "reliability", "regression"),
+        )
+
+    def _build_skill_proposer(self) -> ReviewSkillCandidateProposer:
+        config = self._llm_config()
+        client = OpenAICompatibleReviewer(
+            str(config["base_url"]), str(config["api_key"]),
+            str(config["model"]), self.settings.timeout_seconds,
+            provider="deepseek",
+        )
+        return ReviewSkillCandidateProposer(
+            client.request_json, str(config["model"]),
         )
 
     def _build_llm_judge(self, model: str = "") -> OpenAICompatibleJudge:
@@ -129,58 +150,46 @@ class ReviewService:
         )
 
     @staticmethod
-    def _policy_from_record(record: dict) -> ReviewPolicy:
-        return ReviewPolicy({
-            "name": "evolved-review",
-            "description": "Replay-gated instructions learned from review feedback",
-            "instructions": [{
-                "rule_id": "POLICY-REVIEW",
-                "severity": "medium",
-                "domains": ["security", "correctness", "reliability", "regression"],
-                "instruction": str(record["prompt"]),
-            }],
-        }, int(record["version"]))
+    def _package_from_record(record: dict) -> dict:
+        return {
+            **dict(record["package"]),
+            "name": record["skill_name"],
+            "version": int(record["version"]),
+        }
 
-    def _active_policy(self) -> tuple:
-        active = self.store.get_active_skill_version("llm-review")
-        if not active:
-            return None, None
-        return int(active["version"]), self._policy_from_record(active)
+    def _active_skill_packages(self) -> list:
+        return [
+            self._package_from_record(record)
+            for record in self.store.list_active_skill_versions()
+        ]
 
-    def _policy_for_version(self, version: Optional[int]) -> Optional[ReviewPolicy]:
-        if version is None:
-            return None
-        record = next((
-            item for item in self.store.list_skill_versions("llm-review")
-            if int(item["version"]) == int(version)
-        ), None)
-        if record is None:
-            raise ValueError("frozen review policy version is unavailable: %s" % version)
-        return self._policy_from_record(record)
+    def _skill_packages_for_versions(self, versions: Dict[str, int]) -> list:
+        packages = []
+        for name, version in sorted(versions.items()):
+            record = next((
+                item for item in self.store.list_skill_versions(name)
+                if int(item["version"]) == int(version)
+            ), None)
+            if record is None:
+                raise ValueError(
+                    "frozen review Skill version is unavailable: %s@%s"
+                    % (name, version)
+                )
+            packages.append(self._package_from_record(record))
+        return packages
 
     def _build_coordinator(
-        self, policy: Optional[ReviewPolicy] = None, model: str = "",
+        self, skill_packages=(), model: str = "",
     ) -> MultiAgentCoordinator:
-        security_prompt = (
-            policy.compose_system_prompt(SECURITY_REVIEW_PROMPT, ("security",))
-            if policy else SECURITY_REVIEW_PROMPT
-        )
-        correctness_prompt = (
-            policy.compose_system_prompt(
-                CORRECTNESS_REVIEW_PROMPT,
-                ("correctness", "reliability", "regression"),
-            )
-            if policy else CORRECTNESS_REVIEW_PROMPT
-        )
         reviewers = [
             self._build_llm_reviewer(
-                security_prompt,
+                SECURITY_REVIEW_PROMPT,
                 "llm-security-specialist",
                 ("security",),
                 model,
             ),
             self._build_llm_reviewer(
-                correctness_prompt,
+                CORRECTNESS_REVIEW_PROMPT,
                 "llm-correctness-specialist",
                 ("correctness", "reliability", "regression"),
                 model,
@@ -198,35 +207,42 @@ class ReviewService:
             runtime_timeout_seconds=self.settings.timeout_seconds * 3,
             judge=self._build_llm_judge(model),
             tool_provider=self.mcp_tools,
+            skill_registry=ReviewSkillRegistry(
+                self.review_skills_root, packages=skill_packages,
+            ),
+            skill_selector=ReviewSkillSelector(),
         )
 
     def _ensure_harness(self) -> ReviewHarness:
         if self._injected_reviewer is not None:
             return self.harness
-        version, policy = self._active_policy()
+        packages = self._active_skill_packages()
+        versions = {item["name"]: item["version"] for item in packages}
         model = self.settings.deepseek_model
-        key = (model, version)
+        key = (model, tuple(sorted(versions.items())))
         if key not in self._harness_cache:
-            reviewer = self._build_coordinator(policy, model)
+            reviewer = self._build_coordinator(packages, model)
             self._harness_cache[key] = self._new_harness(reviewer)
         self.harness = self._harness_cache[key]
         self.reviewer = self.harness.reviewer
-        self._policy_version = version
+        self._skill_versions = versions
         return self.harness
 
     def _harness_for_task(self, task: Dict[str, Any]) -> ReviewHarness:
         if self._injected_reviewer is not None:
             return self.harness
         task_input = task.get("input") or {}
-        if "model" not in task_input and "policy_version" not in task_input:
+        if "model" not in task_input and "skill_versions" not in task_input:
             return self._ensure_harness()
         model = str(task_input.get("model") or self.settings.deepseek_model)
-        version = task_input.get("policy_version")
-        version = int(version) if version is not None else None
-        key = (model, version)
+        versions = {
+            str(name): int(version)
+            for name, version in (task_input.get("skill_versions") or {}).items()
+        }
+        key = (model, tuple(sorted(versions.items())))
         if key not in self._harness_cache:
             reviewer = self._build_coordinator(
-                self._policy_for_version(version), model
+                self._skill_packages_for_versions(versions), model
             )
             self._harness_cache[key] = self._new_harness(reviewer)
         return self._harness_cache[key]
@@ -234,7 +250,7 @@ class ReviewService:
     def _execution_snapshot(self) -> Dict[str, Any]:
         return {
             "model": self.settings.deepseek_model,
-            "policy_version": self._policy_version,
+            "skill_versions": dict(self._skill_versions),
         }
 
     def _validate_review(self, repository: str, diff: str) -> None:
@@ -290,6 +306,7 @@ class ReviewService:
         harness = self._ensure_harness()
         task_id = self._create_task(repository, diff, pull_request, source)
         report = harness.run(task_id, repository, pull_request, diff)
+        self._schedule_skill_evolution()
         return {"task_id": task_id, "state": "SUCCESS", "report": report.to_dict()}
 
     def enqueue_review(
@@ -311,6 +328,11 @@ class ReviewService:
         return {"task_id": task_id, "state": "PENDING", "queue": self.queue.backend}
 
     def _process_queued(self, payload: Dict[str, Any]) -> None:
+        if payload.get("kind") == "skill-evolution":
+            self.evolution.auto_propose(
+                str(payload.get("skill_name") or "review-evolved-patterns")
+            )
+            return
         task_id = str(payload.get("task_id", ""))
         task = self.store.get(task_id)
         if not task:
@@ -342,6 +364,26 @@ class ReviewService:
                 to_markdown(report.to_dict()),
                 "<!-- capyreview-review:%s -->" % task_id,
             )
+        self._schedule_skill_evolution()
+
+    def _schedule_skill_evolution(self) -> bool:
+        cases = self.store.list_failure_cases(True, 100)
+        count = len(cases)
+        if (
+            not self.evolution.should_auto_propose()
+            or count == self._evolution_scheduled_count
+        ):
+            return False
+        self._evolution_scheduled_count = count
+        self.queue.submit(
+            {
+                "kind": "skill-evolution",
+                "skill_name": "review-evolved-patterns",
+                "failure_cases": count,
+            },
+            message_id="skill-evolution-%s" % count,
+        )
+        return True
 
     def _on_terminal_failure(self, payload: Dict[str, Any], error: str) -> None:
         task_id = str(payload.get("task_id", ""))
@@ -427,14 +469,17 @@ class ReviewService:
             raise ValueError("feedback requires a completed review task")
         if category not in {"false_positive", "missed_issue", "accepted"}:
             raise ValueError("unsupported feedback category")
-        self.store.record_failure_case(
-            task_id,
-            category,
-            {"finding": finding, "note": note[:2000]},
-        )
+        if category in {"false_positive", "missed_issue"}:
+            self.store.record_failure_case(
+                task_id,
+                category,
+                {"finding": finding, "note": note[:2000]},
+            )
         self.memory.remember_feedback(
             task["repository"], task_id, category, finding, note[:2000]
         )
+        if category != "accepted":
+            self._schedule_skill_evolution()
         return {"recorded": True, "category": category}
 
     def resume_task(self, task_id: str) -> dict:

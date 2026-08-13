@@ -308,7 +308,7 @@ class InMemoryTaskStore:
             return deepcopy(rows[:_limit(limit, 200)])
 
     def save_skill_version(
-        self, skill_name: str, prompt: str, score: float,
+        self, skill_name: str, package: dict, score: float,
         activate: bool = False,
     ) -> Dict[str, Any]:
         with self._lock:
@@ -324,7 +324,7 @@ class InMemoryTaskStore:
                 "id": len(self.skill_versions) + 1,
                 "skill_name": skill_name,
                 "version": max((item["version"] for item in matching), default=0) + 1,
-                "prompt": prompt,
+                "package": deepcopy(package),
                 "score": float(score),
                 "active": bool(activate),
                 "parent_version": active["version"] if active else None,
@@ -350,6 +350,12 @@ class InMemoryTaskStore:
                 if item["skill_name"] == skill_name
             ]
             rows.sort(key=lambda item: item["version"], reverse=True)
+            return deepcopy(rows)
+
+    def list_active_skill_versions(self) -> list:
+        with self._lock:
+            rows = [item for item in self.skill_versions if item["active"]]
+            rows.sort(key=lambda item: (item["skill_name"], -item["version"]))
             return deepcopy(rows)
 
     def activate_skill_version(self, skill_name: str, version: int) -> bool:

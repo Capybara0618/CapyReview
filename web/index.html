@@ -123,15 +123,19 @@
       </section>
 
       <section class="view" id="view-evolution" aria-labelledby="page-title">
-        <div class="section-heading"><span class="eyebrow">FEEDBACK LOOP</span><h2>反馈与策略演化</h2><p>候选 Prompt/Skill 只有通过安全、Validation 提升和 Holdout 非退化门禁后才会激活。</p></div>
+        <div class="section-heading"><span class="eyebrow">FEEDBACK LOOP</span><h2>反馈与 Skill 演化</h2><p>正式 SKILL.md 候选只有通过安全、Validation 提升和 Holdout 非退化门禁后才会激活。</p></div>
         <div class="evolution-flow"><span>确认反馈</span><i></i><span>生成候选</span><i></i><span>Validation</span><i></i><span>Holdout</span><i></i><span>激活 / 回滚</span></div>
         <div class="two-columns">
           <article class="panel">
             <div class="panel-head"><div><span class="eyebrow">GATE STATUS</span><h3>演化状态</h3></div><button class="button secondary" id="auto-evolve" type="button">从反馈生成候选</button></div>
             <pre id="evolution-status">正在读取门禁状态…</pre>
             <form id="evolution-form">
-              <label>策略名称<input name="skill_name" value="llm-review" required></label>
-              <label>候选 Prompt<textarea name="prompt" rows="9" required>Review the unified diff. Return JSON findings with severity, fix and test. Report only actionable defects introduced by added lines.</textarea></label>
+              <label>Skill 名称<input name="skill_name" value="review-evolved-patterns" required></label>
+              <label>候选 Skill 包（JSON）<textarea name="package" rows="12" required>{
+  "name": "review-evolved-patterns",
+  "skill_md": "---\nname: review-evolved-patterns\ndescription: Review recurring defects confirmed by prior PR feedback.\nmetadata:\n  capyreview-domains: security correctness reliability\n  capyreview-signals: auth error retry boundary\n---\n\n# Evolved Review Patterns\n\nRequire exact changed-line evidence before reporting a concrete defect.\n",
+  "references": {}
+}</textarea></label>
               <button class="button" type="submit">执行门禁评测</button>
             </form>
           </article>

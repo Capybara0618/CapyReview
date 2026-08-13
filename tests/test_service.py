@@ -9,6 +9,25 @@ from tests.fakes import InMemoryTaskStore
 DIFF = "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
 
 
+def skill_package(marker):
+    return {
+        "name": "review-auth-security",
+        "skill_md": """---
+name: review-auth-security
+description: Review auth and eval trust-boundary defects from confirmed feedback.
+metadata:
+  capyreview-domains: security
+  capyreview-signals: eval auth token
+---
+
+# %s
+
+Require exact changed-line evidence before reporting a concrete defect.
+""" % marker,
+        "references": {},
+    }
+
+
 class FakeCoordinator:
     name = "fake-llm-coordinator"
 
@@ -83,7 +102,7 @@ class ServiceTests(unittest.TestCase):
         finally:
             service.close()
 
-    def test_active_evolved_policy_is_injected_into_both_llm_specialists(self):
+    def test_active_evolved_skill_package_is_available_to_the_runtime_registry(self):
         settings = Settings(
             deepseek_api_key="test-key",
             deepseek_model="test-model",
@@ -93,21 +112,21 @@ class ServiceTests(unittest.TestCase):
         )
         try:
             service.store.save_skill_version(
-                "llm-review",
-                "Review diff JSON severity fix test and require exact boundary evidence.",
+                "review-auth-security", skill_package("Evolved Auth Review"),
                 0.8,
                 activate=True,
             )
             service._ensure_harness()
-            prompts = [item.system_prompt for item in service.reviewer.agents]
+            activated = service.reviewer.skill_registry.activate(
+                "review-auth-security"
+            )
         finally:
             service.close()
 
-        self.assertEqual(2, len(prompts))
-        self.assertTrue(all("evolved-review@1" in prompt for prompt in prompts))
-        self.assertTrue(all("POLICY-REVIEW" in prompt for prompt in prompts))
+        self.assertEqual(1, activated.version)
+        self.assertIn("# Evolved Auth Review", activated.body)
 
-    def test_queued_task_keeps_the_model_and_policy_version_from_creation(self):
+    def test_queued_task_keeps_the_model_and_skill_versions_from_creation(self):
         settings = Settings(
             deepseek_api_key="test-key",
             deepseek_model="deepseek-chat-test",
@@ -118,26 +137,28 @@ class ServiceTests(unittest.TestCase):
         )
         calls = []
 
-        class PolicyCoordinator(FakeCoordinator):
-            def __init__(self, version, model):
-                self.version = version
+        class SkillCoordinator(FakeCoordinator):
+            def __init__(self, versions, model):
+                self.versions = versions
                 self.model = model
-                self.name = "policy-%s:%s" % (version, model)
+                self.name = "skills-%s:%s" % (versions, model)
 
             def review_with_context(self, *args, **kwargs):
-                calls.append((self.version, self.model))
+                calls.append((self.versions, self.model))
                 return super().review_with_context(*args, **kwargs)
 
-        service._build_coordinator = lambda policy=None, model="": PolicyCoordinator(
-            getattr(policy, "version", None), model
+        service._build_coordinator = lambda skill_packages=(), model="": SkillCoordinator(
+            {item["name"]: item["version"] for item in skill_packages}, model
         )
         try:
             version_one = service.store.save_skill_version(
-                "llm-review", "first policy", 0.8, activate=True
+                "review-auth-security", skill_package("Version One"),
+                0.8, activate=True,
             )
             pending = service.enqueue_review("org/repo", DIFF, 1)
             service.store.save_skill_version(
-                "llm-review", "second policy", 0.9, activate=True
+                "review-auth-security", skill_package("Version Two"),
+                0.9, activate=True,
             )
             message = queue.messages[0][1]
             service._process_queued(message)
@@ -145,9 +166,15 @@ class ServiceTests(unittest.TestCase):
         finally:
             service.close()
 
-        self.assertEqual(version_one["version"], task["input"]["policy_version"])
+        self.assertEqual(
+            {"review-auth-security": version_one["version"]},
+            task["input"]["skill_versions"],
+        )
         self.assertEqual("deepseek-chat-test", task["input"]["model"])
-        self.assertEqual([(version_one["version"], "deepseek-chat-test")], calls)
+        self.assertEqual([(
+            {"review-auth-security": version_one["version"]},
+            "deepseek-chat-test",
+        )], calls)
 
     def test_rejects_large_diff_before_creating_a_task(self):
         service = self.service(reviewer=FakeCoordinator())
@@ -167,6 +194,13 @@ class ServiceTests(unittest.TestCase):
                 result["report"]["findings"][0], "不是实际风险",
             )
             cases = service.store.list_task_failure_cases(result["task_id"])
+            service.record_feedback(
+                result["task_id"], "accepted",
+                result["report"]["findings"][0], "confirmed issue",
+            )
+            cases_after_accept = service.store.list_task_failure_cases(
+                result["task_id"]
+            )
             with self.assertRaises(ValueError):
                 service.record_feedback(result["task_id"], "bad_fix", None, "obsolete")
         finally:
@@ -174,6 +208,7 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual({"recorded": True, "category": "false_positive"}, feedback)
         self.assertEqual(1, len(cases))
+        self.assertEqual(1, len(cases_after_accept))
         self.assertEqual("SEC-EVAL", cases[0]["payload"]["finding"]["rule_id"])
 
     def test_webhook_is_idempotent_and_uses_the_same_core_queue(self):
@@ -222,6 +257,32 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual("PENDING", resumed["state"])
         self.assertTrue(resumed["resumed"])
         self.assertEqual(2, len(queue.messages))
+
+    def test_complete_failure_batch_schedules_skill_evolution_on_the_same_queue(self):
+        queue = CapturingQueue()
+        service = ReviewService(
+            self.settings, reviewer=FakeCoordinator(),
+            store=InMemoryTaskStore(), queue=queue,
+        )
+        calls = []
+        service.evolution.auto_propose = lambda name: calls.append(name) or {
+            "decision": "deferred"
+        }
+        try:
+            for index in range(3):
+                task_id = "failure-%s" % index
+                service.store.create(task_id, "org/repo", index, {})
+                service.store.record_failure_case(
+                    task_id, "judge_rejected", {"reason": "confirmed"}
+                )
+            service._schedule_skill_evolution()
+            message = queue.messages[0][1]
+            service._process_queued(message)
+        finally:
+            service.close()
+
+        self.assertEqual("skill-evolution", message["kind"])
+        self.assertEqual(["review-evolved-patterns"], calls)
 
 
 if __name__ == "__main__":

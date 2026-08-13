@@ -34,9 +34,9 @@ PR Diff / GitHub Webhook
   CI 失败和 Code Scanning 告警；仓库、PR 与 Head Commit 由任务注入，不交给模型填写。
   Finding 仍须通过路径、行号和引用文本校验，再由独立 LLM Judge 语义复核。
 - Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级审查记忆。
-- ReviewPolicy Evolution：人工反馈生成候选策略，经 Validation/Holdout 门禁后才能激活，
-  支持版本追踪与回滚。
-- 可复现执行：任务创建时冻结模型名与 ReviewPolicy 版本，并在结果中汇总真实 LLM 调用数、
+- 正式 Review Skills：按风险信号选择 `SKILL.md` 专业工作流；Evidence/Judge 驳回会回流原
+  Reviewer 一次，跨任务失败案例由 LLM 生成候选 Skill 包，经 Validation/Holdout 门禁后激活。
+- 可复现执行：任务创建时冻结模型名与 Skill 版本集合，并在结果中汇总真实 LLM 调用数、
   Prompt/Completion Token 和请求延迟。
 - 单系统 Evaluation：对完整 CapyReview 工作流运行一次 100 条受控 Diff 评测，不设置对比组。
 
@@ -147,13 +147,18 @@ Evidence Validator。MCP 参数错误、认证失败或上游错误会变成下�
 不会回退到本地规则或旧工具；Observation 保存后，任务恢复不会重复同一次外部调用。Agent
 Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗在连续取证上。
 
-## ReviewPolicy Evolution
+## Formal Review Skill Evolution
 
-项目只保留一条策略版本链。用户将审查结果标记为 `false_positive`、`missed_issue` 或
-`accepted` 后，反馈会进入仓库级 Memory，并可用于生成候选 ReviewPolicy。候选不能直接
-生效，必须满足：
+项目将认证安全、数据库迁移和异步可靠性等专业流程组织成符合 Agent Skills 规范的
+`SKILL.md + references/` 包。系统只加载与当前 Diff 和 Reviewer 领域匹配的最小 Skill 集合，
+参考资料由 Reviewer 通过 `read_skill_reference` 按需读取。
 
-1. 策略内容通过安全与完整性检查；
+Evidence Validator 或 Judge 驳回候选后，系统把结构化原因返回原 Reviewer 一次，并保存独立
+Reflection Checkpoint。未解决的反思失败与人工 `false_positive`、`missed_issue` 反馈进入失败
+案例库；每累计 3 条，通过 Redis Streams 异步调用 LLM 生成一个完整候选 Skill 包。候选不能
+直接生效，必须满足：
+
+1. `SKILL.md`、frontmatter 和引用文件通过格式、安全与非执行性检查；
 2. Validation 得分达到配置的最小提升；
 3. Validation 受保护指标不退化；
 4. Holdout 指标不退化；
@@ -168,8 +173,9 @@ Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗�
 - `GET /v1/skills/{skill_name}/versions`
 - `POST /v1/skills/{skill_name}/versions/{version}/activate`
 
-激活策略作为版本化 system-prompt 指令注入 Security 与 Correctness Reviewer；它不是可执行
-代码，也不会自行扫描 Diff 或生成 Finding。
+激活版本作为可发现的正式 Skill 进入注册表，只有命中领域与信号时才进入 Reviewer 上下文。
+生成 Skill 不允许携带脚本、命令、工具定义或绕过 Evidence/Judge 的指令。任务创建时冻结
+Skill 版本集合，续跑不会静默切换版本。
 
 ## 评测
 
@@ -222,7 +228,7 @@ python scripts/run_controlled_rule_benchmark.py
 
 CapyReview 只有一套正式运行架构：
 
-- PostgreSQL：持久化任务、Checkpoint、Trace、Finding、反馈、Memory 和策略版本；
+- PostgreSQL：持久化任务、Checkpoint、Trace、Finding、反馈、Memory 和 Skill 版本；
 - Redis Streams：异步审查任务投递、Consumer Group、ACK、租约回收与有界重试。
 
 启动完整系统：
@@ -252,8 +258,8 @@ Compose 会读取根目录 `.env`，启动 PostgreSQL、Redis 与 CapyReview，�
 | `POST` | `/v1/tasks/{task_id}/cancel` | 请求取消任务 |
 | `POST` | `/v1/tasks/{task_id}/resume` | 从已保存状态续跑 |
 | `POST` | `/webhooks/github` | 接收 GitHub PR Webhook |
-| `GET/POST` | `/v1/evolution/*` | ReviewPolicy 状态、运行与候选生成 |
-| `GET/POST` | `/v1/skills/{skill_name}/versions/*` | 查询、激活或回滚策略版本 |
+| `GET/POST` | `/v1/evolution/*` | Formal Skill 状态、运行与候选生成 |
+| `GET/POST` | `/v1/skills/{skill_name}/versions/*` | 查询、激活或回滚 Skill 版本 |
 
 ## 测试
 

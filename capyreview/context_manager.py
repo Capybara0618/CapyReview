@@ -147,6 +147,7 @@ class ContextManager:
         memories: Sequence[Dict[str, Any]] = (),
         observations: Sequence[Dict[str, Any]] = (),
         tools: Sequence[Dict[str, Any]] = (),
+        skills: Sequence[Dict[str, Any]] = (),
     ) -> ManagedContext:
         """Fit all changing loop state into one deterministic token budget.
 
@@ -188,6 +189,12 @@ class ContextManager:
             ) if assignment.get(key) not in (None, "", [])
         }
         append("ASSIGNMENT", compact_assignment)
+        for skill in skills:
+            append("SKILL", {
+                "name": skill.get("name"),
+                "version": skill.get("version"),
+                "instructions": str(skill.get("body", ""))[:6000],
+            }, optional=True)
         for tool in tools:
             append("TOOL", {
                 "name": tool.get("name"),

@@ -7,6 +7,7 @@ from capyreview.memory import MemoryManager
 from capyreview.mcp import GitHubMcpToolProvider
 from capyreview.models import Finding, Severity
 from capyreview.reviewer import OpenAICompatibleReviewer
+from capyreview.review_skills import ReviewSkillRegistry, ReviewSkillSelector
 from capyreview.runtime import AgentLoop, AgentRuntime, AgentTool, RuntimeNode, ToolRegistry
 from capyreview.store import utc_now
 from tests.fakes import InMemoryTaskStore
@@ -368,6 +369,119 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             {"owner": "org", "repo": "repo", "path": "app.py", "sha": "abc123"},
         )], client.calls)
 
+    def test_failed_tool_observation_is_archived_for_skill_evolution(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("tool-learning", "org/repo", 13, {})
+        client = FakeGitHubMcpClient()
+
+        class CorrectingToolSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    return {
+                        "action": "tool", "tool": "read_code_context",
+                        "arguments": {"path": "app.py", "line": "first"},
+                    }
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+                    "The changed line executes untrusted input as code.",
+                    line.path, line.line, line.content,
+                    "Replace eval with a parser.", "Add an input test.", 0.9,
+                )]}
+
+        coordinator = MultiAgentCoordinator(
+            [CorrectingToolSpecialist()], store=self.store,
+            judge=ApprovingJudge(),
+            tool_provider=GitHubMcpToolProvider(client),
+        )
+        findings = coordinator.review_with_context(
+            "tool-learning", diff, parsed, repository="org/repo",
+            head_commit="abc123",
+        )
+        cases = self.store.list_task_failure_cases("tool-learning")
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual([], client.calls)
+        self.assertEqual("tool_error", cases[0]["category"])
+        self.assertEqual("read_code_context", cases[0]["payload"]["tool"])
+
+    def test_security_reviewer_activates_formal_skill_and_loads_reference_on_demand(self):
+        diff = "--- a/capyreview/github.py\n+++ b/capyreview/github.py\n@@ -10 +10,3 @@\n-old\n+if signature == 'bypass':\n+    return True\n"
+        parsed = parse_unified_diff(diff)
+
+        class SkillAwareSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    if "# Authentication Security Review" not in state["managed_context"]:
+                        raise AssertionError("activated SKILL.md was not loaded")
+                    names = {item["name"] for item in state["available_tools"]}
+                    if "read_skill_reference" not in names:
+                        raise AssertionError("skill reference tool is unavailable")
+                    return {
+                        "action": "tool", "tool": "read_skill_reference",
+                        "arguments": {
+                            "skill": "review-auth-security",
+                            "path": "references/threat-patterns.md",
+                        },
+                    }
+                if "fixed development bypass" not in str(state["observations"]):
+                    raise AssertionError("skill reference content was not observed")
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "SEC-AUTH", Severity.CRITICAL, "Signature bypass",
+                    "A fixed value bypasses signature verification.",
+                    line.path, line.line, line.content,
+                    "Remove the bypass.", "Add a forged-signature test.", 0.99,
+                )]}
+
+        coordinator = MultiAgentCoordinator(
+            [SkillAwareSpecialist()], judge=ApprovingJudge(),
+            skill_registry=ReviewSkillRegistry("skills"),
+            skill_selector=ReviewSkillSelector(),
+        )
+
+        findings = coordinator.review(diff, parsed)
+        summary = coordinator.collaboration_summary("")
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual(1, summary["tool_calls"])
+        self.assertEqual(
+            ["review-auth-security@1"], summary["activated_skills"]
+        )
+
+    def test_unrelated_diff_does_not_load_a_review_skill(self):
+        diff = "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+Clarify installation.\n"
+        parsed = parse_unified_diff(diff)
+
+        class DocumentationSpecialist:
+            name = "correctness-specialist"
+            domains = ("correctness",)
+
+            def agent_step(self, state):
+                if "SKILL.md" in state["managed_context"]:
+                    raise AssertionError("unrelated Skill was loaded")
+                names = {item["name"] for item in state["available_tools"]}
+                if "read_skill_reference" in names:
+                    raise AssertionError("reference tool should require an active Skill")
+                return {"action": "final", "findings": []}
+
+        coordinator = MultiAgentCoordinator(
+            [DocumentationSpecialist()], judge=ApprovingJudge(),
+            skill_registry=ReviewSkillRegistry("skills"),
+            skill_selector=ReviewSkillSelector(),
+        )
+
+        coordinator.review(diff, parsed)
+
+        self.assertEqual([], coordinator.collaboration_summary("")["activated_skills"])
+
     def test_coordinator_reserves_the_last_loop_step_for_final_output(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
         parsed = parse_unified_diff(diff)
@@ -575,6 +689,130 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             and item["content"].get("node") == "judge"
             for item in events
         ))
+
+    def test_coordinator_restores_completed_reflection_without_repeating_reviewer(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("reflection-resume", "org/repo", 11, {})
+
+        class CorrectingSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                line = state["parsed"].added_lines[0]
+                evidence = line.content if state.get("feedback") else "eval(other)"
+                return {"action": "final", "findings": [Finding(
+                    "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+                    "The added line executes untrusted input as code.",
+                    line.path, line.line, evidence,
+                    "Replace eval with an allow-listed parser.",
+                    "Add an untrusted-input regression test.", 0.9,
+                )]}
+
+        first = MultiAgentCoordinator(
+            [CorrectingSpecialist()], store=self.store,
+            agent_retries=0, judge=ApprovingJudge(),
+        )
+        first.review_with_context(
+            "reflection-resume", diff, parsed, repository="org/repo",
+        )
+        archived_before_resume = self.store.list_task_failure_cases(
+            "reflection-resume"
+        )
+        self.store.delete_checkpoint("reflection-resume", "judge")
+
+        class MustNotRunSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def review(self, _diff, _parsed):
+                raise AssertionError("completed reviewer or reflection was repeated")
+
+        second = MultiAgentCoordinator(
+            [MustNotRunSpecialist()], store=self.store,
+            agent_retries=0, judge=ApprovingJudge(),
+        )
+        findings = second.review_with_context(
+            "reflection-resume", diff, parsed, repository="org/repo",
+        )
+        events = self.store.get("reflection-resume")["collaboration"]
+        archived_after_resume = self.store.list_task_failure_cases(
+            "reflection-resume"
+        )
+
+        self.assertEqual("eval(data)", findings[0].evidence)
+        self.assertEqual("evidence_rejected", archived_before_resume[0]["category"])
+        self.assertEqual(1, len(archived_after_resume))
+        self.assertTrue(any(
+            item["kind"] == "checkpoint_restored"
+            and item["content"].get("node") == "reflection:evidence:A01"
+            for item in events
+        ))
+
+    def test_judge_checkpoint_restores_the_corrected_finding_content(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("judge-reflection-resume", "org/repo", 12, {})
+
+        class CorrectingSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                line = state["parsed"].added_lines[0]
+                explanation = (
+                    "Attacker-controlled data reaches eval and executes arbitrary code."
+                    if state.get("feedback") else "The call may be unsafe."
+                )
+                return {"action": "final", "findings": [Finding(
+                    "SEC-EVAL", Severity.CRITICAL, "Dynamic execution",
+                    explanation, line.path, line.line, line.content,
+                    "Replace eval with a parser.", "Add an input test.", 0.9,
+                )]}
+
+        class ReflectingJudge:
+            name = "llm-review-judge"
+
+            def __init__(self):
+                self.calls = 0
+
+            def judge(self, _diff, _parsed, findings, _evidence):
+                self.calls += 1
+                return {
+                    finding_key(finding): {
+                        "approved": self.calls > 1,
+                        "reasons": [] if self.calls > 1 else ["missing attacker path"],
+                        "confidence": 0.9,
+                    }
+                    for finding in findings
+                }
+
+        first_judge = ReflectingJudge()
+        first = MultiAgentCoordinator(
+            [CorrectingSpecialist()], store=self.store,
+            agent_retries=0, judge=first_judge,
+        )
+        first_result = first.review_with_context(
+            "judge-reflection-resume", diff, parsed, repository="org/repo",
+        )
+
+        class MustNotRunJudge:
+            name = "llm-review-judge"
+
+            def judge(self, *_args):
+                raise AssertionError("completed judge checkpoint was ignored")
+
+        second = MultiAgentCoordinator(
+            [CorrectingSpecialist()], store=self.store,
+            agent_retries=0, judge=MustNotRunJudge(),
+        )
+        restored = second.review_with_context(
+            "judge-reflection-resume", diff, parsed, repository="org/repo",
+        )
+
+        self.assertIn("Attacker-controlled", first_result[0].explanation)
+        self.assertEqual(first_result[0].to_dict(), restored[0].to_dict())
 
     def test_memory_recall_purges_expired_records(self):
         self.store.save_agent_memory({

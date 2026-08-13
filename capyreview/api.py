@@ -43,18 +43,18 @@ class FeedbackRequest(BaseModel):
     note: str = ""
 
 
-class PromptProposalRequest(BaseModel):
+class SkillProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    skill_name: str = "llm-review"
-    prompt: str
+    skill_name: str = "review-evolved-patterns"
+    package: Dict[str, Any]
     regression_score: Optional[float] = None
 
 
 class EvolutionAutoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    skill_name: str = "llm-review"
+    skill_name: str = "review-evolved-patterns"
 
 
 def _http_error(exc: Exception) -> HTTPException:
@@ -412,22 +412,22 @@ def create_app(
     @application.post(
         "/v1/evolution/propose", status_code=status.HTTP_201_CREATED
     )
-    def propose_evolution(payload: PromptProposalRequest, request: Request):
+    def propose_evolution(payload: SkillProposalRequest, request: Request):
         active = current_service(request)
         return active.evolution.propose(
-            payload.skill_name, payload.prompt, payload.regression_score
+            payload.skill_name, payload.package, payload.regression_score
         )
 
     @application.post("/v1/skills/{skill_name}/versions/{version}/activate")
-    def activate_prompt_version(skill_name: str, version: int, request: Request):
+    def activate_skill_version(skill_name: str, version: int, request: Request):
         active = current_service(request)
         ok = active.evolution.rollback(skill_name, version)
         if not ok:
-            raise HTTPException(status_code=404, detail="prompt version not found")
+            raise HTTPException(status_code=404, detail="Skill version not found")
         return {"activated": True}
 
     @application.get("/v1/skills/{skill_name}/versions")
-    def prompt_versions(skill_name: str, request: Request):
+    def skill_versions(skill_name: str, request: Request):
         return {
             "versions": current_service(request).store.list_skill_versions(skill_name)
         }

@@ -1,11 +1,9 @@
-import hashlib
-import json
-import re
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from .diff_parser import parse_unified_diff
+from .skill_evolution import compose_evaluation_prompt, validate_skill_package
 from .store import utc_now
 
 
@@ -196,24 +194,24 @@ class RegressionEvaluator:
 
 
 class EvolutionEngine:
-    """Review-policy evolution backed by replay gates and version rollback."""
-
-    FORBIDDEN = ("ignore previous", "disable safety", "bypass", "直接执行生产")
-    FEEDBACK_RULE_ID = re.compile(r"^[A-Z][A-Z0-9_-]{1,79}$")
+    """Formal review-Skill evolution backed by replay gates and rollback."""
 
     def __init__(
         self, store, reviewer_factory: Optional[Callable[[str], object]] = None,
+        candidate_proposer=None,
         min_cases: int = 3, max_cases: int = 5, min_improvement: float = 0.01,
         min_holdout_cases: int = 0, max_metric_regression: float = 0.0,
-        seed_defaults: bool = True,
+        min_failure_cases: int = 3, seed_defaults: bool = True,
     ):
         self.store = store
         self.reviewer_factory = reviewer_factory
+        self.candidate_proposer = candidate_proposer
         self.min_cases = min_cases
         self.max_cases = max_cases
         self.min_improvement = min_improvement
         self.min_holdout_cases = min_holdout_cases
         self.max_metric_regression = max_metric_regression
+        self.min_failure_cases = max(1, int(min_failure_cases))
         self._lock = threading.RLock()
         if seed_defaults:
             self._seed_default_cases()
@@ -270,25 +268,23 @@ class EvolutionEngine:
         self.validate_case(name, diff, expected, split)
         return self.store.save_evaluation_case(name, split, diff, expected, source[:120], True)
 
-    def safety_evaluate(self, prompt: str) -> Dict[str, Any]:
-        normalized = prompt.strip()
-        lowered = normalized.lower()
-        safety = bool(normalized) and len(normalized) <= 12000 and not any(
-            token in lowered for token in self.FORBIDDEN
-        )
-        required = ("diff", "severity", "fix", "test", "json")
-        completeness = sum(token in lowered for token in required) / len(required)
-        return {
-            "safety_passed": safety,
-            "completeness": round(completeness, 4),
-            "missing_terms": [token for token in required if token not in lowered],
-        }
+    def safety_evaluate(self, package: dict) -> Dict[str, Any]:
+        try:
+            validate_skill_package(package)
+            return {"safety_passed": True, "format": "formal-skill-package"}
+        except (TypeError, ValueError) as exc:
+            return {
+                "safety_passed": False,
+                "format": "invalid",
+                "error": str(exc)[:500],
+            }
 
     def status(self) -> Dict[str, Any]:
         cases = self.store.list_evaluation_cases("validation", True, self.max_cases)
         holdout = self.store.list_evaluation_cases("holdout", True, self.max_cases)
         return {
             "model_configured": self.reviewer_factory is not None,
+            "candidate_proposer_configured": self.candidate_proposer is not None,
             "validation_cases": len(cases),
             "holdout_cases": len(holdout),
             "minimum_cases": self.min_cases,
@@ -296,30 +292,31 @@ class EvolutionEngine:
             "maximum_cases_per_run": self.max_cases,
             "minimum_improvement": self.min_improvement,
             "maximum_metric_regression": self.max_metric_regression,
-            "validation_dataset_fingerprint": self._dataset_fingerprint(cases),
-            "holdout_dataset_fingerprint": self._dataset_fingerprint(holdout),
             "ready": (
                 self.reviewer_factory is not None
+                and self.candidate_proposer is not None
                 and len(cases) >= self.min_cases
                 and len(holdout) >= self.min_holdout_cases
             ),
         }
 
     def propose(
-        self, skill_name: str, prompt: str, regression_score: Optional[float] = None,
+        self, skill_name: str, package: dict,
+        regression_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         skill_name = skill_name.strip()
         if not skill_name or len(skill_name) > 120:
             raise ValueError("skill_name is required and must be at most 120 characters")
         with self._lock:
-            return self._propose(skill_name, prompt, regression_score)
+            return self._propose(skill_name, package, regression_score)
 
     def _propose(
-        self, skill_name: str, prompt: str, regression_score: Optional[float],
+        self, skill_name: str, package: dict, regression_score: Optional[float],
     ) -> Dict[str, Any]:
-        safety = self.safety_evaluate(prompt)
+        package = validate_skill_package(package, skill_name)
+        safety = self.safety_evaluate(package)
         active = self.store.get_active_skill_version(skill_name)
-        if active and prompt.strip() == active["prompt"].strip():
+        if active and package == active["package"]:
             return {
                 "version": {
                     "skill_name": active["skill_name"],
@@ -328,7 +325,7 @@ class EvolutionEngine:
                     "active": bool(active["active"]),
                 },
                 "decision": "deferred",
-                "reason": "candidate prompt is identical to the active version",
+                "reason": "candidate Skill package is identical to the active version",
                 "candidate": self._empty_metrics(0),
                 "baseline": self._empty_metrics(0),
                 "candidate_holdout": self._redact_holdout_metrics(self._empty_metrics(0)),
@@ -336,7 +333,11 @@ class EvolutionEngine:
                 "safety": safety,
                 "run_id": None,
             }
-        baseline_prompt = active["prompt"] if active else DEFAULT_PROMPT
+        baseline_prompt = (
+            compose_evaluation_prompt(DEFAULT_PROMPT, active["package"])
+            if active else DEFAULT_PROMPT
+        )
+        candidate_prompt = compose_evaluation_prompt(DEFAULT_PROMPT, package)
         cases = self.store.list_evaluation_cases("validation", True, self.max_cases)
         holdout_cases = self.store.list_evaluation_cases("holdout", True, self.max_cases)
 
@@ -347,7 +348,7 @@ class EvolutionEngine:
         candidate_holdout = self._empty_metrics(len(holdout_cases))
         baseline_holdout = self._empty_metrics(len(holdout_cases))
         gates = {
-            "safety": safety["safety_passed"] and safety["completeness"] == 1.0,
+            "safety": safety["safety_passed"],
             "validation_dataset_ready": len(cases) >= self.min_cases,
             "holdout_dataset_ready": len(holdout_cases) >= self.min_holdout_cases,
             "evaluation_success": None,
@@ -355,9 +356,9 @@ class EvolutionEngine:
             "validation_non_regression": None,
             "holdout_non_regression": None,
         }
-        if not safety["safety_passed"] or safety["completeness"] < 1.0:
+        if not safety["safety_passed"]:
             decision = "rejected"
-            reason = "candidate prompt failed the deterministic safety/completeness gate"
+            reason = "candidate Skill package failed the safety/format gate"
         elif self.reviewer_factory is None:
             reason = "candidate saved but no LLM provider is configured; replay evaluation was not run"
         elif len(cases) < self.min_cases:
@@ -367,10 +368,10 @@ class EvolutionEngine:
         else:
             evaluator = RegressionEvaluator(self.reviewer_factory)
             baseline_metrics = evaluator.run(baseline_prompt, cases)
-            candidate_metrics = evaluator.run(prompt, cases)
+            candidate_metrics = evaluator.run(candidate_prompt, cases)
             if holdout_cases:
                 baseline_holdout = evaluator.run(baseline_prompt, holdout_cases)
-                candidate_holdout = evaluator.run(prompt, holdout_cases)
+                candidate_holdout = evaluator.run(candidate_prompt, holdout_cases)
             no_errors = not (
                 baseline_metrics["errors"] or candidate_metrics["errors"]
                 or baseline_holdout["errors"] or candidate_holdout["errors"]
@@ -401,7 +402,7 @@ class EvolutionEngine:
                 reason = "; ".join(reasons)
 
         version = self.store.save_skill_version(
-            skill_name, prompt.strip(), candidate_metrics["score"], decision == "activated"
+            skill_name, package, candidate_metrics["score"], decision == "activated"
         )
         run = {
             "id": str(uuid.uuid4()),
@@ -421,10 +422,6 @@ class EvolutionEngine:
                 "reason": reason,
                 "reproducibility": {
                     "evaluation_schema_version": 2,
-                    "candidate_prompt_sha256": self._sha256(prompt.strip()),
-                    "baseline_prompt_sha256": self._sha256(baseline_prompt),
-                    "validation_dataset_sha256": self._dataset_fingerprint(cases),
-                    "holdout_dataset_sha256": self._dataset_fingerprint(holdout_cases),
                     "validation_case_ids": [case.get("id") for case in cases],
                     "holdout_case_count": len(holdout_cases),
                 },
@@ -450,62 +447,55 @@ class EvolutionEngine:
         with self._lock:
             return self.store.activate_skill_version(skill_name, version)
 
+    def should_auto_propose(self) -> bool:
+        count = len(self.store.list_failure_cases(True, 100))
+        return count >= self.min_failure_cases and count % self.min_failure_cases == 0
+
     def auto_propose(
-        self, skill_name: str = "llm-review",
+        self, skill_name: str = "review-evolved-patterns",
     ) -> Dict[str, Any]:
         cases = self.store.list_failure_cases(True, 100)
-        active = self.store.get_active_skill_version(skill_name)
-        base = active["prompt"] if active else DEFAULT_PROMPT
         counts = {}
         for case in cases:
             counts[case["category"]] = counts.get(case["category"], 0) + 1
-        directives = []
-        if counts.get("false_positive"):
-            directives.append("Avoid style-only findings and require direct evidence from an added line.")
-        if counts.get("missed_issue"):
-            directives.append("Check boundary conditions, authorization, input validation and error paths explicitly.")
-        if counts.get("execution_error"):
-            directives.append("Keep output valid JSON and follow the requested schema exactly.")
-        # A missed-issue feedback item may carry the reviewer rule identifier that a
-        # human confirmed.  Preserve that signal in the prompt without accepting
-        # arbitrary feedback text as an instruction.  The bracketed marker is both
-        # human-readable to an LLM and machine-auditable in offline replay.
-        learned_rule_ids = sorted({
-            str((case.get("payload", {}).get("finding") or {}).get("rule_id", "")).strip()
-            for case in cases
-            if case.get("category") == "missed_issue"
-        })
-        learned_rule_ids = [
-            rule_id for rule_id in learned_rule_ids
-            if self.FEEDBACK_RULE_ID.fullmatch(rule_id)
-        ]
-        directives.extend(
-            "Explicitly check added lines for confirmed rule %s [focus-rule:%s]."
-            % (rule_id, rule_id)
-            for rule_id in learned_rule_ids
-        )
-        additions = [directive for directive in directives if directive.lower() not in base.lower()]
-        if not additions:
+        if not cases:
             return {
                 "version": None,
                 "decision": "deferred",
-                "reason": "no new supported learning signal was found in unresolved feedback",
+                "reason": "no unresolved failure case is available",
                 "candidate": self._empty_metrics(0),
                 "baseline": self._empty_metrics(0),
                 "candidate_holdout": self._empty_metrics(0),
                 "baseline_holdout": self._empty_metrics(0),
-                "safety": self.safety_evaluate(base),
+                "safety": {"safety_passed": True, "format": "not-generated"},
+                "run_id": None,
+                "failure_cases_used": 0,
+                "learned_categories": counts,
+            }
+        if self.candidate_proposer is None:
+            return {
+                "version": None,
+                "decision": "deferred",
+                "reason": "no LLM Skill candidate proposer is configured",
+                "candidate": self._empty_metrics(0),
+                "baseline": self._empty_metrics(0),
+                "candidate_holdout": self._empty_metrics(0),
+                "baseline_holdout": self._empty_metrics(0),
+                "safety": {"safety_passed": True, "format": "not-generated"},
                 "run_id": None,
                 "failure_cases_used": len(cases),
                 "learned_categories": counts,
             }
-        candidate = base.rstrip() + (
-            "\n\nLearned constraints:\n- " + "\n- ".join(additions)
+        active = self.store.get_active_skill_version(skill_name)
+        candidate = self.candidate_proposer.propose(
+            cases,
+            [{**active["package"], "version": active["version"]}]
+            if active else [],
+            skill_name=skill_name,
         )
         result = self.propose(skill_name, candidate)
         result["failure_cases_used"] = len(cases)
         result["learned_categories"] = counts
-        result["learned_rule_ids"] = learned_rule_ids
         if result["decision"] == "activated":
             self.store.resolve_failure_cases([case["id"] for case in cases])
         return result
@@ -542,21 +532,3 @@ class EvolutionEngine:
         }
         redacted["error_count"] = len(metrics.get("errors", []))
         return redacted
-
-    @staticmethod
-    def _sha256(value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-    @classmethod
-    def _dataset_fingerprint(cls, cases: List[dict]) -> str:
-        canonical = [
-            {
-                "name": case.get("name"),
-                "split": case.get("split"),
-                "diff": case.get("diff"),
-                "expected": case.get("expected", []),
-            }
-            for case in cases
-        ]
-        payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return cls._sha256(payload)

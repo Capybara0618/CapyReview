@@ -34,7 +34,6 @@ class SlimArchitectureTests(unittest.TestCase):
             ROOT / "scripts" / "render_knowledge_base_pdf.py",
             ROOT / "scripts" / "import_github_pr_dataset.py",
             ROOT / "web" / "login.css",
-            ROOT / "skills",
         )
         remaining = [str(path.relative_to(ROOT)) for path in obsolete if path.exists()]
         self.assertEqual([], remaining)
