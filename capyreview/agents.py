@@ -291,7 +291,10 @@ class EvidenceValidator:
         grounded = bool(
             normalized_line
             and normalized_evidence
-            and normalized_evidence in normalized_line
+            and (
+                normalized_evidence in normalized_line
+                or normalized_line in normalized_evidence
+            )
         )
         return EvidenceReport(
             finding_key(finding), grounded,
