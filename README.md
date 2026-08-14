@@ -220,15 +220,30 @@ Observation 与 Memory；当前报告中压缩触发率、Batch 触发率、变�
 62.3%。单次缩减与累计开销分开统计；以上均为受控工程测试，不代表线上 SLA
 或真实 PR 检出效果。
 
-### 真实 PR 质量评测
+### 统一真实 PR 上下文与质量评测
 
-质量评测使用固定版本的 Code Review Bench 人工 Golden Issues，并与上下文压力数据集分开：
+上下文 Benchmark 与质量 Evaluation Harness 共用固定版本的 Code Review Bench 数据：
 
-- 10 条开发 PR 仅用于验证 Prompt、门禁和匹配流程；
-- 20 条测试 PR 在配置冻结后运行一次；
-- 仅统计 bug、security、concurrency、data 和 API 类核心缺陷；
-- 独立语义匹配 Judge 对最终 Finding 与 Golden Issue 做一对一匹配；
-- 每条结果立即落盘，支持断点续跑且不会重复已完成 PR。
+- 50 条真实开源 PR，覆盖 Python、Java、TypeScript、Go 与 Ruby；
+- 173 个人工 Golden Issues，其中 139 个 bug、security、concurrency、data、API
+  核心缺陷进入召回评测；
+- 3 条仅包含性能、测试缺口、文档或风格问题的 PR 作为核心风险负对照；
+- 每个仓库 2 条开发 PR、8 条测试 PR，总计 10 条开发集与 40 条冻结测试集；
+- Manifest 固定数据源 commit、PR base/head commit、Diff 与标签，两个评测读取同一份数据。
+
+运行 50 条真实 PR 上下文 Benchmark：
+
+```powershell
+python scripts/run_real_pr_context_benchmark.py
+```
+
+当前固定报告位于
+[`output/real-pr-context/unified-50-v1/`](output/real-pr-context/unified-50-v1/)：
+50 条 PR 的变更行覆盖率与预算满足率均为 100%；41 条未超限 PR 不触发压缩，9 条超限
+PR 全部完成预算内处理，其累计输入 Token 平均降低 14.5%。全体样本平均降低 2.7%，不能
+把只对超限样本生效的 14.5%表述为全部 PR 的平均效果。
+
+运行质量 Evaluation Harness：
 
 ```powershell
 $env:CAPYREVIEW_TIMEOUT_SECONDS='60'
@@ -239,9 +254,10 @@ python scripts/run_real_pr_quality_evaluation.py --split test
 ```
 
 固定测试报告位于
-[`output/real-pr-quality/test-aaf8c69/`](output/real-pr-quality/test-aaf8c69/)。
-该次测试 20/20 条执行成功，但暴露出 Evidence Validator 与 Judge 过滤偏严格、最终 Recall
-偏低，因此结果只用于系统诊断，不作为简历中的质量提升数字。
+[`output/real-pr-quality/unified-50-test-426e200/`](output/real-pr-quality/unified-50-test-426e200/)。
+该次测试 40/40 条执行成功；Precision 为 42.9%、Recall 为 2.7%、F1 为 5.0%。候选漏斗为
+163 个 Reviewer 候选、116 个 Evidence 拒绝、35 个 Judge 拒绝和 7 个最终 Finding，暴露出
+门禁偏严格，因此质量数字只用于系统诊断，不作为简历中的效果指标。
 
 ### 受控合成回归评测（补充）
 
