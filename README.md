@@ -220,7 +220,30 @@ Observation 与 Memory；当前报告中压缩触发率、Batch 触发率、变�
 62.3%。单次缩减与累计开销分开统计；以上均为受控工程测试，不代表线上 SLA
 或真实 PR 检出效果。
 
-### 100 条单系统 LLM 评测
+### 真实 PR 质量评测
+
+质量评测使用固定版本的 Code Review Bench 人工 Golden Issues，并与上下文压力数据集分开：
+
+- 10 条开发 PR 仅用于验证 Prompt、门禁和匹配流程；
+- 20 条测试 PR 在配置冻结后运行一次；
+- 仅统计 bug、security、concurrency、data 和 API 类核心缺陷；
+- 独立语义匹配 Judge 对最终 Finding 与 Golden Issue 做一对一匹配；
+- 每条结果立即落盘，支持断点续跑且不会重复已完成 PR。
+
+```powershell
+$env:CAPYREVIEW_TIMEOUT_SECONDS='60'
+$env:CAPYREVIEW_AGENT_RETRIES='1'
+$env:CAPYREVIEW_AGENT_LOOP_MAX_STEPS='2'
+python scripts/run_real_pr_quality_evaluation.py --split development
+python scripts/run_real_pr_quality_evaluation.py --split test
+```
+
+固定测试报告位于
+[`output/real-pr-quality/test-aaf8c69/`](output/real-pr-quality/test-aaf8c69/)。
+该次测试 20/20 条执行成功，但暴露出 Evidence Validator 与 Judge 过滤偏严格、最终 Recall
+偏低，因此结果只用于系统诊断，不作为简历中的质量提升数字。
+
+### 受控合成回归评测（补充）
 
 先运行一条风险样本和一条干净样本的预检：
 
@@ -228,7 +251,7 @@ Observation 与 Memory；当前报告中压缩触发率、Batch 触发率、变�
 python scripts/run_llm_evaluation.py --smoke
 ```
 
-正式运行完整 100 条数据集：
+运行完整 100 条受控数据集：
 
 ```powershell
 python scripts/run_llm_evaluation.py
