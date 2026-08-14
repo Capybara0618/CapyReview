@@ -463,8 +463,40 @@ def _large_diff(index: int, line_count: int, position: int) -> tuple:
 
 
 def run_context_stress_benchmark() -> Dict[str, Any]:
-    """Compress 30 oversized diffs and verify budget and risk-line retention."""
+    """Bound 30 complete model requests and verify contract/risk retention."""
     manager = ContextManager(max_tokens=1024, reserved_tokens=256)
+    unbounded = ContextManager(max_tokens=50000, reserved_tokens=2000)
+    system_prompt = (
+        "You are a bounded security reviewer. Return structured changed-line "
+        "findings and use only the listed read-only tools."
+    )
+    skills = [{
+        "name": "review-auth-security", "version": 1,
+        "body": "Inspect trust boundaries and require exact changed-line evidence.",
+    }]
+    tools = [{
+        "name": "read_code_context", "description": "Read source context.",
+        "parameters": {
+            "type": "object", "properties": {
+                "path": {"type": "string"}, "line": {"type": "integer"},
+            }, "required": ["path", "line"],
+        },
+    }, {
+        "name": "read_file_history", "description": "Read recent file history.",
+        "parameters": {
+            "type": "object", "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    }]
+    observations = [{
+        "id": "O1", "step": 1, "tool": "read_code_context", "ok": True,
+        "result": {"path": "src/stress.py", "content": "bounded context"},
+    }]
+    memories = [{
+        "scope": "semantic", "kind": "review_feedback",
+        "content": "Require exact evidence for dynamic execution findings.",
+        "recall_score": 0.9,
+    }]
     results = []
     tiers = (("medium", 500), ("large", 1000), ("xlarge", 2000))
     case_index = 0
@@ -474,23 +506,56 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
             diff, marker = _large_diff(case_index, lines, offset % 3)
             parsed = parse_unified_diff(diff)
             focus = next(item for item in parsed.added_lines if marker in item.content)
-            bundle = manager.build(diff, {
+            assignment = {
                 "agent": "security-reviewer",
+                "objective": "review dangerous dynamic execution",
                 "files": [focus.path],
+                "risk_domains": ["security"],
                 "focus_lines": [{"path": focus.path, "line": focus.line}],
-            })
-            reduction = 1.0 - bundle.final_tokens / bundle.original_tokens
+            }
+            fixed_tokens = manager.contract_tokens(
+                system_prompt, assignment, skills, tools
+            ) + manager.estimate_tokens("DIFF_CONTEXT:\n")
+            bundle = manager.build(
+                diff, assignment, fixed_tokens=fixed_tokens
+            )
+            managed = manager.compose(
+                bundle, assignment, system_prompt=system_prompt,
+                skills=skills, tools=tools,
+                observations=observations, memories=memories,
+            )
+            original_fixed = unbounded.contract_tokens(
+                system_prompt, assignment, skills, tools
+            ) + unbounded.estimate_tokens("DIFF_CONTEXT:\n")
+            original_bundle = unbounded.build(
+                diff, assignment, fixed_tokens=original_fixed
+            )
+            original = unbounded.compose(
+                original_bundle, assignment, system_prompt=system_prompt,
+                skills=skills, tools=tools,
+                observations=observations, memories=memories,
+            )
+            reduction = 1.0 - managed.estimated_tokens / original.estimated_tokens
+            contract_retained = (
+                managed.system_prompt == system_prompt
+                and managed.manifest["included"]["skills"] == len(skills)
+                and managed.manifest["included"]["tools"] == len(tools)
+            )
             results.append({
                 "id": "context-%02d" % case_index,
                 "size_tier": tier, "added_lines": lines,
                 "risk_position": ("start", "middle", "end")[offset % 3],
-                "original_tokens": bundle.original_tokens,
-                "final_tokens": bundle.final_tokens,
+                "original_tokens": original.estimated_tokens,
+                "final_tokens": managed.estimated_tokens,
+                "original_diff_tokens": bundle.original_tokens,
+                "final_diff_tokens": bundle.final_tokens,
                 "token_reduction_rate": round(reduction, 4),
                 "compressed": bundle.compressed,
-                "within_budget": bundle.final_tokens <= 768,
-                "risk_evidence_retained": marker in bundle.text,
+                "within_budget": managed.estimated_tokens <= manager.max_tokens,
+                "contract_retained": contract_retained,
+                "risk_evidence_retained": marker in managed.text,
                 "strategy": bundle.strategy,
+                "manifest": managed.manifest,
             })
     return {
         "schema_version": 1,
@@ -506,6 +571,9 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
         ),
         "risk_evidence_retention_rate": _ratio(
             sum(item["risk_evidence_retained"] for item in results), len(results)
+        ),
+        "contract_retention_rate": _ratio(
+            sum(item["contract_retained"] for item in results), len(results)
         ),
         "average_token_reduction_rate": round(
             sum(item["token_reduction_rate"] for item in results) / len(results), 4
@@ -552,6 +620,7 @@ def markdown_report(faults: dict, context: dict, fine_grained: dict) -> str:
         "- 样本：%d 条（medium/large/xlarge 各 10 条）" % context["cases"],
         "- 压缩触发率：%s" % percent(context["compression_activation_rate"]),
         "- Token 预算满足率：%s" % percent(context["budget_compliance_rate"]),
+        "- 规则层完整保留率：%s" % percent(context["contract_retention_rate"]),
         "- 风险证据保留率：%s" % percent(context["risk_evidence_retention_rate"]),
         "- 平均 Token 缩减：%s" % percent(context["average_token_reduction_rate"]),
         "",

@@ -35,6 +35,7 @@ class EngineeringBenchmarkTests(unittest.TestCase):
         self.assertEqual(30, report["cases"])
         self.assertEqual(1.0, report["risk_evidence_retention_rate"])
         self.assertEqual(1.0, report["budget_compliance_rate"])
+        self.assertEqual(1.0, report["contract_retention_rate"])
         self.assertEqual(1.0, report["compression_activation_rate"])
         self.assertGreater(report["average_token_reduction_rate"], 0.7)
         self.assertEqual(30, len(report["case_results"]))
@@ -42,6 +43,11 @@ class EngineeringBenchmarkTests(unittest.TestCase):
             {"medium", "large", "xlarge"},
             {item["size_tier"] for item in report["case_results"]},
         )
+        self.assertTrue(all(
+            item["manifest"]["included"]["skills"] == 1
+            and item["manifest"]["included"]["tools"] == 2
+            for item in report["case_results"]
+        ))
 
     def test_fine_grained_recovery_covers_loop_reviewer_and_judge_boundaries(self):
         report = run_fine_grained_recovery_benchmark()
