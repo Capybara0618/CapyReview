@@ -84,7 +84,6 @@ class Settings:
     context_reserved_tokens: int = 2500
     memory_enabled: bool = True
     memory_recall_limit: int = 6
-    memory_working_ttl_seconds: int = 86400
     eval_max_cases: int = 5
     eval_min_cases: int = 3
     eval_min_improvement: float = 0.01
@@ -168,9 +167,6 @@ class Settings:
             ),
             memory_enabled=_bool("CAPYREVIEW_MEMORY_ENABLED", True),
             memory_recall_limit=_int("CAPYREVIEW_MEMORY_RECALL_LIMIT", 6),
-            memory_working_ttl_seconds=_int(
-                "CAPYREVIEW_MEMORY_WORKING_TTL_SECONDS", 86400
-            ),
             eval_max_cases=_int("CAPYREVIEW_EVAL_MAX_CASES", 5),
             eval_min_cases=_int("CAPYREVIEW_EVAL_MIN_CASES", 3),
             eval_min_improvement=float(os.getenv("CAPYREVIEW_EVAL_MIN_IMPROVEMENT", "0.01")),

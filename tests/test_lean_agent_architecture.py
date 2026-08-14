@@ -1,6 +1,8 @@
+import json
 import unittest
 
 from capyreview.agents import (
+    EvidenceReport,
     EvidenceValidator,
     MultiAgentCoordinator,
     RiskRouter,
@@ -8,6 +10,7 @@ from capyreview.agents import (
 )
 from capyreview.diff_parser import parse_unified_diff
 from capyreview.models import Finding, Severity
+from capyreview.reviewer import OpenAICompatibleJudge
 
 
 ROUTINE_DIFF = """--- a/app.py
@@ -83,6 +86,72 @@ class ConfidenceJudge:
 
 
 class LeanAgentArchitectureTests(unittest.TestCase):
+    def test_evidence_packet_ignores_unreferenced_failed_and_non_mcp_observations(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        finding = Finding(
+            "CWE-95", Severity.CRITICAL, "Dynamic execution",
+            "The changed line executes data as code.", "app.py", 1,
+            "eval(data)", "Replace eval.", "Add a regression test.", 0.95,
+            evidence_refs=["O1", "O3", "O4"],
+        )
+        observations = [
+            {"id": "O1", "tool": "read_code_context", "ok": True,
+             "result": json.dumps({
+                 "path": "app.py", "start_line": 1,
+                 "content": "def execute(data): return eval(data)",
+             })},
+            {"id": "O2", "tool": "search_repository", "ok": True,
+             "result": json.dumps({"path": "other.py", "content": "unused"})},
+            {"id": "O3", "tool": "read_skill_reference", "ok": True,
+             "result": json.dumps({"body": "instructions are not code evidence"})},
+            {"id": "O4", "tool": "read_code_context", "ok": False,
+             "error": "timeout"},
+        ]
+
+        report = EvidenceValidator().validate(finding, parsed, observations)
+
+        self.assertEqual(1, len(report.supporting_evidence))
+        self.assertEqual("read_code_context", report.supporting_evidence[0]["source"])
+        self.assertEqual("app.py", report.supporting_evidence[0]["path"])
+
+    def test_openai_judge_serializes_changed_line_and_supporting_evidence_packet(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+        finding = Finding(
+            "CWE-95", Severity.CRITICAL, "Dynamic execution",
+            "The changed line executes data as code.", "app.py", 1,
+            "eval(data)", "Replace eval.", "Add a regression test.", 0.95,
+            evidence_refs=["O1"],
+        )
+        report = EvidenceReport(
+            finding_key(finding), True, "path-line-quote match", "eval(data)",
+            [{
+                "source": "read_code_context", "path": "app.py", "line": 1,
+                "content": "def execute(data): return eval(data)",
+            }],
+        )
+
+        class CapturingJudge(OpenAICompatibleJudge):
+            def __init__(self):
+                super().__init__("https://example.invalid", "key", "model")
+                self.payload = {}
+
+            def _request_json(self, payload):
+                self.payload = payload
+                return {"decisions": [{
+                    "candidate_id": finding_key(finding),
+                    "approved": True, "reason": "grounded", "confidence": 0.9,
+                }]}
+
+        judge = CapturingJudge()
+        judge.judge(diff, parsed, [finding], {finding_key(finding): report})
+        user_content = judge.payload["messages"][1]["content"]
+
+        self.assertIn('"evidence_packet"', user_content)
+        self.assertIn('"supporting_evidence"', user_content)
+        self.assertNotIn('"grounded_evidence"', user_content)
+
     def test_evidence_rejection_returns_to_origin_reviewer_once(self):
         class CorrectingSpecialist:
             name = "security-specialist"
@@ -209,6 +278,11 @@ class LeanAgentArchitectureTests(unittest.TestCase):
         self.assertEqual(
             {"security-specialist", "correctness-specialist"},
             {assignment.agent for assignment in plan.assignments},
+        )
+        self.assertTrue(plan.assignments)
+        self.assertEqual(
+            [{"path": "app.py", "line": 1}],
+            plan.assignments[0].focus_lines,
         )
 
     def test_router_treats_signature_bypass_as_high_risk(self):

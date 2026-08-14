@@ -8,7 +8,7 @@ persisted when a task store is available.
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
 
 from .context_manager import ContextManager
@@ -73,6 +73,7 @@ class ReviewAssignment:
     objective: str
     files: List[str]
     risk_domains: List[str]
+    focus_lines: List[dict] = field(default_factory=list)
     assignment_id: str = ""
     round: int = 1
     reason: str = "initial-plan"
@@ -105,6 +106,7 @@ class EvidenceReport:
     grounded: bool
     method: str
     evidence: str
+    supporting_evidence: List[dict] = field(default_factory=list)
 
     @property
     def reproducible(self) -> bool:
@@ -209,6 +211,7 @@ class AssignmentRouter:
                 + " Take over a failed assignment and independently reconstruct its evidence."
             ),
             files=list(failed.files), risk_domains=list(failed.risk_domains),
+            focus_lines=[dict(item) for item in failed.focus_lines],
             assignment_id=failed.assignment_id, round=failed.round + 1,
             reason="replacement-after-failure: %s" % error[:160],
         )
@@ -236,6 +239,11 @@ class RiskRouter(AssignmentRouter):
             line.path for line in parsed.added_lines
             if any(token in line.content.lower() for token in self.RISK_TOKENS)
         }
+        focus_lines = [
+            {"path": line.path, "line": line.line}
+            for line in parsed.added_lines
+            if any(token in line.content.lower() for token in self.RISK_TOKENS)
+        ]
         sensitive_files = {
             path for path in parsed.files
             if any(token in path.lower() for token in self.SENSITIVE_PATH_TOKENS)
@@ -267,6 +275,10 @@ class RiskRouter(AssignmentRouter):
                 objective=assignment.objective,
                 files=scoped,
                 risk_domains=assignment.risk_domains,
+                focus_lines=[
+                    dict(item) for item in focus_lines
+                    if item["path"] in scoped
+                ],
                 assignment_id=assignment.assignment_id,
                 round=assignment.round,
                 reason="risk-routed" if specialized else "routine-route",
@@ -284,7 +296,14 @@ class RiskRouter(AssignmentRouter):
 class EvidenceValidator:
     name = "evidence-validator"
 
-    def validate(self, finding: Finding, parsed: ParsedDiff) -> EvidenceReport:
+    SUPPORTING_TOOLS = {
+        "read_code_context", "search_repository", "read_file_history",
+        "read_code_scanning_findings", "read_ci_failure",
+    }
+
+    def validate(
+        self, finding: Finding, parsed: ParsedDiff, observations=(),
+    ) -> EvidenceReport:
         line = next(
             (item.content for item in parsed.added_lines
              if item.path == finding.path and item.line == finding.line), ""
@@ -303,7 +322,53 @@ class EvidenceValidator:
             finding_key(finding), grounded,
             "path-line-quote match",
             line.strip()[:240] if grounded else "No matching quote on the reported changed line.",
+            self._supporting_evidence(finding, observations),
         )
+
+    @classmethod
+    def _supporting_evidence(cls, finding: Finding, observations) -> List[dict]:
+        by_id = {
+            str(item.get("id")): item for item in observations
+            if isinstance(item, dict) and item.get("ok") is True
+            and item.get("tool") in cls.SUPPORTING_TOOLS
+        }
+        supporting = []
+        for reference in dict.fromkeys(finding.evidence_refs):
+            observation = by_id.get(str(reference))
+            if observation is None:
+                continue
+            raw = observation.get("result")
+            try:
+                result = json.loads(raw) if isinstance(raw, str) else raw
+            except (TypeError, ValueError):
+                result = raw
+            if isinstance(result, dict):
+                content = result.get("content")
+                if content is None:
+                    content = json.dumps(
+                        result, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                item = {
+                    "source": observation["tool"],
+                    "path": str(result.get("path") or finding.path),
+                    "line": finding.line,
+                    "content": str(content)[:1600],
+                }
+                try:
+                    item["line"] = int(
+                        result.get("start_line") or result.get("line")
+                        or finding.line
+                    )
+                except (TypeError, ValueError):
+                    pass
+            else:
+                item = {
+                    "source": observation["tool"], "path": finding.path,
+                    "line": finding.line, "content": str(result)[:1600],
+                }
+            supporting.append(item)
+        return supporting[:6]
 
 
 class MultiAgentCoordinator(Reviewer):
@@ -583,12 +648,6 @@ class MultiAgentCoordinator(Reviewer):
                 state, "agent-runtime", agent.name, kind, detail,
                 assignment.assignment_id,
             )
-            if self.memory_manager and state.get("task_id") and state.get("repository"):
-                self.memory_manager.remember(
-                    state["repository"], "working", kind, str(detail),
-                    task_id=state["task_id"],
-                    agent=agent.name, importance=0.3,
-                )
             if (
                 kind == "agent_loop_observation"
                 and detail.get("ok") is False
@@ -679,6 +738,7 @@ class MultiAgentCoordinator(Reviewer):
             prepared["managed_context"] = managed.text
             prepared["context_metadata"] = metadata
             prepared["available_tools"] = active_tools
+            prepared["activated_skills"] = skill_context
             return getattr(agent, "agent_step")(prepared)
 
         result = self.agent_loop.run(
@@ -697,6 +757,7 @@ class MultiAgentCoordinator(Reviewer):
             "activated_skills": [
                 "%s@%s" % (item.name, item.version) for item in activated_skills
             ],
+            "observations": [dict(item) for item in result.observations],
             "usage": dict(result.usage),
         }
 
@@ -735,7 +796,10 @@ class MultiAgentCoordinator(Reviewer):
                     {
                         "attempt": attempt, "round": assignment.round,
                         "findings": [item.to_dict() for item in findings],
-                        "execution": execution,
+                        "execution": {
+                            key: value for key, value in execution.items()
+                            if key != "observations"
+                        },
                     }, assignment.assignment_id,
                 )
                 return findings, attempt, "", execution
@@ -780,6 +844,7 @@ class MultiAgentCoordinator(Reviewer):
                     objective=assignment.objective,
                     files=list(assignment.files),
                     risk_domains=list(assignment.risk_domains),
+                    focus_lines=[dict(item) for item in assignment.focus_lines],
                     assignment_id=assignment.assignment_id,
                     round=max(assignment.round, 2),
                     reason="restored-handoff",
@@ -880,12 +945,18 @@ class MultiAgentCoordinator(Reviewer):
                 outcomes.append(future.result())
         findings = []
         sources: Dict[str, List[str]] = {}
+        finding_observations: Dict[str, List[dict]] = {}
         assignment_map = dict(state["assignments_by_agent"])
         for outcome in outcomes:
             assignment_map[outcome["agent"]] = outcome["assignment"]
             for finding in outcome["findings"]:
                 key = finding_key(finding)
                 sources.setdefault(key, []).append(outcome["agent"])
+                finding_observations.setdefault(key, [
+                    dict(item) for item in (
+                        outcome.get("execution") or {}
+                    ).get("observations", [])
+                ])
                 findings.append(finding)
         if outcomes and all(item["status"] == "failed" for item in outcomes):
             raise RuntimeError(
@@ -895,6 +966,7 @@ class MultiAgentCoordinator(Reviewer):
         return {
             "specialist_findings": findings,
             "finding_sources": sources,
+            "finding_observations": finding_observations,
             "agent_outcomes": outcomes,
             "assignments_by_agent": assignment_map,
         }
@@ -933,10 +1005,18 @@ class MultiAgentCoordinator(Reviewer):
                 ]
                 corrections.extend(restored)
                 for finding in restored:
-                    sources.setdefault(finding_key(finding), []).append(agent_name)
+                    key = finding_key(finding)
+                    sources.setdefault(key, []).append(agent_name)
                 execution = dict(checkpoint.get("execution") or {})
                 if execution:
                     state.setdefault("reflection_executions", []).append(execution)
+                    for finding in restored:
+                        state.setdefault("finding_observations", {})[
+                            finding_key(finding)
+                        ] = [
+                            dict(item)
+                            for item in execution.get("observations", [])
+                        ]
                 state["reflection_rounds"] = int(
                     state.get("reflection_rounds", 0)
                 ) + 1
@@ -987,7 +1067,11 @@ class MultiAgentCoordinator(Reviewer):
             corrected = selected
             corrections.extend(corrected)
             for finding in corrected:
-                sources.setdefault(finding_key(finding), []).append(agent_name)
+                key = finding_key(finding)
+                sources.setdefault(key, []).append(agent_name)
+                state.setdefault("finding_observations", {})[key] = [
+                    dict(item) for item in execution.get("observations", [])
+                ]
             self._emit(
                 state, agent_name, stage, "reflection_completed",
                 {
@@ -1066,11 +1150,19 @@ class MultiAgentCoordinator(Reviewer):
                 },
             )
 
+    def _validate_evidence(
+        self, state: CollaborationState, finding: Finding,
+    ) -> EvidenceReport:
+        return self.evidence_validator.validate(
+            finding, state["parsed"],
+            state.get("finding_observations", {}).get(finding_key(finding), []),
+        )
+
     def _evidence_node(self, state: CollaborationState) -> Dict[str, Any]:
         grounded = []
         rejected = []
         for finding in state["specialist_findings"]:
-            reproduction = self.evidence_validator.validate(finding, state["parsed"])
+            reproduction = self._validate_evidence(state, finding)
             self._emit(
                 state, self.evidence_validator.name, self.judge.name, "evidence_validation",
                 asdict(reproduction), reproduction.finding_key,
@@ -1091,10 +1183,10 @@ class MultiAgentCoordinator(Reviewer):
         }
         reproductions = {}
         for finding in grounded:
-            reproduction = self.evidence_validator.validate(finding, state["parsed"])
+            reproduction = self._validate_evidence(state, finding)
             reproductions[reproduction.finding_key] = reproduction
         for finding in corrected:
-            reproduction = self.evidence_validator.validate(finding, state["parsed"])
+            reproduction = self._validate_evidence(state, finding)
             self._emit(
                 state, self.evidence_validator.name, self.judge.name,
                 "evidence_revalidation", asdict(reproduction),
@@ -1144,9 +1236,7 @@ class MultiAgentCoordinator(Reviewer):
                 ):
                     candidates = restored_candidates
                 restored_evidence = {
-                    finding_key(finding): self.evidence_validator.validate(
-                        finding, state["parsed"]
-                    )
+                    finding_key(finding): self._validate_evidence(state, finding)
                     for finding in candidates
                 }
                 decisions = {}
@@ -1207,6 +1297,10 @@ class MultiAgentCoordinator(Reviewer):
                 "objective": "Validate grounded candidate evidence. " + evidence_clues,
                 "files": sorted({finding.path for finding in candidates}),
                 "risk_domains": risk_domains,
+                "focus_lines": [
+                    {"path": finding.path, "line": finding.line}
+                    for finding in candidates
+                ],
             },
         )
         self._emit(
@@ -1269,7 +1363,7 @@ class MultiAgentCoordinator(Reviewer):
             corrected_evidence: Dict[str, EvidenceReport] = {}
             grounded_corrections = []
             for finding in corrected:
-                report = self.evidence_validator.validate(finding, state["parsed"])
+                report = self._validate_evidence(state, finding)
                 self._emit(
                     state, self.evidence_validator.name, self.judge.name,
                     "evidence_revalidation", asdict(report), report.finding_key,
@@ -1430,7 +1524,7 @@ class MultiAgentCoordinator(Reviewer):
                     {
                         "task_id": state["task_id"],
                         "summary_memory_id": (archived or {}).get("id", ""),
-                        "working_memory_released": True,
+                        "task_summary_archived": bool(archived),
                     },
                 )
         return {"verified": verified}

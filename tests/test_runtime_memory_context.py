@@ -160,13 +160,101 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1,300 @@\n" + "".join(added)
 
         bundle = ContextManager(max_tokens=512, reserved_tokens=64).build(
-            diff, {"risk_domains": ["security"], "objective": "find injection"}
+            diff, {
+                "risk_domains": ["security"],
+                "objective": "find injection",
+                "focus_lines": [{"path": "app.py", "line": 251}],
+            }
         )
 
         self.assertTrue(bundle.compressed)
         self.assertLess(bundle.final_tokens, bundle.original_tokens)
         self.assertIn("eval(user_input)", bundle.text)
-        self.assertEqual("risk-ranked-hunk-compression", bundle.strategy)
+        self.assertEqual("priority-tier-hunk-compression", bundle.strategy)
+
+    def test_context_manager_keeps_the_hunk_containing_a_router_focus_line(self):
+        ordinary = "x" * 90
+        first = "".join(
+            "+first_%02d = '%s'\n" % (index, ordinary) for index in range(8)
+        )
+        focused = "".join(
+            "+focus_%02d = '%s'\n" % (index, ordinary) for index in range(8)
+        )
+        diff = (
+            "--- a/app.py\n+++ b/app.py\n"
+            "@@ -1 +1,8 @@\n" + first
+            + "@@ -20 +20,8 @@\n" + focused
+        )
+
+        bundle = ContextManager(max_tokens=512, reserved_tokens=256).build(
+            diff,
+            {
+                "agent": "security-reviewer",
+                "focus_lines": [{"path": "app.py", "line": 24}],
+            },
+        )
+
+        self.assertTrue(bundle.compressed)
+        self.assertIn("focus_04", bundle.text)
+        self.assertNotIn("first_04", bundle.text)
+
+    def test_context_manager_covers_changed_files_before_remaining_hunks(self):
+        dense = "q" * 45
+        file_a = "--- a/a.py\n+++ b/a.py\n" + "".join(
+            "@@ -{0} +{0},4 @@\n".format(1 + group * 10)
+            + "".join(
+                "+a_%d_%d = '%s'\n" % (group, line, dense)
+                for line in range(4)
+            )
+            for group in range(4)
+        )
+        file_b = (
+            "--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n"
+            "+b_value = '%s'\n" % ("b" * 180)
+        )
+        file_c = (
+            "--- a/c.py\n+++ b/c.py\n@@ -1 +1 @@\n"
+            "+c_value = '%s'\n" % ("c" * 180)
+        )
+
+        bundle = ContextManager(max_tokens=512, reserved_tokens=192).build(
+            file_a + file_b + file_c,
+            {"agent": "correctness-reviewer"},
+        )
+
+        self.assertTrue(bundle.compressed)
+        self.assertIn("+++ b/a.py", bundle.text)
+        self.assertIn("b_value", bundle.text)
+        self.assertIn("c_value", bundle.text)
+
+    def test_memory_does_not_change_which_diff_hunk_is_selected(self):
+        ordinary = "v" * 90
+        first = "".join(
+            "+first_%02d = '%s'\n" % (index, ordinary) for index in range(8)
+        )
+        second = "".join(
+            "+remember_target_%02d = '%s'\n" % (index, ordinary)
+            for index in range(8)
+        )
+        diff = (
+            "--- a/app.py\n+++ b/app.py\n"
+            "@@ -1 +1,8 @@\n" + first
+            + "@@ -20 +20,8 @@\n" + second
+        )
+        manager = ContextManager(max_tokens=512, reserved_tokens=256)
+
+        without_memory = manager.build(diff, {"agent": "correctness-reviewer"})
+        with_memory = manager.build(
+            diff,
+            {"agent": "correctness-reviewer"},
+            memories=[{
+                "scope": "semantic",
+                "kind": "review_feedback",
+                "content": "remember_target requires attention",
+            }],
+        )
+
+        self.assertEqual(without_memory.text, with_memory.text)
 
     def test_context_window_bounds_feedback_memory_and_observations(self):
         manager = ContextManager(max_tokens=512, reserved_tokens=128)
@@ -243,6 +331,75 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertTrue(summary["judge_context"]["compressed"])
         self.assertGreaterEqual(summary["context_compressions"], 1)
 
+    def test_judge_receives_only_explicitly_referenced_mcp_evidence(self):
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        parsed = parse_unified_diff(diff)
+
+        class EvidenceToolProvider:
+            def registry(self, _context):
+                return ToolRegistry([AgentTool(
+                    "read_code_context", "Read related source context.",
+                    {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line": {"type": "integer"},
+                        },
+                        "required": ["path", "line"],
+                        "additionalProperties": False,
+                    },
+                    lambda path, line: {
+                        "path": path, "start_line": line, "end_line": line,
+                        "content": "def execute(value): return eval(value)",
+                    },
+                )])
+
+        class EvidenceAwareSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    return {
+                        "action": "tool", "tool": "read_code_context",
+                        "arguments": {"path": "app.py", "line": 1},
+                    }
+                if state["observations"][0]["id"] != "O1":
+                    raise AssertionError("tool observations require stable sequential ids")
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "CWE-95", Severity.CRITICAL, "Dynamic execution",
+                    "The changed line executes untrusted input.",
+                    line.path, line.line, line.content,
+                    "Replace eval.", "Add a regression test.", 0.95,
+                    evidence_refs=["O1"],
+                )]}
+
+        class EvidenceCapturingJudge(ApprovingJudge):
+            def __init__(self):
+                self.supporting = []
+
+            def judge(self, diff_context, parsed_diff, findings, evidence):
+                self.supporting = evidence[finding_key(findings[0])].supporting_evidence
+                return super().judge(diff_context, parsed_diff, findings, evidence)
+
+        judge = EvidenceCapturingJudge()
+        coordinator = MultiAgentCoordinator(
+            [EvidenceAwareSpecialist()], judge=judge,
+            tool_provider=EvidenceToolProvider(),
+        )
+
+        findings = coordinator.review_with_context(
+            "evidence-packet", diff, parsed, repository="org/repo",
+            head_commit="commit-1",
+        )
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual([{
+            "source": "read_code_context", "path": "app.py", "line": 1,
+            "content": "def execute(value): return eval(value)",
+        }], judge.supporting)
+
     def test_memory_recall_is_repository_scoped(self):
         memory = MemoryManager(self.store, recall_limit=5)
         memory.remember(
@@ -260,6 +417,15 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual(1, len(recalled))
         self.assertIn("SEC-EVAL", recalled[0]["content"])
         self.assertEqual([], memory.recall("org/other", "SEC-EVAL"))
+
+    def test_memory_rejects_transient_working_state(self):
+        memory = MemoryManager(self.store)
+
+        with self.assertRaisesRegex(ValueError, "unsupported memory scope"):
+            memory.remember(
+                "org/repo", "working", "agent_loop_observation",
+                "Tool output belongs in the loop checkpoint, not long-term memory.",
+            )
 
     def test_coordinator_uses_agent_loop_context_and_memory(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
@@ -410,7 +576,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual("read_code_context", cases[0]["payload"]["tool"])
         self.assertFalse(cases[0]["payload"]["evolution_eligible"])
 
-    def test_security_reviewer_activates_formal_skill_and_loads_reference_on_demand(self):
+    def test_security_reviewer_receives_selected_skill_before_agent_loop(self):
         diff = "--- a/capyreview/github.py\n+++ b/capyreview/github.py\n@@ -10 +10,3 @@\n-old\n+if signature == 'bypass':\n+    return True\n"
         parsed = parse_unified_diff(diff)
 
@@ -421,10 +587,12 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             def agent_step(self, state):
                 if not state.get("observations"):
                     if "# Authentication Security Review" not in state["managed_context"]:
-                        raise AssertionError("activated SKILL.md was not loaded")
+                        raise AssertionError("selected SKILL.md was not loaded before the loop")
                     names = {item["name"] for item in state["available_tools"]}
+                    if "load_review_skill" in names:
+                        raise AssertionError("Skill must not be selected twice")
                     if "read_skill_reference" not in names:
-                        raise AssertionError("skill reference tool is unavailable")
+                        raise AssertionError("selected Skill reference tool is unavailable")
                     return {
                         "action": "tool", "tool": "read_skill_reference",
                         "arguments": {
@@ -433,7 +601,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
                         },
                     }
                 if "fixed development bypass" not in str(state["observations"]):
-                    raise AssertionError("skill reference content was not observed")
+                    raise AssertionError("Skill reference content was not observed")
                 line = state["parsed"].added_lines[0]
                 return {"action": "final", "findings": [Finding(
                     "SEC-AUTH", Severity.CRITICAL, "Signature bypass",

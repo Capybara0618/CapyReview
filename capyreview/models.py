@@ -39,6 +39,7 @@ class Finding:
     fix: str
     test: str
     confidence: float = 0.8
+    evidence_refs: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         value = asdict(self)

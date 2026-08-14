@@ -32,9 +32,12 @@ PR Diff / GitHub Webhook
   与 Correctness Reviewer。
 - 工具与证据：Reviewer 通过官方 GitHub MCP 按需读取代码上下文、仓库搜索、文件历史、
   CI 失败和 Code Scanning 告警；仓库、PR 与 Head Commit 由任务注入，不交给模型填写。
-  Finding 仍须通过路径、行号和引用文本校验，再由独立 LLM Judge 语义复核。
-- Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级审查记忆。
-- 正式 Review Skills：按风险信号选择 `SKILL.md` 专业工作流；Evidence/Judge 驳回会先回流原
+  Finding 显式引用 `O1/O2` Observation；Evidence Validator 只把成功且被引用的 MCP 结果
+  整理为证据包，再交给独立 LLM Judge 语义复核。
+- Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级 Episodic/Semantic 长期记忆；
+  当前任务状态由 Agent Loop 与 Checkpoint 管理，不重复写入 Memory。
+- 正式 Review Skills：系统按 Reviewer 领域与 Diff 风险信号一次性选择并注入匹配的短
+  `SKILL.md`；Evidence/Judge 驳回会先回流原
   Reviewer 一次，只有仍未解决的语义失败和人工误报/漏报才会推动对应 Skill 演化。
 - 可复现执行：任务创建时冻结模型名与 Skill 版本集合，并在结果中汇总真实 LLM 调用数、
   Prompt/Completion Token 和请求延迟。
@@ -147,11 +150,15 @@ Evidence Validator。MCP 参数错误、认证失败或上游错误会变成下�
 不会回退到本地规则或旧工具；Observation 保存后，任务恢复不会重复同一次外部调用。Agent
 Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗在连续取证上。
 
+每个 Tool Observation 使用任务内顺序编号 `O1/O2/...`。Reviewer 只能通过 `evidence_refs`
+显式引用成功的 GitHub MCP 结果；Skill 加载、失败调用和未引用结果不会进入 Judge 证据包。
+
 ## Formal Review Skill Evolution
 
 项目将认证安全、数据库迁移和异步可靠性等专业流程组织成符合 Agent Skills 规范的
-`SKILL.md + references/` 包。系统只加载与当前 Diff 和 Reviewer 领域匹配的最小 Skill 集合，
-参考资料由 Reviewer 通过 `read_skill_reference` 按需读取。
+`SKILL.md + references/` 包。系统根据当前 Diff 和 Reviewer 领域自动选择匹配的短
+`SKILL.md`，并在 Agent Loop 开始前注入上下文；较长参考资料由 Reviewer 通过
+`read_skill_reference` 渐进读取。
 
 Evidence Validator 或 Judge 驳回候选后，系统把结构化原因返回原 Reviewer 一次，并保存独立
 Reflection Checkpoint。修正成功不进入演化；仍未解决的反思失败与人工 `false_positive`、
@@ -173,7 +180,8 @@ Reflection Checkpoint。修正成功不进入演化；仍未解决的反思失�
 - `GET /v1/skills/{skill_name}/versions`
 - `POST /v1/skills/{skill_name}/versions/{version}/activate`
 
-激活版本作为可发现的正式 Skill 进入注册表，只有命中领域与信号时才进入 Reviewer 上下文。
+激活版本作为可发现的正式 Skill 进入注册表；命中领域与信号后自动进入对应 Reviewer 上下文，
+Reference 仍由 Reviewer 按需读取。
 生成 Skill 不允许携带脚本、命令、工具定义或绕过 Evidence/Judge 的指令。任务创建时冻结
 Skill 版本集合，续跑不会静默切换版本。
 
@@ -188,8 +196,9 @@ python scripts/run_engineering_benchmarks.py
 该命令生成三组 JSON/Markdown 证据：50 轮任务级 Runtime 故障注入、30 轮细粒度 Agent
 恢复测试，以及 30 条大 Diff 上下文压力测试。细粒度测试分别覆盖 Agent Loop
 Observation、Reviewer Final 和 Judge Decision；当前报告中恢复成功率、状态一致率与
-Trace 完整率均为 100%，重复 LLM 调用为 0。上下文测试的风险证据保留率与 Token 预算
-满足率均为 100%，平均输入 Token 缩减 95.2%。以上均为受控工程测试，不代表线上 SLA
+Trace 完整率均为 100%，重复 LLM 调用为 0。上下文测试按精确风险行、文件覆盖与原始顺序
+分层选择 Diff Hunk；风险行保留率与 Token 预算满足率均为 100%，平均输入 Token 缩减
+95.7%。以上均为受控工程测试，不代表线上 SLA
 或真实 PR 检出效果。
 
 ### 100 条单系统 LLM 评测

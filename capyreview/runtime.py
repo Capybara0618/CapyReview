@@ -268,6 +268,8 @@ class AgentLoop:
         }
         if not all(isinstance(item, dict) for item in observations):
             raise AgentLoopProtocolError("resumed observations must be objects")
+        for index, observation in enumerate(observations, 1):
+            observation.setdefault("id", "O%d" % index)
         next_step = int(resume.get("next_step", 1))
         if next_step < 1 or next_step > self.max_steps + 1:
             raise AgentLoopProtocolError("resumed next_step is outside the loop budget")
@@ -315,11 +317,13 @@ class AgentLoop:
                     if isinstance(value, (dict, list, tuple)) else str(value)
                 )
                 observation = {
+                    "id": "O%d" % (len(observations) + 1),
                     "step": step, "tool": tool_name, "ok": True,
                     "result": rendered[:self.max_observation_chars],
                 }
             except Exception as exc:
                 observation = {
+                    "id": "O%d" % (len(observations) + 1),
                     "step": step, "tool": tool_name, "ok": False,
                     "error": str(exc)[:1000],
                 }

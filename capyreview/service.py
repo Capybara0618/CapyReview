@@ -55,7 +55,6 @@ class ReviewService:
             self.store,
             settings.memory_enabled,
             settings.memory_recall_limit,
-            settings.memory_working_ttl_seconds,
         )
         self.github = GitHubClient(settings.github_token)
         self.mcp_tools = GitHubMcpToolProvider(

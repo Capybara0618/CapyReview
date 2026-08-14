@@ -472,9 +472,12 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
         for offset in range(10):
             case_index += 1
             diff, marker = _large_diff(case_index, lines, offset % 3)
+            parsed = parse_unified_diff(diff)
+            focus = next(item for item in parsed.added_lines if marker in item.content)
             bundle = manager.build(diff, {
-                "objective": "find unsafe dynamic execution",
-                "risk_domains": ["security", "injection"],
+                "agent": "security-reviewer",
+                "files": [focus.path],
+                "focus_lines": [{"path": focus.path, "line": focus.line}],
             })
             reduction = 1.0 - bundle.final_tokens / bundle.original_tokens
             results.append({

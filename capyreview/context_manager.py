@@ -5,11 +5,7 @@ import re
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 
-RISK_TERMS = {
-    "eval", "exec", "shell", "subprocess", "password", "secret", "token",
-    "auth", "permission", "sql", "query", "except", "error", "migration",
-    "payment", "deserialize", "pickle", "yaml.load", "chmod", "admin",
-}
+HUNK_RANGE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 @dataclass(frozen=True)
@@ -55,7 +51,21 @@ class _Hunk:
     path: str
     header: str
     text: str
-    score: float
+    new_start: int = 0
+    new_count: int = 0
+
+    def contains_new_line(self, line: int) -> bool:
+        return self.new_count > 0 and self.new_start <= line < self.new_start + self.new_count
+
+    def changed_lines(self) -> int:
+        return sum(
+            1 for line in self.text.splitlines()
+            if (line.startswith("+") and not line.startswith("+++"))
+            or (line.startswith("-") and not line.startswith("---"))
+        )
+
+    def byte_cost(self) -> int:
+        return len(self.text.encode("utf-8"))
 
 
 class ContextManager:
@@ -87,32 +97,107 @@ class ContextManager:
             )
 
         assignment = assignment or {}
-        terms = self._priority_terms(assignment, memories)
-        file_headers, hunks = self._parse(diff, terms)
+        # Memory is injected later by ``compose``. Historical hints must not decide
+        # whether current PR code is visible to the reviewer.
+        _ = memories
+        file_headers, hunks = self._parse(diff)
         byte_budget = max(1024, available_tokens * 4)
         selected: List[_Hunk] = []
+        selected_ids = set()
         used = 0
         included_headers = set()
 
-        for hunk in sorted(hunks, key=lambda item: (-item.score, item.index)):
-            header = file_headers.get(hunk.path, "")
-            header_cost = len(header.encode("utf-8")) if hunk.path not in included_headers else 0
-            hunk_cost = len(hunk.text.encode("utf-8"))
-            if used + header_cost + hunk_cost <= byte_budget:
-                selected.append(hunk)
-                used += header_cost + hunk_cost
-                included_headers.add(hunk.path)
+        focus_by_path: Dict[str, set] = {}
+        for item in assignment.get("focus_lines") or []:
+            if not isinstance(item, dict):
                 continue
-            remaining = byte_budget - used - header_cost
-            compact = self._compact_hunk(hunk, remaining, terms)
-            if compact:
-                selected.append(_Hunk(
-                    hunk.index, hunk.path, hunk.header, compact, hunk.score
-                ))
-                used += header_cost + len(compact.encode("utf-8"))
-                included_headers.add(hunk.path)
-            if used >= byte_budget:
+            path = str(item.get("path", ""))
+            try:
+                line = int(item.get("line", 0))
+            except (TypeError, ValueError):
+                continue
+            if path and line > 0:
+                focus_by_path.setdefault(path, set()).add(line)
+
+        p0 = [
+            hunk for hunk in hunks
+            if any(
+                hunk.contains_new_line(line)
+                for line in focus_by_path.get(hunk.path, set())
+            )
+        ]
+        represented = {hunk.path for hunk in p0}
+        remaining = [hunk for hunk in hunks if hunk.index not in {item.index for item in p0}]
+
+        path_order = []
+        for path in list(assignment.get("files") or []) + list(file_headers):
+            if path in file_headers and path not in path_order:
+                path_order.append(path)
+        p1 = []
+        for path in path_order:
+            if path in represented:
+                continue
+            candidates = [hunk for hunk in remaining if hunk.path == path]
+            if not candidates:
+                continue
+            representative = max(
+                candidates,
+                key=lambda item: (
+                    item.changed_lines() / max(1, item.byte_cost()),
+                    item.changed_lines(), -item.index,
+                ),
+            )
+            p1.append(representative)
+            represented.add(path)
+
+        priority_ids = {item.index for item in p0 + p1}
+        p2 = [hunk for hunk in hunks if hunk.index not in priority_ids]
+
+        def add_hunk(hunk: _Hunk, allowance: int, focused: bool = False) -> bool:
+            nonlocal used
+            if hunk.index in selected_ids:
+                return False
+            file_header = file_headers.get(hunk.path, "")
+            header_cost = (
+                len(file_header.encode("utf-8"))
+                if hunk.path not in included_headers else 0
+            )
+            remaining_bytes = byte_budget - used - header_cost
+            content_budget = min(remaining_bytes, max(0, allowance - header_cost))
+            if content_budget < 48:
+                return False
+            content = hunk.text
+            if hunk.byte_cost() > content_budget:
+                content = self._compact_hunk(
+                    hunk, content_budget,
+                    focus_by_path.get(hunk.path, set()) if focused else set(),
+                )
+            if not content:
+                return False
+            selected.append(_Hunk(
+                hunk.index, hunk.path, hunk.header, content,
+                hunk.new_start, hunk.new_count,
+            ))
+            selected_ids.add(hunk.index)
+            used += header_cost + len(content.encode("utf-8"))
+            included_headers.add(hunk.path)
+            return True
+
+        def add_tier(items: Sequence[_Hunk], focused: bool = False) -> None:
+            for position, hunk in enumerate(items):
+                available = byte_budget - used
+                if available < 48:
+                    break
+                remaining_items = max(1, len(items) - position)
+                allowance = max(128, available // remaining_items)
+                add_hunk(hunk, allowance, focused)
+
+        add_tier(p0, focused=True)
+        add_tier(p1)
+        for hunk in p2:
+            if byte_budget - used < 48:
                 break
+            add_hunk(hunk, byte_budget - used)
 
         if not selected and hunks:
             first = max(hunks, key=lambda item: (item.score, -item.index))
@@ -138,7 +223,7 @@ class ContextManager:
         return ContextBundle(
             compressed, True, original_tokens, final_tokens,
             omitted_files=omitted_files, omitted_hunks=omitted_hunks,
-            strategy="risk-ranked-hunk-compression",
+            strategy="priority-tier-hunk-compression",
         )
 
     def compose(
@@ -214,7 +299,8 @@ class ContextManager:
         kept_observations = 0
         for item in reversed(observations):
             compact = {
-                key: item.get(key) for key in ("step", "tool", "ok", "result", "error")
+                key: item.get(key)
+                for key in ("id", "step", "tool", "ok", "result", "error")
                 if item.get(key) is not None
             }
             if append("OBSERVATION", compact, optional=True):
@@ -271,23 +357,7 @@ class ContextManager:
                 clipped = clipped[:-1]
         return b""
 
-    @staticmethod
-    def _priority_terms(
-        assignment: Dict[str, Any], memories: Sequence[Dict[str, Any]],
-    ) -> set:
-        values = list(RISK_TERMS)
-        values.extend(str(item) for item in assignment.get("risk_domains", []))
-        values.extend(str(item) for item in assignment.get("files", []))
-        values.extend(str(assignment.get("objective", "")).lower().split())
-        for memory in memories[:20]:
-            values.extend(str(memory.get("content", "")).lower().split()[:40])
-            values.extend(str(memory.get("kind", "")).lower().split())
-        return {
-            re.sub(r"[^a-z0-9_.-]", "", value.lower())
-            for value in values if len(value) >= 3
-        }
-
-    def _parse(self, diff: str, terms: set) -> Tuple[Dict[str, str], List[_Hunk]]:
+    def _parse(self, diff: str) -> Tuple[Dict[str, str], List[_Hunk]]:
         lines = diff.splitlines(True)
         files: List[Tuple[str, List[str]]] = []
         current: List[str] = []
@@ -312,56 +382,72 @@ class ContextManager:
             if not positions:
                 headers[path] = "".join(block[:2])
                 text = "".join(block)
-                hunks.append(_Hunk(index, path, "", text, self._score(path, text, terms)))
+                hunks.append(_Hunk(index, path, "", text))
                 index += 1
                 continue
             headers[path] = "".join(block[:positions[0]])
             for pos_index, start in enumerate(positions):
                 end = positions[pos_index + 1] if pos_index + 1 < len(positions) else len(block)
                 text = "".join(block[start:end])
+                match = HUNK_RANGE.match(block[start])
                 hunks.append(_Hunk(
                     index, path, block[start].rstrip(), text,
-                    self._score(path, text, terms),
+                    int(match.group(1)) if match else 0,
+                    int(match.group(2) or 1) if match else 0,
                 ))
                 index += 1
         return headers, hunks
 
     @staticmethod
-    def _score(path: str, text: str, terms: set) -> float:
-        lowered = (path + "\n" + text).lower()
-        score = sum(2.0 for term in terms if term and term in lowered)
-        score += min(8.0, sum(
-            1 for line in text.splitlines()
-            if line.startswith("+") and not line.startswith("+++")
-        ) * 0.25)
-        if any(token in path.lower() for token in ("auth", "security", "payment", "migration")):
-            score += 6.0
-        return score
-
-    @staticmethod
-    def _compact_hunk(hunk: _Hunk, byte_budget: int, terms: set) -> str:
+    def _compact_hunk(hunk: _Hunk, byte_budget: int, focus_lines: set) -> str:
         if byte_budget < 128:
             return ""
         lines = hunk.text.splitlines(True)
         if not lines:
             return ""
-        priority = {0}
-        optional = set()
+        added_indices = []
+        focused_indices = []
+        new_line = hunk.new_start
         for index, line in enumerate(lines):
-            lowered = line.lower()
-            risky = any(term in lowered for term in terms if term)
+            if index == 0 and line.startswith("@@"):
+                continue
             added = line.startswith("+") and not line.startswith("+++")
-            if risky:
-                priority.update({
-                    max(0, index - 1), index, min(len(lines) - 1, index + 1)
-                })
-            elif added:
-                optional.add(index)
-        selected = set(priority)
-        estimated = sum(len(lines[index].encode("utf-8")) for index in selected)
-        for index in sorted(optional):
+            removed = line.startswith("-") and not line.startswith("---")
+            if added:
+                added_indices.append(index)
+                if new_line in focus_lines:
+                    focused_indices.append(index)
+                new_line += 1
+            elif not removed and not line.startswith("\\"):
+                new_line += 1
+
+        mandatory = [0]
+        for index in focused_indices:
+            mandatory.extend([
+                index, max(0, index - 1), min(len(lines) - 1, index + 1)
+            ])
+        if not focused_indices and added_indices:
+            mandatory.extend([added_indices[0], added_indices[-1]])
+
+        selected = set()
+        estimated = 0
+        for index in mandatory:
+            if index in selected:
+                continue
             cost = len(lines[index].encode("utf-8"))
-            if estimated + cost > max(128, int(byte_budget * 0.85)):
+            if estimated + cost > byte_budget:
+                continue
+            selected.add(index)
+            estimated += cost
+        # Leave room for omission markers and the mandatory lines when results are
+        # rendered back in source order. Optional additions may never crowd out a
+        # Router focus line near the end of a large hunk.
+        optional_limit = int(byte_budget * (0.75 if focused_indices else 0.9))
+        for index in added_indices:
+            if index in selected:
+                continue
+            cost = len(lines[index].encode("utf-8"))
+            if estimated + cost > optional_limit:
                 break
             selected.add(index)
             estimated += cost
@@ -371,12 +457,14 @@ class ContextManager:
         for index in sorted(selected):
             if index - previous > 1 and output:
                 marker = " ... [unchanged context omitted by CapyReview] ...\n"
-                if used + len(marker.encode("utf-8")) <= byte_budget:
+                marker_cost = len(marker.encode("utf-8"))
+                line_cost = len(lines[index].encode("utf-8"))
+                if used + marker_cost + line_cost <= byte_budget:
                     output.append(marker)
-                    used += len(marker.encode("utf-8"))
+                    used += marker_cost
             encoded = lines[index].encode("utf-8")
             if used + len(encoded) > byte_budget:
-                break
+                continue
             output.append(lines[index])
             used += len(encoded)
             previous = index

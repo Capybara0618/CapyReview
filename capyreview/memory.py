@@ -1,5 +1,4 @@
-"""Repository-scoped working, episodic and semantic memory for review agents."""
-from datetime import datetime, timedelta, timezone
+"""Repository-scoped episodic and semantic memory for review agents."""
 import hashlib
 import json
 import re
@@ -9,7 +8,7 @@ from .store import utc_now
 
 
 TOKEN = re.compile(r"[A-Za-z0-9_./:-]{2,}")
-VALID_SCOPES = {"working", "episodic", "semantic", "procedural"}
+VALID_SCOPES = {"episodic", "semantic", "procedural"}
 
 
 def _tokens(value: str) -> set:
@@ -21,18 +20,15 @@ class MemoryManager:
 
     def __init__(
         self, store, enabled: bool = True, recall_limit: int = 6,
-        working_ttl_seconds: int = 86400,
     ):
         self.store = store
         self.enabled = enabled
         self.recall_limit = max(1, recall_limit)
-        self.working_ttl_seconds = max(60, working_ttl_seconds)
 
     def remember(
         self, repository: str, scope: str, kind: str,
         content: str, metadata: Optional[Dict[str, Any]] = None,
         task_id: str = "", agent: str = "", importance: float = 0.5,
-        ttl_seconds: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         if not self.enabled or not content.strip():
             return None
@@ -46,19 +42,13 @@ class MemoryManager:
             "kind": kind, "content": normalized, "metadata": metadata,
         }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         memory_id = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
-        ttl = self.working_ttl_seconds if scope == "working" and ttl_seconds is None else ttl_seconds
-        expires_at = None
-        if ttl:
-            expires_at = (
-                datetime.now(timezone.utc) + timedelta(seconds=max(1, int(ttl)))
-            ).isoformat()
         record = {
             "id": memory_id, "repository": repository,
             "task_id": task_id, "agent": agent,
             "scope": scope, "kind": kind, "content": normalized,
             "keywords": sorted(_tokens(normalized) | _tokens(kind)),
             "metadata": metadata, "importance": importance,
-            "created_at": utc_now(), "expires_at": expires_at,
+            "created_at": utc_now(), "expires_at": None,
         }
         return self.store.save_agent_memory(record)
 
@@ -136,16 +126,11 @@ class MemoryManager:
             importance=0.95 if category in {"false_positive", "missed_issue", "bad_fix"} else 0.7,
         )
 
-    def forget_working(self, task_id: str) -> int:
-        if not self.enabled:
-            return 0
-        return self.store.delete_agent_memories(task_id=task_id, scope="working")
-
     def consolidate_task(
         self, repository: str, task_id: str,
         summary: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Archive a compact task episode, then release transient working memory."""
+        """Archive a compact task episode after the runtime reaches a terminal result."""
         if not self.enabled or not task_id:
             return None
         content = "Review task %s completed: %s" % (
@@ -157,5 +142,4 @@ class MemoryManager:
             metadata={"summary": dict(summary)}, task_id=task_id,
             agent="agent-runtime", importance=0.65,
         )
-        self.forget_working(task_id)
         return archived
