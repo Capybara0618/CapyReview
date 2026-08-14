@@ -1,0 +1,120 @@
+diff --git a/.github/pr-submit.yml b/.github/pr-submit.yml
+index a770025414e98..417bbcabd57f7 100644
+--- a/.github/pr-submit.yml
++++ b/.github/pr-submit.yml
+@@ -1,4 +1,6 @@
+ workflows:
+   - .github/workflows/bump-pre-commit-hooks.yml
+   - .github/workflows/prepare-release.yml
++  - .github/workflows/sponsors.yml
++  - .github/workflows/topic-repos.yml
+   - .github/workflows/translate.yml
+diff --git a/.github/workflows/sponsors.yml b/.github/workflows/sponsors.yml
+index 37b01b052f650..13aab269031e6 100644
+--- a/.github/workflows/sponsors.yml
++++ b/.github/workflows/sponsors.yml
+@@ -17,7 +17,8 @@ jobs:
+     if: github.repository_owner == 'fastapi'
+     runs-on: ubuntu-latest
+     permissions:
+-      contents: write
++      contents: read
++      id-token: write
+     timeout-minutes: 5
+     steps:
+       - name: Dump GitHub context
+@@ -26,7 +27,7 @@ jobs:
+         run: echo "$GITHUB_CONTEXT"
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         with:
+-          persist-credentials: true # Required for `git push` in `sponsors.py`
++          persist-credentials: false
+       - name: Set up Python
+         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+         with:
+@@ -49,8 +50,13 @@ jobs:
+         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'true' }}
+         with:
+           limit-access-to-actor: true
++      - name: Get PR Submit token
++        id: pr-submit
++        uses: tiangolo/pr-submit@d802fdf59bde80bc3eb8bd3259f4cbeec63de4aa # 0.0.1
+       - name: FastAPI People Sponsors
+-        run: uv run ./scripts/sponsors.py
++        run: |
++          gh auth setup-git
++          uv run ./scripts/sponsors.py
+         env:
+           SPONSORS_TOKEN: ${{ secrets.SPONSORS_TOKEN }} # zizmor: ignore[secrets-outside-env]
+-          PR_TOKEN: ${{ secrets.FASTAPI_PR_TOKEN }} # zizmor: ignore[secrets-outside-env]
++          PR_TOKEN: ${{ steps.pr-submit.outputs.token }}
+diff --git a/.github/workflows/topic-repos.yml b/.github/workflows/topic-repos.yml
+index f315626854eaf..18ea518675a5b 100644
+--- a/.github/workflows/topic-repos.yml
++++ b/.github/workflows/topic-repos.yml
+@@ -12,7 +12,8 @@ jobs:
+     if: github.repository_owner == 'fastapi'
+     runs-on: ubuntu-latest
+     permissions:
+-      contents: write
++      contents: read
++      id-token: write
+     timeout-minutes: 5
+     steps:
+       - name: Dump GitHub context
+@@ -21,7 +22,7 @@ jobs:
+         run: echo "$GITHUB_CONTEXT"
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         with:
+-          persist-credentials: true # Required for `git push` in `topic_repos.py`
++          persist-credentials: false
+       - name: Set up Python
+         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+         with:
+@@ -38,7 +39,12 @@ jobs:
+             uv.lock
+       - name: Install GitHub Actions dependencies
+         run: uv sync --locked --no-dev --group github-actions
++      - name: Get PR Submit token
++        id: pr-submit
++        uses: tiangolo/pr-submit@d802fdf59bde80bc3eb8bd3259f4cbeec63de4aa # 0.0.1
+       - name: Update Topic Repos
+-        run: uv run ./scripts/topic_repos.py
++        run: |
++          gh auth setup-git
++          uv run ./scripts/topic_repos.py
+         env:
+-          GITHUB_TOKEN: ${{ secrets.FASTAPI_PR_TOKEN }} # zizmor: ignore[secrets-outside-env]
++          GITHUB_TOKEN: ${{ steps.pr-submit.outputs.token }}
+diff --git a/scripts/sponsors.py b/scripts/sponsors.py
+index fdcabc737b2df..d6b079b99b823 100644
+--- a/scripts/sponsors.py
++++ b/scripts/sponsors.py
+@@ -190,9 +190,9 @@ def main() -> None:
+         return
+ 
+     logging.info("Setting up GitHub Actions git user")
+-    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
++    subprocess.run(["git", "config", "user.name", "pr-submit[bot]"], check=True)
+     subprocess.run(
+-        ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
++        ["git", "config", "user.email", "pr-submit[bot]@users.noreply.github.com"],
+         check=True,
+     )
+     branch_name = f"fastapi-people-sponsors-{secrets.token_hex(4)}"
+diff --git a/scripts/topic_repos.py b/scripts/topic_repos.py
+index b31ff13bdc76c..a66e963bea732 100644
+--- a/scripts/topic_repos.py
++++ b/scripts/topic_repos.py
+@@ -56,9 +56,9 @@ def main() -> None:
+         return
+     repos_path.write_text(new_repos_content, encoding="utf-8")
+     logging.info("Setting up GitHub Actions git user")
+-    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
++    subprocess.run(["git", "config", "user.name", "pr-submit[bot]"], check=True)
+     subprocess.run(
+-        ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"],
++        ["git", "config", "user.email", "pr-submit[bot]@users.noreply.github.com"],
+         check=True,
+     )
+     branch_name = f"fastapi-topic-repos-{secrets.token_hex(4)}"

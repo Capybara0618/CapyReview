@@ -34,7 +34,8 @@ PR Diff / GitHub Webhook
   CI 失败和 Code Scanning 告警；仓库、PR 与 Head Commit 由任务注入，不交给模型填写。
   Finding 显式引用 `O1/O2` Observation；Evidence Validator 只把成功且被引用的 MCP 结果
   整理为证据包，再交给独立 LLM Judge 语义复核。
-- Context 与 Memory：风险优先压缩大 Diff，并检索、沉淀仓库级 Episodic/Semantic 长期记忆；
+- Context 与 Memory：完整输入超预算时才压缩 Diff；压缩仅移除未修改上下文并保留全部增删行，
+  仍超限则按 Hunk 分 Batch 审查；同时检索、沉淀仓库级 Episodic/Semantic 长期记忆；
   当前任务状态由 Agent Loop 与 Checkpoint 管理，不重复写入 Memory。
 - 正式 Review Skills：系统按 Reviewer 领域与 Diff 风险信号一次性选择并注入匹配的短
   `SKILL.md`；Evidence/Judge 驳回会先回流原
@@ -157,12 +158,14 @@ Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗�
 
 每次 Reviewer 模型调用都按三层构造完整输入：
 
-1. **规则层不可裁剪：** System Prompt、Assignment、输出契约、已选 `SKILL.md` 与当前 Tool
-   Schema 先计入总预算；若规则层本身无法容纳则调用前明确失败，不静默删除契约。
-2. **当前证据优先：** Diff 按精确风险行、文件覆盖与原始顺序选择 Hunk；最新 Tool
-   Observation 与 Critic 反馈优先于普通剩余 Hunk。
-3. **历史经验按需：** Memory 只在当前仓库召回相关 Episodic/Semantic Top-K，并使用动态内容
-   的剩余空间，不参与 Diff Hunk 排序。
+1. **先完整组装：** System Prompt、Assignment、输出契约、已选 `SKILL.md`、Tool Schema、
+   完整 Diff、Observation、反馈和 Memory 一起计入输入预算；能够容纳时不压缩。
+2. **超限才压缩：** 解析 Git Unified Diff，保留文件路径、Hunk Header 与全部增删行，只移除
+   未修改上下文；缺失代码由 Reviewer 通过 GitHub MCP 按 Commit 和行号补取。
+3. **分 Batch 兜底：** 紧凑变更视图仍超限时，按原始 Hunk/变更块顺序生成多个预算内 Batch，
+   每批分别运行 Agent Loop，最终统一验证、去重和裁决，不通过风险优先级丢弃代码。
+
+Memory 只在当前仓库召回相关 Episodic/Semantic Top-K；工具输出在调用源头限制返回窗口和数量。
 
 Agent Loop 最后一轮移除 Tool Schema 并强制 Final-only。每轮 `context_window_prepared` Trace
 都携带 Context Manifest，记录 System、Skill、Tool、Diff、Observation 与 Memory 的估算 Token，
@@ -212,8 +215,9 @@ python scripts/run_engineering_benchmarks.py
 恢复测试，以及 30 条大 Diff 上下文压力测试。细粒度测试分别覆盖 Agent Loop
 Observation、Reviewer Final 和 Judge Decision；当前报告中恢复成功率、状态一致率与
 Trace 完整率均为 100%，重复 LLM 调用为 0。上下文测试按完整模型请求计入规则层、Diff、
-Observation 与 Memory；规则层完整保留率、风险行保留率与 Token 预算满足率均为 100%，
-平均输入 Token 缩减 95.0%。以上均为受控工程测试，不代表线上 SLA
+Observation 与 Memory；当前报告中压缩触发率、Batch 触发率、变更行覆盖率和 Token 预算
+满足率均为 100%，平均单次输入 Token 缩减 92.8%，所有 Batch 累计 Token 为原完整请求的
+62.3%。单次缩减与累计开销分开统计；以上均为受控工程测试，不代表线上 SLA
 或真实 PR 检出效果。
 
 ### 100 条单系统 LLM 评测

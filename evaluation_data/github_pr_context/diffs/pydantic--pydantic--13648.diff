@@ -1,0 +1,76 @@
+diff --git a/pydantic/_internal/_generate_schema.py b/pydantic/_internal/_generate_schema.py
+index 53971d2059..815766b376 100644
+--- a/pydantic/_internal/_generate_schema.py
++++ b/pydantic/_internal/_generate_schema.py
+@@ -1124,7 +1124,7 @@ def match_type(self, obj: Any, origin: Any) -> core_schema.CoreSchema:  # noqa:
+             # early for model-like fields, which handles it already.
+             return core_schema.any_schema()
+ 
+-        if origin is not None and (aliased_obj := typing_objects.DEPRECATED_ALIASES.get(obj)):
++        if origin is not None and (aliased_obj := typing_objects.DEPRECATED_ALIASES_IDS.get(id(obj))):
+             # See https://typing-inspection.pydantic.dev/dev/usage/#inspecting-the-type-expression:
+             obj = aliased_obj
+             origin = None
+diff --git a/pyproject.toml b/pyproject.toml
+index dcd9d14645..27f62269fe 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -48,7 +48,7 @@ dependencies = [
+     'annotated-types>=0.6.0',
+     # Keep this in sync with the version in the `check_pydantic_core_version()` function:
+     'pydantic-core==2.48.0',
+-    'typing-inspection>=0.4.2',
++    'typing-inspection>=0.4.4',
+ ]
+ dynamic = ['version', 'readme']
+ 
+diff --git a/tests/test_edge_cases.py b/tests/test_edge_cases.py
+index 3649fb3d7f..699a49da0b 100644
+--- a/tests/test_edge_cases.py
++++ b/tests/test_edge_cases.py
+@@ -3198,3 +3198,14 @@ def test_interconnected_models_build_in_linear_time() -> None:
+     instance = last.model_validate({'value': 1, 'ref2': {'value': 2, 'ref2': {'value': 3}}})
+     assert instance.ref2.ref2.value == 3
+     assert instance.model_dump(exclude_none=True) == {'value': 1, 'ref2': {'value': 2, 'ref2': {'value': 3}}}
++
++
++def test_unhasbable_generic_alias() -> None:
++    """https://github.com/pydantic/pydantic/issues/13645"""
++
++    class Meta:
++        __hash__ = None
++
++    ta = TypeAdapter(list[Annotated[int, Meta()]])
++
++    assert ta.validate_python(['1']) == [1]
+diff --git a/uv.lock b/uv.lock
+index be6b53763e..ef86605389 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -2551,7 +2551,7 @@ requires-dist = [
+     { name = "email-validator", marker = "extra == 'email'", specifier = ">=2.0.0" },
+     { name = "pydantic-core", editable = "pydantic-core" },
+     { name = "typing-extensions", specifier = ">=4.15.0" },
+-    { name = "typing-inspection", specifier = ">=0.4.2" },
++    { name = "typing-inspection", specifier = ">=0.4.4" },
+     { name = "tzdata", marker = "sys_platform == 'win32' and extra == 'timezone'" },
+ ]
+ provides-extras = ["email", "timezone"]
+@@ -3949,14 +3949,14 @@ wheels = [
+ 
+ [[package]]
+ name = "typing-inspection"
+-version = "0.4.3"
++version = "0.4.4"
+ source = { registry = "https://pypi.org/simple" }
+ dependencies = [
+     { name = "typing-extensions" },
+ ]
+-sdist = { url = "https://files.pythonhosted.org/packages/6d/bc/4eae18cd40c65798a16267572ba346c11f599d44b01603dbd843342042bc/typing_inspection-0.4.3.tar.gz", hash = "sha256:c5f9ec1530b5c1e2c9bc34a84d9a3466ed1b2f3f2fa9f901368d9c5596210e4d", size = 76711, upload-time = "2026-08-10T09:39:18.063Z" }
++sdist = { url = "https://files.pythonhosted.org/packages/a3/26/b09b8010994eccc3c09092e6b34058f36a460eea2d4c3e8b910c695975a0/typing_inspection-0.4.4.tar.gz", hash = "sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47", size = 76928, upload-time = "2026-08-12T12:37:25.997Z" }
+ wheels = [
+-    { url = "https://files.pythonhosted.org/packages/42/f7/7a3935abdebd5cf18705a5f0335dd6a3a18bef3baa7cb9edc3b6b9922cc8/typing_inspection-0.4.3-py3-none-any.whl", hash = "sha256:5f42b23858a91e0b4ef521f5418f03a0da3c9216fd2995ef5e73463100e676cd", size = 14693, upload-time = "2026-08-10T09:39:16.693Z" },
++    { url = "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147", size = 14750, upload-time = "2026-08-12T12:37:24.648Z" },
+ ]
+ 
+ [[package]]

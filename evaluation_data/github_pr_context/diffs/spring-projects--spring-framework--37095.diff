@@ -1,0 +1,23 @@
+diff --git a/spring-webflux/src/main/java/org/springframework/web/reactive/function/client/ExchangeFunctions.java b/spring-webflux/src/main/java/org/springframework/web/reactive/function/client/ExchangeFunctions.java
+index b494d2e1d7ad..26fc1b876f90 100644
+--- a/spring-webflux/src/main/java/org/springframework/web/reactive/function/client/ExchangeFunctions.java
++++ b/spring-webflux/src/main/java/org/springframework/web/reactive/function/client/ExchangeFunctions.java
+@@ -99,10 +99,14 @@ public Mono<ClientResponse> exchange(ClientRequest clientRequest) {
+ 			HttpMethod httpMethod = clientRequest.method();
+ 			URI url = clientRequest.url();
+ 
+-			return this.connector
+-					.connect(httpMethod, url, httpRequest -> clientRequest.writeTo(httpRequest, this.strategies))
+-					.doOnRequest(n -> logRequest(clientRequest))
+-					.doOnCancel(() -> logger.debug(clientRequest.logPrefix() + "Cancel signal (to close connection)"))
++			Mono<ClientHttpResponse> responseMono = this.connector
++					.connect(httpMethod, url, httpRequest -> clientRequest.writeTo(httpRequest, this.strategies));
++			if (logger.isDebugEnabled()) {
++				responseMono = responseMono
++						.doOnRequest(n -> logRequest(clientRequest))
++						.doOnCancel(() -> logger.debug(clientRequest.logPrefix() + "Cancel signal (to close connection)"));
++			}
++			return responseMono
+ 					.onErrorResume(WebClientUtils.WRAP_EXCEPTION_PREDICATE, t -> wrapException(t, clientRequest))
+ 					.map(httpResponse -> {
+ 						String logPrefix = getLogPrefix(clientRequest, httpResponse);

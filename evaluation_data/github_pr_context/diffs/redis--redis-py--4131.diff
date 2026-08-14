@@ -1,0 +1,2783 @@
+diff --git a/redis/asyncio/cluster.py b/redis/asyncio/cluster.py
+index 7c86b85bff..9a80a988df 100644
+--- a/redis/asyncio/cluster.py
++++ b/redis/asyncio/cluster.py
+@@ -56,6 +56,7 @@
+     parse_url,
+ )
+ from redis.asyncio.lock import Lock
++from redis.asyncio.maint_notifications import AsyncOSSMaintNotificationsHandler
+ from redis.asyncio.observability.recorder import (
+     record_error_count,
+     record_operation_duration,
+@@ -111,6 +112,7 @@
+     TryAgainError,
+     WatchError,
+ )
++from redis.maint_notifications import MaintNotificationsConfig
+ from redis.typing import (
+     AnyKeyT,
+     ChannelT,
+@@ -122,6 +124,7 @@
+ from redis.utils import (
+     SENTINEL,
+     SSL_AVAILABLE,
++    check_protocol_version,
+     deprecated_args,
+     deprecated_function,
+     safe_str,
+@@ -143,7 +146,72 @@
+ )
+ 
+ 
+-class RedisCluster(AbstractRedis, AbstractRedisCluster, AsyncRedisClusterCommands):
++class AsyncMaintNotificationsAbstractRedisCluster:
++    """
++    Mixin for async cluster maintenance notifications handling.
++
++    Intended to be used with multiple inheritance alongside RedisCluster.
++    All logic related to cluster-level maintenance notifications is encapsulated here.
++    """
++
++    def __init__(
++        self,
++        maint_notifications_config: MaintNotificationsConfig | None,
++        **kwargs,
++    ) -> None:
++        # The RESP3 requirement is validated in RedisCluster.__init__ before the
++        # NodesManager is constructed; this mixin is only ever run from there, so
++        # the config it receives has already been validated.
++        is_protocol_supported = check_protocol_version(kwargs.get("protocol"), 3)
++
++        if maint_notifications_config is None and is_protocol_supported:
++            maint_notifications_config = MaintNotificationsConfig()
++
++        self.maint_notifications_config = maint_notifications_config
++
++        if self.maint_notifications_config and self.maint_notifications_config.enabled:
++            self._oss_cluster_maint_notifications_handler = (
++                AsyncOSSMaintNotificationsHandler(self, self.maint_notifications_config)
++            )
++            self._update_connection_kwargs_for_maint_notifications(
++                self._oss_cluster_maint_notifications_handler
++            )
++            # Connections are created lazily via ClusterNode.acquire_connection()
++            # during nodes_manager.initialize() (which runs after __init__), so
++            # injecting into the shared connection_kwargs covers nodes discovered
++            # later. Startup nodes are the exception — they were built before this
++            # runs with their own kwargs snapshot — so the helper above also
++            # updates them directly.
++        else:
++            self._oss_cluster_maint_notifications_handler = None
++
++    def _update_connection_kwargs_for_maint_notifications(
++        self,
++        oss_cluster_maint_notifications_handler: AsyncOSSMaintNotificationsHandler,
++    ) -> None:
++        maint_kwargs = {
++            "oss_cluster_maint_notifications_handler": oss_cluster_maint_notifications_handler,
++            "maint_notifications_config": oss_cluster_maint_notifications_handler.config,
++        }
++        # Shared template used for every node created from now on (e.g. nodes
++        # discovered during nodes_manager.initialize()).
++        self.nodes_manager.connection_kwargs.update(maint_kwargs)
++        # Startup nodes were constructed before this mixin ran, so each one
++        # snapshotted connection_kwargs without the handler. Their connections
++        # are created lazily, so updating their per-node kwargs now is in time —
++        # otherwise initialize() opens the topology-discovery connection (CLUSTER
++        # SLOTS) on a startup node with no push handler wired and silently drops
++        # the maintenance notifications carried on that connection.
++        for node in self.nodes_manager.startup_nodes.values():
++            node.connection_kwargs.update(maint_kwargs)
++
++
++class RedisCluster(
++    AbstractRedis,
++    AbstractRedisCluster,
++    AsyncMaintNotificationsAbstractRedisCluster,
++    AsyncRedisClusterCommands,
++):
+     """
+     Create a new RedisCluster client.
+ 
+@@ -294,6 +362,8 @@ def from_url(cls, url: str, **kwargs: Any) -> "RedisCluster":
+     __slots__ = (
+         "_initialize",
+         "_lock",
++        "maint_notifications_config",
++        "_oss_cluster_maint_notifications_handler",
+         "retry",
+         "command_flags",
+         "commands_parser",
+@@ -378,6 +448,7 @@ def __init__(
+         address_remap: Callable[[Tuple[str, int]], Tuple[str, int]] | None = None,
+         event_dispatcher: EventDispatcher | None = None,
+         policy_resolver: AsyncPolicyResolver = AsyncStaticPolicyResolver(),
++        maint_notifications_config: MaintNotificationsConfig | None = None,
+     ) -> None:
+         if db:
+             raise RedisClusterException(
+@@ -474,6 +545,22 @@ def __init__(
+             kwargs["response_callbacks"]["CLUSTER SHARDS"] = parse_cluster_shards
+         self.connection_kwargs = kwargs
+ 
++        # Validate maint_notifications_config before NodesManager is constructed
++        # so that a bad config doesn't leak an open NodesManager.
++        if (
++            maint_notifications_config
++            and maint_notifications_config.enabled
++            and not check_protocol_version(protocol, 3)
++        ):
++            raise RedisError(
++                "Maintenance notifications are only supported with RESP version 3"
++            )
++        if check_protocol_version(protocol, 3) and maint_notifications_config is None:
++            maint_notifications_config = MaintNotificationsConfig()
++        # Initialize to None so aclose() and any error-path code never sees an
++        # unset slot, even if __init__ raises before the mixin runs.
++        self._oss_cluster_maint_notifications_handler = None
++
+         if startup_nodes:
+             passed_nodes = []
+             for node in startup_nodes:
+@@ -500,6 +587,11 @@ def __init__(
+             address_remap=address_remap,
+             event_dispatcher=self._event_dispatcher,
+         )
++        AsyncMaintNotificationsAbstractRedisCluster.__init__(
++            self,
++            maint_notifications_config=maint_notifications_config,
++            protocol=protocol,
++        )
+         self.encoder = Encoder(encoding, encoding_errors, decode_responses)
+         self.read_from_replicas = read_from_replicas
+         self.load_balancing_strategy = load_balancing_strategy
+@@ -588,6 +680,13 @@ async def aclose(self) -> None:
+             async with self._lock:
+                 if not self._initialize:
+                     self._initialize = True
++                    if self._oss_cluster_maint_notifications_handler:
++                        tasks = list(
++                            self._oss_cluster_maint_notifications_handler._background_tasks
++                        )
++                        for task in tasks:
++                            task.cancel()
++                        await asyncio.gather(*tasks, return_exceptions=True)
+                     await self.nodes_manager.aclose()
+                     await self.nodes_manager.aclose("startup_nodes")
+ 
+@@ -1846,11 +1945,26 @@ def set_nodes(
+ 
+         for name, node in new.items():
+             if name in old:
+-                # Preserve the existing node but mark connections for reconnect.
+-                # This method is sync so we can't call disconnect_free_connections()
+-                # which is async. Instead, we mark free connections for reconnect
+-                # and they will be lazily disconnected when acquired via
+-                # disconnect_if_needed() to avoid race conditions.
++                # Preserve the existing node but mark ALL its connections for
++                # reconnect on every topology refresh.
++                #
++                # Why recycle every preserved node's connections, not just the
++                # ones whose slots/role changed?
++                #   set_nodes only sees the old vs new node dicts; it does not
++                #   track which specific nodes had slot-ownership or role changes
++                #   during this refresh. Rather than try to diff that (and risk
++                #   serving a connection whose cached routing/READONLY state is
++                #   now stale), we conservatively refresh every preserved node.
++                #   Reconnect is lazy and cheap, so the extra churn is acceptable
++                #   in exchange for never serving a stale connection after a
++                #   topology change.
++                #
++                # Why mark-for-reconnect instead of disconnecting here?
++                #   set_nodes is sync but disconnect_free_connections() is async,
++                #   so we cannot disconnect inline. Marking both in-use and free
++                #   connections for reconnect lets them be lazily disconnected on
++                #   next acquire via disconnect_if_needed(), which avoids races.
++                #
+                 # TODO: Make this method async in the next major release to allow
+                 # immediate disconnection of free connections.
+                 existing_node = old[name]
+diff --git a/redis/asyncio/connection.py b/redis/asyncio/connection.py
+index 2425fddabe..0763789a49 100644
+--- a/redis/asyncio/connection.py
++++ b/redis/asyncio/connection.py
+@@ -63,6 +63,7 @@
+ from redis.asyncio.maint_notifications import (
+     AsyncMaintNotificationsConnectionHandler,
+     AsyncMaintNotificationsPoolHandler,
++    AsyncOSSMaintNotificationsHandler,
+ )
+ from redis.asyncio.observability.recorder import (
+     record_connection_closed,
+@@ -163,6 +164,9 @@ def __init__(
+         orig_host_address: str | None = None,
+         orig_socket_timeout: float | None = None,
+         orig_socket_connect_timeout: float | None = None,
++        oss_cluster_maint_notifications_handler: (
++            AsyncOSSMaintNotificationsHandler | None
++        ) = None,
+         parser: BaseParser | None = None,
+     ) -> None:
+         self.maint_notifications_config = maint_notifications_config
+@@ -175,6 +179,7 @@ def __init__(
+             orig_host_address,
+             orig_socket_timeout,
+             orig_socket_connect_timeout,
++            oss_cluster_maint_notifications_handler,
+             parser,
+         )
+ 
+@@ -221,6 +226,9 @@ def _configure_maintenance_notifications(
+         orig_host_address: str | None = None,
+         orig_socket_timeout: float | None = None,
+         orig_socket_connect_timeout: float | None = None,
++        oss_cluster_maint_notifications_handler: (
++            AsyncOSSMaintNotificationsHandler | None
++        ) = None,
+         parser: BaseParser | None = None,
+     ) -> None:
+         if (
+@@ -229,6 +237,7 @@ def _configure_maintenance_notifications(
+         ):
+             self._maint_notifications_pool_handler = None
+             self._maint_notifications_connection_handler = None
++            self._oss_cluster_maint_notifications_handler = None
+             return
+ 
+         if not parser:
+@@ -253,10 +262,6 @@ def _configure_maintenance_notifications(
+                 maint_notifications_pool_handler.get_handler_for_connection()
+             )
+             self._maint_notifications_pool_handler.set_connection(self)
+-            # Set up pool handler to parser
+-            parser.set_node_moving_push_handler(
+-                self._maint_notifications_pool_handler.handle_notification
+-            )
+         else:
+             self._maint_notifications_pool_handler = None
+ 
+@@ -265,6 +270,23 @@ def _configure_maintenance_notifications(
+                 self, self.maint_notifications_config
+             )
+         )
++
++        if oss_cluster_maint_notifications_handler:
++            self._oss_cluster_maint_notifications_handler = (
++                oss_cluster_maint_notifications_handler
++            )
++            parser.set_oss_cluster_maint_push_handler(
++                oss_cluster_maint_notifications_handler.handle_notification
++            )
++        else:
++            self._oss_cluster_maint_notifications_handler = None
++
++        # Set up pool handler to parser if available
++        if self._maint_notifications_pool_handler:
++            parser.set_node_moving_push_handler(
++                self._maint_notifications_pool_handler.handle_notification
++            )
++
+         # Set up connection handler
+         parser.set_maintenance_push_handler(
+             self._maint_notifications_connection_handler.handle_notification
+@@ -312,6 +334,33 @@ def set_maint_notifications_pool_handler_for_connection(
+                 maint_notifications_pool_handler.config
+             )
+ 
++    def set_maint_notifications_cluster_handler_for_connection(
++        self,
++        oss_cluster_maint_notifications_handler: AsyncOSSMaintNotificationsHandler,
++    ) -> None:
++        parser = self._get_push_notifications_parser()
++        parser.set_oss_cluster_maint_push_handler(
++            oss_cluster_maint_notifications_handler.handle_notification
++        )
++        self._oss_cluster_maint_notifications_handler = (
++            oss_cluster_maint_notifications_handler
++        )
++
++        # Update maintenance notification connection handler if it doesn't exist
++        if not self._maint_notifications_connection_handler:
++            self._maint_notifications_connection_handler = (
++                AsyncMaintNotificationsConnectionHandler(
++                    self, oss_cluster_maint_notifications_handler.config
++                )
++            )
++            parser.set_maintenance_push_handler(
++                self._maint_notifications_connection_handler.handle_notification
++            )
++        else:
++            self._maint_notifications_connection_handler.config = (
++                oss_cluster_maint_notifications_handler.config
++            )
++
+     async def activate_maint_notifications_handling_if_enabled(
+         self, check_health: bool = True
+     ) -> None:
+@@ -395,27 +444,15 @@ def get_resolved_ip(self) -> str | None:
+             # Stream might not be connected or peer address lookup might fail.
+             pass
+ 
+-        # Method 2: Fallback to DNS resolution of the host.
+-        # This is less accurate but works when stream peer info is not available.
+-        try:
+-            host = getattr(self, "host", None)
+-            port = getattr(self, "port", 6379)
+-            if host:
+-                # Use getaddrinfo to resolve the hostname to IP.
+-                # This mimics what the connection would do during _connect().
+-                addr_info = socket.getaddrinfo(
+-                    host, port, socket.AF_UNSPEC, socket.SOCK_STREAM
+-                )
+-                if addr_info:
+-                    # Return the IP from the first result.
+-                    # addr_info[0] is (family, socktype, proto, canonname, sockaddr).
+-                    # sockaddr[0] is the IP address.
+-                    return str(addr_info[0][4][0])
+-        except (AttributeError, OSError, socket.gaierror):
+-            # DNS resolution might fail.
+-            pass
+-
+-        return None
++        # Method 2: Fall back to the configured host (which may be an IP or an
++        # FQDN). We intentionally do NOT call socket.getaddrinfo() here: this
++        # method is only used for debug logging and runs on the event loop, so a
++        # blocking DNS resolution would stall it. During maintenance the debug-log
++        # path is invoked once per notification while connections are repeatedly
++        # disconnected/reconnected (so getpeername() returns None) — a blocking
++        # getaddrinfo on an FQDN host there can freeze the loop for seconds and
++        # trip unrelated connect timeouts.
++        return getattr(self, "host", None)
+ 
+     @property
+     def maintenance_state(self) -> MaintenanceState:
+@@ -574,6 +611,9 @@ def __init__(
+         orig_host_address: str | None = None,
+         orig_socket_timeout: float | None = None,
+         orig_socket_connect_timeout: float | None = None,
++        oss_cluster_maint_notifications_handler: (
++            AsyncOSSMaintNotificationsHandler | None
++        ) = None,
+     ):
+         """
+         Initialize a new async Connection.
+@@ -671,6 +711,7 @@ def __init__(
+             orig_host_address,
+             orig_socket_timeout,
+             orig_socket_connect_timeout,
++            oss_cluster_maint_notifications_handler,
+             self._parser,
+         )
+ 
+@@ -1816,6 +1857,9 @@ class AsyncMaintNotificationsAbstractConnectionPool:
+     def __init__(
+         self,
+         maint_notifications_config: MaintNotificationsConfig | None = None,
++        oss_cluster_maint_notifications_handler: (
++            "AsyncOSSMaintNotificationsHandler | None"
++        ) = None,
+         **kwargs: Any,
+     ) -> None:
+         protocol = kwargs.get("protocol")
+@@ -1859,6 +1903,7 @@ def __init__(
+                         "without a host"
+                     )
+                 self._maint_notifications_pool_handler = None
++                self._oss_cluster_maint_notifications_handler = None
+                 return
+ 
+             if not is_protocol_supported:
+@@ -1866,14 +1911,25 @@ def __init__(
+                     "Maintenance notifications handlers on connection are only supported with RESP version 3"
+                 )
+ 
+-            self._maint_notifications_pool_handler = AsyncMaintNotificationsPoolHandler(
+-                self, maint_notifications_config
+-            )
+-            self._update_connection_kwargs_for_maint_notifications(
+-                maint_notifications_pool_handler=self._maint_notifications_pool_handler
+-            )
++            if oss_cluster_maint_notifications_handler:
++                self._oss_cluster_maint_notifications_handler = (
++                    oss_cluster_maint_notifications_handler
++                )
++                self._update_connection_kwargs_for_maint_notifications(
++                    oss_cluster_maint_notifications_handler=self._oss_cluster_maint_notifications_handler
++                )
++                self._maint_notifications_pool_handler = None
++            else:
++                self._oss_cluster_maint_notifications_handler = None
++                self._maint_notifications_pool_handler = (
++                    AsyncMaintNotificationsPoolHandler(self, maint_notifications_config)
++                )
++                self._update_connection_kwargs_for_maint_notifications(
++                    maint_notifications_pool_handler=self._maint_notifications_pool_handler
++                )
+         else:
+             self._maint_notifications_pool_handler = None
++            self._oss_cluster_maint_notifications_handler = None
+ 
+     async def _on_close(self) -> None:
+         """Hook invoked from the pool's ``aclose()`` before the pool is shut down."""
+@@ -1927,16 +1983,24 @@ def maint_notifications_enabled(self):
+             The maintenance notifications config is stored in the pool handler.
+             If the pool handler is not set, the maintenance notifications are not enabled.
+         """
+-        maint_notifications_config = (
+-            self._maint_notifications_pool_handler.config
+-            if self._maint_notifications_pool_handler
+-            else None
+-        )
++        if self._oss_cluster_maint_notifications_handler:
++            maint_notifications_config = (
++                self._oss_cluster_maint_notifications_handler.config
++            )
++        else:
++            maint_notifications_config = (
++                self._maint_notifications_pool_handler.config
++                if self._maint_notifications_pool_handler
++                else None
++            )
+         return maint_notifications_config and maint_notifications_config.enabled
+ 
+     async def update_maint_notifications_config(
+         self,
+         maint_notifications_config: MaintNotificationsConfig,
++        oss_cluster_maint_notifications_handler: (
++            AsyncOSSMaintNotificationsHandler | None
++        ) = None,
+     ) -> None:
+         """
+         Updates the maintenance notifications configuration.
+@@ -1953,52 +2017,66 @@ async def update_maint_notifications_config(
+                 "Cannot disable maintenance notifications after enabling them"
+             )
+ 
+-        if (
+-            maint_notifications_config.enabled
+-            and not self._maintenance_notifications_supported()
+-        ):
+-            if maint_notifications_config.enabled is True:
+-                # Unix sockets do not have a host endpoint for CLIENT
+-                # MAINT_NOTIFICATIONS to describe.
+-                if "path" in self.connection_kwargs:
+-                    raise RedisError(
+-                        "Maintenance notifications are not supported for "
+-                        "Unix domain socket connections"
+-                    )
++        if oss_cluster_maint_notifications_handler:
++            self._oss_cluster_maint_notifications_handler = (
++                oss_cluster_maint_notifications_handler
++            )
++            # OSS cluster mode and pool-handler mode are mutually exclusive
++            # (see __init__). A pool created with the default RESP3 "auto"
++            # config wires a pool handler before this method runs; clear it so
++            # new and existing connections are not configured with both handlers.
++            self._maint_notifications_pool_handler = None
++        else:
++            if (
++                maint_notifications_config.enabled
++                and not self._maintenance_notifications_supported()
++            ):
++                if maint_notifications_config.enabled is True:
++                    # Unix sockets do not have a host endpoint for CLIENT
++                    # MAINT_NOTIFICATIONS to describe.
++                    if "path" in self.connection_kwargs:
++                        raise RedisError(
++                            "Maintenance notifications are not supported for "
++                            "Unix domain socket connections"
++                        )
+ 
+-                # Custom connection classes must inherit the async maintenance
+-                # mixin so handlers can update connection state safely.
+-                if not self._maintenance_notifications_connection_class_supported():
+-                    connection_class = getattr(self, "connection_class", None)
+-                    connection_class_name = getattr(
+-                        connection_class, "__name__", connection_class
+-                    )
++                    # Custom connection classes must inherit the async maintenance
++                    # mixin so handlers can update connection state safely.
++                    if not self._maintenance_notifications_connection_class_supported():
++                        connection_class = getattr(self, "connection_class", None)
++                        connection_class_name = getattr(
++                            connection_class, "__name__", connection_class
++                        )
++                        raise RedisError(
++                            "Maintenance notifications are not supported for "
++                            f"connection class {connection_class_name}"
++                        )
++
++                    # TCP-like connections still need a host to identify the
++                    # endpoint that can move during maintenance.
+                     raise RedisError(
+-                        "Maintenance notifications are not supported for "
+-                        f"connection class {connection_class_name}"
++                        "Maintenance notifications are not supported for connections "
++                        "without a host"
+                     )
++                self._maint_notifications_pool_handler = None
++                return
+ 
+-                # TCP-like connections still need a host to identify the
+-                # endpoint that can move during maintenance.
+-                raise RedisError(
+-                    "Maintenance notifications are not supported for connections "
+-                    "without a host"
++            if not self._maint_notifications_pool_handler:
++                self._maint_notifications_pool_handler = (
++                    AsyncMaintNotificationsPoolHandler(self, maint_notifications_config)
++                )
++            else:
++                self._maint_notifications_pool_handler.config = (
++                    maint_notifications_config
+                 )
+-            self._maint_notifications_pool_handler = None
+-            return
+-
+-        if not self._maint_notifications_pool_handler:
+-            self._maint_notifications_pool_handler = AsyncMaintNotificationsPoolHandler(
+-                self, maint_notifications_config
+-            )
+-        else:
+-            self._maint_notifications_pool_handler.config = maint_notifications_config
+ 
+         self._update_connection_kwargs_for_maint_notifications(
+-            maint_notifications_pool_handler=self._maint_notifications_pool_handler
++            maint_notifications_pool_handler=self._maint_notifications_pool_handler,
++            oss_cluster_maint_notifications_handler=self._oss_cluster_maint_notifications_handler,
+         )
+         await self._update_maint_notifications_configs_for_connections(
+-            maint_notifications_pool_handler=self._maint_notifications_pool_handler
++            maint_notifications_pool_handler=self._maint_notifications_pool_handler,
++            oss_cluster_maint_notifications_handler=self._oss_cluster_maint_notifications_handler,
+         )
+ 
+     def _update_connection_kwargs_for_maint_notifications(
+@@ -2006,6 +2084,9 @@ def _update_connection_kwargs_for_maint_notifications(
+         maint_notifications_pool_handler: (
+             AsyncMaintNotificationsPoolHandler | None
+         ) = None,
++        oss_cluster_maint_notifications_handler: (
++            AsyncOSSMaintNotificationsHandler | None
++        ) = None,
+     ) -> None:
+         """
+         Update the connection kwargs for all future connections.
+@@ -2020,6 +2101,17 @@ def _update_connection_kwargs_for_maint_notifications(
+                     "maint_notifications_config": maint_notifications_pool_handler.config,
+                 }
+             )
++        if oss_cluster_maint_notifications_handler:
++            self.connection_kwargs.update(
++                {
++                    "oss_cluster_maint_notifications_handler": oss_cluster_maint_notifications_handler,
++                    "maint_notifications_config": oss_cluster_maint_notifications_handler.config,
++                }
++            )
++            # OSS cluster mode and pool-handler mode are mutually exclusive.
++            # Drop any pool handler a default (RESP3 "auto") pool creation may
++            # have wired so future connections are not configured with both.
++            self.connection_kwargs.pop("maint_notifications_pool_handler", None)
+ 
+         # Store original connection parameters for maintenance notifications.
+         if self.connection_kwargs.get("orig_host_address", None) is None:
+@@ -2042,29 +2134,61 @@ async def _update_maint_notifications_configs_for_connections(
+         maint_notifications_pool_handler: (
+             AsyncMaintNotificationsPoolHandler | None
+         ) = None,
++        oss_cluster_maint_notifications_handler: (
++            AsyncOSSMaintNotificationsHandler | None
++        ) = None,
+     ) -> None:
+         """Update the maintenance notifications config for all connections in the pool."""
+         async with self._get_pool_lock():
+-            for conn in self._get_free_connections():
+-                if not maint_notifications_pool_handler:
+-                    raise ValueError("maint_notifications_pool_handler must be set")
+-                conn.set_maint_notifications_pool_handler_for_connection(
+-                    maint_notifications_pool_handler
+-                )
+-                conn.maint_notifications_config = (
+-                    maint_notifications_pool_handler.config
+-                )
++            for conn in list(self._get_free_connections()):
++                if oss_cluster_maint_notifications_handler:
++                    conn.set_maint_notifications_cluster_handler_for_connection(
++                        oss_cluster_maint_notifications_handler
++                    )
++                    conn.maint_notifications_config = (
++                        oss_cluster_maint_notifications_handler.config
++                    )
++                elif maint_notifications_pool_handler:
++                    conn.set_maint_notifications_pool_handler_for_connection(
++                        maint_notifications_pool_handler
++                    )
++                    conn.maint_notifications_config = (
++                        maint_notifications_pool_handler.config
++                    )
++                else:
++                    raise ValueError(
++                        "Either maint_notifications_pool_handler or "
++                        "oss_cluster_maint_notifications_handler must be set"
++                    )
+                 await conn.disconnect()
+ 
+-            for conn in self._get_in_use_connections():
+-                if not maint_notifications_pool_handler:
+-                    raise ValueError("maint_notifications_pool_handler must be set")
+-                conn.set_maint_notifications_pool_handler_for_connection(
+-                    maint_notifications_pool_handler
+-                )
+-                conn.maint_notifications_config = (
+-                    maint_notifications_pool_handler.config
+-                )
++            for conn in list(self._get_in_use_connections()):
++                if oss_cluster_maint_notifications_handler:
++                    # Use set_maint_notifications_cluster_handler_for_connection
++                    # (not _configure_maintenance_notifications) so the parser is
++                    # obtained from the connection itself. _configure_* requires a
++                    # parser argument and would raise here; it would also reset the
++                    # connection's orig_* settings, which is wrong for an in-use
++                    # (active) connection. This mirrors the idle-connection branch
++                    # above and the pool-handler branches.
++                    conn.set_maint_notifications_cluster_handler_for_connection(
++                        oss_cluster_maint_notifications_handler
++                    )
++                    conn.maint_notifications_config = (
++                        oss_cluster_maint_notifications_handler.config
++                    )
++                elif maint_notifications_pool_handler:
++                    conn.set_maint_notifications_pool_handler_for_connection(
++                        maint_notifications_pool_handler
++                    )
++                    conn.maint_notifications_config = (
++                        maint_notifications_pool_handler.config
++                    )
++                else:
++                    raise ValueError(
++                        "Either maint_notifications_pool_handler or "
++                        "oss_cluster_maint_notifications_handler must be set"
++                    )
+                 conn.mark_for_reconnect()
+ 
+     def _should_update_connection(
+diff --git a/redis/asyncio/maint_notifications.py b/redis/asyncio/maint_notifications.py
+index 59740fca52..7e35cd0b91 100644
+--- a/redis/asyncio/maint_notifications.py
++++ b/redis/asyncio/maint_notifications.py
+@@ -1,4 +1,5 @@
+ import asyncio
++import functools
+ import logging
+ from typing import TYPE_CHECKING, Any, Awaitable, Callable
+ 
+@@ -13,7 +14,6 @@
+     MaintNotificationsConfig,
+     NodeMovingNotification,
+     OSSNodeMigratedNotification,
+-    OSSNodeMigratingNotification,
+     _get_maintenance_notification_name,
+     _get_maintenance_notification_type,
+     _should_skip_connection_timeout_update,
+@@ -21,6 +21,7 @@
+ from redis.observability.attributes import get_pool_name
+ 
+ if TYPE_CHECKING:
++    from redis.asyncio.cluster import RedisCluster
+     from redis.asyncio.connection import AsyncMaintNotificationsAbstractConnection
+ 
+ logger = logging.getLogger(__name__)
+@@ -28,6 +29,25 @@
+ _ScheduledCallback = Callable[..., Awaitable[None]]
+ 
+ 
++def _log_task_exception(message: str, task: "asyncio.Task[Any]") -> None:
++    """Task done-callback that surfaces a failed task's exception in the logs.
++
++    Without it, an unhandled exception in a fire-and-forget task is only
++    reported by asyncio as a noisy "Task exception was never retrieved"
++    warning. Retrieving the exception here suppresses that warning and logs a
++    meaningful error instead. Cancellation is expected and left unlogged.
++
++    Bind ``message`` with ``functools.partial`` before passing to
++    ``add_done_callback`` (which supplies ``task``).
++    """
++    try:
++        exc = task.exception()
++    except asyncio.CancelledError:
++        return
++    if exc:
++        logger.error(message, exc_info=exc)
++
++
+ def add_debug_log_for_notification(
+     connection: object,
+     notification: str | MaintenanceNotification,
+@@ -219,7 +239,12 @@ def _schedule(
+         task = asyncio.create_task(self._run_after(deadline, callback, *args))
+         self._scheduled_tasks.add(task)
+         task.add_done_callback(self._scheduled_tasks.discard)
+-        task.add_done_callback(self._log_scheduled_task_result)
++        task.add_done_callback(
++            functools.partial(
++                _log_task_exception,
++                "Error handling scheduled maintenance notification",
++            )
++        )
+ 
+     async def _run_after(
+         self,
+@@ -240,17 +265,6 @@ async def cancel_scheduled_tasks(self) -> None:
+             task.cancel()
+         await asyncio.gather(*tasks, return_exceptions=True)
+ 
+-    @staticmethod
+-    def _log_scheduled_task_result(task: asyncio.Task[None]) -> None:
+-        try:
+-            exc = task.exception()
+-        except asyncio.CancelledError:
+-            return
+-        if exc:
+-            logger.error(
+-                "Error handling scheduled maintenance notification", exc_info=exc
+-            )
+-
+ 
+ class AsyncMaintNotificationsConnectionHandler:
+     def __init__(
+@@ -287,13 +301,6 @@ async def handle_notification(self, notification: MaintenanceNotification) -> No
+             maint_notification=maint_notification,
+         )
+ 
+-        if isinstance(
+-            notification,
+-            (OSSNodeMigratingNotification, OSSNodeMigratedNotification),
+-        ):
+-            logger.error(f"Unhandled notification type: {notification}")
+-            return
+-
+         if notification_type is None:
+             logger.error(f"Unhandled notification type: {notification}")
+             return
+@@ -361,3 +368,210 @@ async def handle_maintenance_completed_notification(self, **kwargs: Any) -> None
+                 maint_notification=maint_notification,
+                 relaxed=False,
+             )
++
++
++class AsyncOSSMaintNotificationsHandler:
++    """
++    Cluster-wide handler for OSS (open-source) cluster maintenance notifications.
++
++    Reacts to SMIGRATED (slot migration completed) push notifications and
++    triggers topology re-initialization via nodes_manager.initialize().
++
++    Lock discipline: _lock is held across the whole pool mutation, including
++    await initialize(), so the topology refresh and the subsequent connection
++    marking/disconnect happen as one atomic operation — releasing the lock
++    mid-mutation would let other tasks observe partial state.
++
++    Re-entrancy is not a deadlock risk here even though asyncio.Lock is
++    non-reentrant: initialize() may dispatch commands whose responses carry new
++    push notifications, but handle_notification schedules the actual handling as
++    a separate background task rather than calling into it inline, so the
++    re-entrant arrival never tries to re-acquire the lock on this call stack.
++    The cheap _in_progress/_processed dedup that gates that scheduling runs
++    without the lock — those sets are only mutated from the single event loop.
++    """
++
++    def __init__(
++        self,
++        cluster_client: "RedisCluster",
++        config: MaintNotificationsConfig,
++    ) -> None:
++        self.cluster_client = cluster_client
++        self.config = config
++        self._processed_notifications: set[MaintenanceNotification] = set()
++        self._in_progress: set[MaintenanceNotification] = set()
++        self._lock = asyncio.Lock()
++        self._background_tasks: set[asyncio.Task] = set()
++
++    def get_handler_for_connection(self) -> "AsyncOSSMaintNotificationsHandler":
++        # Copy all data that should be shared between connections
++        # but each connection should have its own handler
++        # since each connection can be in a different state
++        copy = AsyncOSSMaintNotificationsHandler(self.cluster_client, self.config)
++        copy._processed_notifications = self._processed_notifications
++        copy._in_progress = self._in_progress
++        copy._lock = self._lock
++        copy._background_tasks = self._background_tasks
++        return copy
++
++    async def remove_expired_notifications(self) -> None:
++        async with self._lock:
++            for n in tuple(self._processed_notifications):
++                if n.is_expired():
++                    self._processed_notifications.remove(n)
++
++    async def handle_notification(self, notification: MaintenanceNotification) -> None:
++        # Synchronous pre-dedup BEFORE scheduling a task.
++        #
++        # The same SMIGRATED notification is delivered by the server on every
++        # connection, so under load this callback fires many times for the same
++        # notification. Without this guard we would schedule one background task
++        # per arrival - a flood of tasks that each acquire the lock and dedup,
++        # saturating the single event loop. Reserving the notification in
++        # _in_progress here (and skipping if already in-progress/processed) caps
++        # it at exactly ONE handling task per unique notification.
++        #
++        # These sets are only mutated from the single event loop, so this
++        # check-and-add is race-free without holding the lock.
++        if (
++            notification in self._in_progress
++            or notification in self._processed_notifications
++        ):
++            return
++        self._in_progress.add(notification)
++
++        # Schedule as a background task so the parser's read path is not blocked.
++        # This also breaks the inline call chain that would otherwise deadlock:
++        # initialize() dispatches commands whose responses may carry more push
++        # notifications; as a separate task it can run while this one awaits.
++        #
++        # If scheduling the task (or wiring its callbacks) fails, release the
++        # in-progress reservation made above. Otherwise the notification would be
++        # stuck in _in_progress forever - the dedup guard would skip it on every
++        # future arrival, and _do_handle_notification's finally (which normally
++        # clears it) never runs because the task was never started.
++        try:
++            task = asyncio.get_running_loop().create_task(
++                self._do_handle_notification(notification)
++            )
++            self._background_tasks.add(task)
++            task.add_done_callback(self._background_tasks.discard)
++            task.add_done_callback(
++                functools.partial(
++                    _log_task_exception,
++                    "Error handling maintenance notification background task",
++                )
++            )
++        except Exception:
++            self._in_progress.discard(notification)
++            raise
++
++    async def _do_handle_notification(
++        self, notification: MaintenanceNotification
++    ) -> None:
++        try:
++            if isinstance(notification, OSSNodeMigratedNotification):
++                await self.handle_oss_maintenance_completed_notification(notification)
++            else:
++                logger.error(f"Unhandled notification type: {notification}")
++        finally:
++            # Release the in-progress reservation. On success the notification is
++            # also in _processed_notifications (so it won't be re-handled); on
++            # failure it is not, allowing a later retry.
++            self._in_progress.discard(notification)
++
++    async def handle_oss_maintenance_completed_notification(
++        self, notification: OSSNodeMigratedNotification
++    ) -> None:
++        await self.remove_expired_notifications()
++
++        async with self._lock:
++            # handle_notification already reserved this notification in
++            # _in_progress and guaranteed uniqueness; the processed check here is
++            # defensive (e.g. across handler copies sharing the same sets).
++            if notification in self._processed_notifications:
++                return
++            if logger.isEnabledFor(logging.DEBUG):
++                logger.debug(f"Handling SMIGRATED notification: {notification}")
++
++            # Extract the information about the src and destination nodes that are
++            # affected by the maintenance. nodes_to_slots_mapping structure:
++            # {
++            #     "src_host:port": [
++            #         {"dest_host:port": "slot_range"},
++            #         ...
++            #     ],
++            #     ...
++            # }
++            additional_startup_nodes_info = []
++            affected_nodes = set()
++            for (
++                src_address,
++                dest_mappings,
++            ) in notification.nodes_to_slots_mapping.items():
++                src_host, src_port = src_address.split(":")
++                src_node = self.cluster_client.nodes_manager.get_node(
++                    host=src_host, port=int(src_port)
++                )
++                if src_node is not None:
++                    affected_nodes.add(src_node)
++                for dest_mapping in dest_mappings:
++                    for dest_address in dest_mapping.keys():
++                        dest_host, dest_port = dest_address.split(":")
++                        additional_startup_nodes_info.append(
++                            (dest_host, int(dest_port))
++                        )
++            # Updates the cluster slots cache with the new slots mapping
++            # This will also update the nodes cache with the new nodes mapping
++            await self.cluster_client.nodes_manager.initialize(
++                additional_startup_nodes_info=additional_startup_nodes_info,
++            )
++
++            all_nodes = set(affected_nodes)
++            all_nodes = all_nodes.union(
++                self.cluster_client.nodes_manager.nodes_cache.values()
++            )
++            for current_node in all_nodes:
++                handoff_recorded = False
++                if current_node in affected_nodes:
++                    # mark for reconnect all in-use connections to the node — this
++                    # forces them to disconnect after completing their current command
++                    free_set = set(current_node._free)
++                    for conn in current_node._connections:
++                        if conn not in free_set:
++                            add_debug_log_for_notification(
++                                conn, "SMIGRATED - mark for reconnect"
++                            )
++                            conn.mark_for_reconnect()
++                    await record_connection_handoff(
++                        pool_name=f"{current_node.host}:{current_node.port}"
++                    )
++                    handoff_recorded = True
++                else:
++                    if logger.isEnabledFor(logging.DEBUG):
++                        logger.debug(
++                            f"SMIGRATED: Node {current_node.name} not affected "
++                            f"by maintenance, skipping mark for reconnect"
++                        )
++                if (
++                    current_node
++                    not in self.cluster_client.nodes_manager.nodes_cache.values()
++                ):
++                    task = asyncio.get_running_loop().create_task(
++                        current_node.disconnect_free_connections()
++                    )
++                    self._background_tasks.add(task)
++                    task.add_done_callback(self._background_tasks.discard)
++                    task.add_done_callback(
++                        functools.partial(
++                            _log_task_exception,
++                            "Error disconnecting free connections after "
++                            "maintenance notification",
++                        )
++                    )
++                    if not handoff_recorded:
++                        await record_connection_handoff(
++                            pool_name=f"{current_node.host}:{current_node.port}"
++                        )
++
++            self._processed_notifications.add(notification)
+diff --git a/redis/cluster.py b/redis/cluster.py
+index be575154f7..e75cf238d7 100644
+--- a/redis/cluster.py
++++ b/redis/cluster.py
+@@ -340,17 +340,12 @@ def __init__(
+         maint_notifications_config: Optional[MaintNotificationsConfig],
+         **kwargs,
+     ):
+-        # Initialize maintenance notifications
++        # Initialize maintenance notifications.
++        # The RESP3 requirement is validated in RedisCluster.__init__ before the
++        # NodesManager is constructed; this mixin is only ever run from there, so
++        # the config it receives has already been validated.
+         is_protocol_supported = check_protocol_version(kwargs.get("protocol"), 3)
+ 
+-        if (
+-            maint_notifications_config
+-            and maint_notifications_config.enabled
+-            and not is_protocol_supported
+-        ):
+-            raise RedisError(
+-                "Maintenance notifications handlers on connection are only supported with RESP version 3"
+-            )
+         if maint_notifications_config is None and is_protocol_supported:
+             maint_notifications_config = MaintNotificationsConfig()
+ 
+@@ -880,7 +875,11 @@ def __init__(
+         if (cache_config or cache) and not check_protocol_version(protocol, 3):
+             raise RedisError("Client caching is only supported with RESP version 3")
+ 
+-        if maint_notifications_config and not check_protocol_version(protocol, 3):
++        if (
++            maint_notifications_config
++            and maint_notifications_config.enabled
++            and not check_protocol_version(protocol, 3)
++        ):
+             raise RedisError(
+                 "Maintenance notifications are only supported with RESP version 3"
+             )
+diff --git a/redis/connection.py b/redis/connection.py
+index 61425fab13..ef06139bb5 100644
+--- a/redis/connection.py
++++ b/redis/connection.py
+@@ -514,14 +514,12 @@ def _configure_maintenance_notifications(
+             self._oss_cluster_maint_notifications_handler = (
+                 oss_cluster_maint_notifications_handler
+             )
+-        else:
+-            self._oss_cluster_maint_notifications_handler = None
+-
+-        # Set up OSS cluster handler to parser if available
+-        if self._oss_cluster_maint_notifications_handler:
++            # Set up OSS cluster handler to parser
+             parser.set_oss_cluster_maint_push_handler(
+                 self._oss_cluster_maint_notifications_handler.handle_notification
+             )
++        else:
++            self._oss_cluster_maint_notifications_handler = None
+ 
+         # Set up pool handler to parser if available
+         if self._maint_notifications_pool_handler:
+@@ -2515,6 +2513,11 @@ def update_maint_notifications_config(
+             self._oss_cluster_maint_notifications_handler = (
+                 oss_cluster_maint_notifications_handler
+             )
++            # OSS cluster mode and pool-handler mode are mutually exclusive
++            # (see __init__). A pool created with the default RESP3 "auto"
++            # config wires a pool handler before this method runs; clear it so
++            # new and existing connections are not configured with both handlers.
++            self._maint_notifications_pool_handler = None
+         else:
+             # first update pool settings
+             if not self._maint_notifications_pool_handler:
+@@ -2564,6 +2567,10 @@ def _update_connection_kwargs_for_maint_notifications(
+                     "maint_notifications_config": oss_cluster_maint_notifications_handler.config,
+                 }
+             )
++            # OSS cluster mode and pool-handler mode are mutually exclusive.
++            # Drop any pool handler a default (RESP3 "auto") pool creation may
++            # have wired so future connections are not configured with both.
++            self.connection_kwargs.pop("maint_notifications_pool_handler", None)
+ 
+         # Store original connection parameters for maintenance notifications.
+         if self.connection_kwargs.get("orig_host_address", None) is None:
+@@ -2615,12 +2622,19 @@ def _update_maint_notifications_configs_for_connections(
+                 conn.disconnect()
+             for conn in self._get_in_use_connections():
+                 if oss_cluster_maint_notifications_handler:
++                    # Use set_maint_notifications_cluster_handler_for_connection
++                    # (not _configure_maintenance_notifications) so the parser is
++                    # obtained from the connection itself. _configure_* requires a
++                    # parser argument and would raise here; it would also reset the
++                    # connection's orig_* settings, which is wrong for an in-use
++                    # (active) connection. This mirrors the idle-connection branch
++                    # above and the pool-handler branches.
++                    conn.set_maint_notifications_cluster_handler_for_connection(
++                        oss_cluster_maint_notifications_handler
++                    )
+                     conn.maint_notifications_config = (
+                         oss_cluster_maint_notifications_handler.config
+                     )
+-                    conn._configure_maintenance_notifications(
+-                        oss_cluster_maint_notifications_handler=oss_cluster_maint_notifications_handler
+-                    )
+                 elif maint_notifications_pool_handler:
+                     conn.set_maint_notifications_pool_handler_for_connection(
+                         maint_notifications_pool_handler
+diff --git a/redis/maint_notifications.py b/redis/maint_notifications.py
+index 9ffb126cb7..bbb861e1c8 100644
+--- a/redis/maint_notifications.py
++++ b/redis/maint_notifications.py
+@@ -1256,4 +1256,4 @@ def handle_oss_maintenance_completed_notification(
+ 
+             # mark the notification as processed
+             self._processed_notifications.add(notification)
+-            self._in_progress.remove(notification)
++            self._in_progress.discard(notification)
+diff --git a/tests/maint_notifications/test_async_cluster_maint_notifications_handling.py b/tests/maint_notifications/test_async_cluster_maint_notifications_handling.py
+new file mode 100644
+index 0000000000..30f6c9fb04
+--- /dev/null
++++ b/tests/maint_notifications/test_async_cluster_maint_notifications_handling.py
+@@ -0,0 +1,771 @@
++import asyncio
++from dataclasses import dataclass
++from typing import List, Optional
++
++import pytest
++
++import redis.asyncio as redis
++from redis.asyncio.cluster import ClusterNode
++from redis.maint_notifications import MaintNotificationsConfig, MaintenanceState
++from tests.maint_notifications.proxy_server_helpers import (
++    ProxyInterceptorHelper,
++    RespTranslator,
++    SlotsRange,
++)
++
++NODE_PORT_1 = 15379
++NODE_PORT_2 = 15380
++NODE_PORT_3 = 15381
++
++NODE_PORT_NEW = 15382
++
++# IP addresses used in tests
++NODE_IP_LOCALHOST = "127.0.0.1"
++NODE_IP_PROXY = "0.0.0.0"
++
++DEFAULT_SOCKET_TIMEOUT = 5
++
++# Initial cluster node configuration for proxy-based tests
++PROXY_CLUSTER_NODES = [
++    ClusterNode("127.0.0.1", NODE_PORT_1),
++    ClusterNode("127.0.0.1", NODE_PORT_2),
++    ClusterNode("127.0.0.1", NODE_PORT_3),
++]
++
++CLUSTER_SLOTS_INTERCEPTOR_NAME = "test_topology"
++
++
++def _preserve_startup_nodes_order(_startup_nodes):
++    pass
++
++
++def _node_free_connections(node: ClusterNode):
++    """Return the free/idle connections of an async ClusterNode."""
++    return list(node._free)
++
++
++def _node_in_use_connections(node: ClusterNode):
++    """Return the in-use connections of an async ClusterNode.
++
++    In the async cluster, the ClusterNode IS the connection pool. In-use
++    connections are those tracked in ``_connections`` but not currently
++    sitting in the ``_free`` deque.
++    """
++    free = set(node._free)
++    return [conn for conn in node._connections if conn not in free]
++
++
++def _node_all_connections(node: ClusterNode):
++    """Return all connections (free + in-use) of an async ClusterNode."""
++    return list(node._connections)
++
++
++class TestAsyncClusterMaintNotificationsBase:
++    """Base class for async cluster maintenance notifications handling tests."""
++
++    async def _create_cluster_client(
++        self,
++        max_connections=10,
++        maint_config=None,
++        protocol=3,
++    ) -> "redis.RedisCluster":
++        """Create an async RedisCluster instance and initialize its topology.
++
++        Unlike the sync client, the async RedisCluster discovers the cluster
++        topology lazily, so we explicitly ``await initialize()`` here to make
++        ``nodes_manager.nodes_cache`` available to the tests.
++
++        Note: unlike the sync cluster, the async RedisCluster does not support
++        client-side caching (no ``cache_config``) nor a pluggable
++        ``connection_pool_class`` (the ClusterNode is its own pool), so the
++        corresponding sync config tests are intentionally omitted here.
++        """
++        if maint_config is None and hasattr(self, "config") and self.config is not None:
++            maint_config = self.config
++
++        test_redis_client = redis.RedisCluster(
++            protocol=protocol,
++            startup_nodes=PROXY_CLUSTER_NODES,
++            maint_notifications_config=maint_config,
++            max_connections=max_connections,
++        )
++        await test_redis_client.initialize()
++
++        return test_redis_client
++
++    async def _warm_up_connection_pools(
++        self, cluster: "redis.RedisCluster", created_connections_count: int = 3
++    ):
++        """Warm up node pools by acquiring, connecting and releasing connections.
++
++        The connections must be actually connected so that the proxy can push
++        maintenance notifications onto them and so that the maintenance push
++        handlers get installed on each connection's parser (this happens during
++        ``on_connect``).
++        """
++        for node in cluster.nodes_manager.nodes_cache.values():
++            node_connections = []
++            for _ in range(created_connections_count):
++                conn = node.acquire_connection()
++                await conn.connect()
++                node_connections.append(conn)
++            for conn in node_connections:
++                node.release(conn)
++            node_connections.clear()
++
++    async def _drain_maint_notification_tasks(self, cluster: "redis.RedisCluster"):
++        """Wait for any in-flight async OSS maintenance handling tasks to finish.
++
++        SMIGRATED notifications are handled by ``AsyncOSSMaintNotificationsHandler``
++        in background tasks scheduled from the parser's push callback. Unlike the
++        sync client - where SMIGRATED handling completes inline while reading the
++        command response - the async client returns from the command before the
++        topology update finishes. Tests must drain these tasks before asserting on
++        the resulting topology / connection state.
++        """
++        handler = cluster._oss_cluster_maint_notifications_handler
++        if handler is None:
++            return
++        # The handler may schedule further tasks (e.g. disconnect_free_connections)
++        # while draining, so loop until no tasks remain.
++        for _ in range(100):
++            tasks = [t for t in handler._background_tasks if not t.done()]
++            if not tasks:
++                break
++            await asyncio.gather(*tasks, return_exceptions=True)
++        # Give the event loop a chance to run any done-callbacks.
++        await asyncio.sleep(0.001)
++
++
++@pytest.mark.asyncio
++@pytest.mark.fixed_client
++class TestAsyncClusterMaintNotificationsConfig(TestAsyncClusterMaintNotificationsBase):
++    """Test the maint_notifications_config parameter of async RedisCluster."""
++
++    def _validate_maint_config_on_cluster(
++        self,
++        cluster: "redis.RedisCluster",
++        expected_enabled,
++        expected_proactive_reconnect: bool,
++        expected_relaxed_timeout: int,
++    ) -> None:
++        """Validate maint_notifications_config stored on the cluster client.
++
++        Note: the async cluster stores the config on the client itself (via the
++        AsyncMaintNotificationsAbstractRedisCluster mixin), not on the
++        NodesManager as the sync client does.
++        """
++        assert cluster.maint_notifications_config is not None
++        assert cluster.maint_notifications_config.enabled == expected_enabled
++        assert (
++            cluster.maint_notifications_config.proactive_reconnect
++            == expected_proactive_reconnect
++        )
++        assert (
++            cluster.maint_notifications_config.relaxed_timeout
++            == expected_relaxed_timeout
++        )
++
++    def _validate_handler_on_nodes(
++        self,
++        cluster: "redis.RedisCluster",
++        should_have_handler: bool = True,
++    ) -> None:
++        """Validate the OSS cluster handler propagation to nodes' connection kwargs.
++
++        Covers both discovered nodes (nodes_cache, populated during initialize())
++        and startup nodes. Startup nodes are built before the maint mixin runs and
++        keep their own connection_kwargs snapshot, so they must be wired explicitly;
++        if they are not, initialize() opens its CLUSTER SLOTS discovery connection
++        on a startup node with no push handler and drops maintenance notifications.
++        """
++        nodes = list(cluster.nodes_manager.nodes_cache.values())
++        startup_nodes = list(cluster.nodes_manager.startup_nodes.values())
++        assert len(nodes) > 0, "Cluster should have at least one node"
++        assert len(startup_nodes) > 0, "Cluster should have at least one startup node"
++
++        for node in nodes + startup_nodes:
++            handler = node.connection_kwargs.get(
++                "oss_cluster_maint_notifications_handler"
++            )
++            if should_have_handler:
++                assert handler is not None
++                assert handler is cluster._oss_cluster_maint_notifications_handler
++            else:
++                assert handler is None
++
++    async def test_maint_notifications_config(self):
++        """maint_notifications_config is stored on the client and handler propagated."""
++        maint_config = MaintNotificationsConfig(
++            enabled=False, proactive_reconnect=True, relaxed_timeout=30
++        )
++
++        cluster = await self._create_cluster_client(maint_config=maint_config)
++
++        try:
++            self._validate_maint_config_on_cluster(cluster, False, True, 30)
++            # enabled=False -> no handler created/propagated
++            self._validate_handler_on_nodes(cluster, should_have_handler=False)
++
++            # Verify we can execute commands without errors
++            await cluster.set("test", "VAL")
++            res = await cluster.get("test")
++            assert res == b"VAL"
++        finally:
++            await cluster.aclose()
++
++    async def test_config_propagation_to_new_nodes(self):
++        """When a new node is discovered, it receives the same handler via kwargs."""
++        maint_config = MaintNotificationsConfig(
++            enabled="auto", proactive_reconnect=True, relaxed_timeout=25
++        )
++
++        cluster = await self._create_cluster_client(maint_config=maint_config)
++
++        try:
++            initial_node_count = len(cluster.nodes_manager.nodes_cache)
++            self._validate_handler_on_nodes(cluster, should_have_handler=True)
++
++            # Reinitialize to ensure all nodes are (re)discovered
++            await cluster.nodes_manager.initialize()
++
++            new_node_count = len(cluster.nodes_manager.nodes_cache)
++            assert new_node_count >= initial_node_count
++            self._validate_handler_on_nodes(cluster, should_have_handler=True)
++        finally:
++            await cluster.aclose()
++
++    async def test_none_config_default_behavior(self):
++        """maint_notifications_config=None with protocol 3 -> default config created."""
++        cluster = await self._create_cluster_client(maint_config=None)
++
++        try:
++            assert cluster.nodes_manager is not None
++            # for protocol 3, maint_notifications_config should default to "auto"
++            assert cluster.maint_notifications_config is not None
++            assert cluster.maint_notifications_config.enabled == "auto"
++            assert len(cluster.nodes_manager.nodes_cache) > 0
++
++            await cluster.set("test", "VAL")
++            res = await cluster.get("test")
++            assert res == b"VAL"
++        finally:
++            await cluster.aclose()
++
++    async def test_none_config_default_behavior_for_protocol_2(self):
++        """maint_notifications_config=None with protocol 2 -> not initialized."""
++        cluster = await self._create_cluster_client(protocol=2)
++
++        try:
++            assert cluster.nodes_manager is not None
++            # for protocol 2, maint_notifications_config should not be created
++            assert cluster.maint_notifications_config is None
++            assert len(cluster.nodes_manager.nodes_cache) > 0
++
++            await cluster.set("test", "VAL")
++            res = await cluster.get("test")
++            assert res == b"VAL"
++        finally:
++            await cluster.aclose()
++
++    async def test_config_with_enabled_false(self):
++        """enabled=False -> handlers are not created/propagated."""
++        maint_config = MaintNotificationsConfig(
++            enabled=False, proactive_reconnect=False, relaxed_timeout=-1
++        )
++
++        cluster = await self._create_cluster_client(maint_config=maint_config)
++
++        try:
++            self._validate_maint_config_on_cluster(cluster, False, False, -1)
++            self._validate_handler_on_nodes(cluster, should_have_handler=False)
++            assert cluster._oss_cluster_maint_notifications_handler is None
++
++            await cluster.set("test", "VAL")
++            res = await cluster.get("test")
++            assert res == b"VAL"
++        finally:
++            await cluster.aclose()
++
++    async def test_config_with_pipeline_operations(self):
++        """maint_notifications_config works with pipelined commands."""
++        maint_config = MaintNotificationsConfig(
++            enabled="auto", proactive_reconnect=True, relaxed_timeout=10
++        )
++
++        cluster = await self._create_cluster_client(maint_config=maint_config)
++
++        try:
++            self._validate_maint_config_on_cluster(cluster, "auto", True, 10)
++            self._validate_handler_on_nodes(cluster, should_have_handler=True)
++
++            pipe = cluster.pipeline()
++            pipe.set("pipe_key1", "value1")
++            pipe.set("pipe_key2", "value2")
++            pipe.get("pipe_key1")
++            pipe.get("pipe_key2")
++            results = await pipe.execute()
++
++            assert results[0] is True or results[0] == b"OK"
++            assert results[1] is True or results[1] == b"OK"
++            assert results[2] == b"value1"
++            assert results[3] == b"value2"
++        finally:
++            await cluster.aclose()
++
++    async def test_explicit_enable_without_resp3_raises(self):
++        """Explicit enabled=True with protocol 2 raises RedisError."""
++        from redis.exceptions import RedisError
++
++        maint_config = MaintNotificationsConfig(enabled=True)
++        with pytest.raises(RedisError):
++            redis.RedisCluster(
++                protocol=2,
++                startup_nodes=PROXY_CLUSTER_NODES,
++                maint_notifications_config=maint_config,
++            )
++
++    async def test_handler_wired_on_startup_nodes_before_initialize(self):
++        """Startup nodes must carry the OSS handler before initialize() runs.
++
++        Regression test for the startup-node kwargs snapshot bug: startup
++        ClusterNodes are constructed before the maint mixin runs and keep their
++        own connection_kwargs copy. If the handler is injected only into the
++        shared nodes_manager.connection_kwargs, the startup nodes stay stale and
++        initialize() opens its CLUSTER SLOTS discovery connection with no push
++        handler wired, silently dropping maintenance notifications on it.
++
++        This must be asserted *before* initialize(): with the default
++        dynamic_startup_nodes=True, initialize() replaces startup_nodes with the
++        (handler-wired) discovered nodes, which would mask the original defect.
++        """
++        maint_config = MaintNotificationsConfig(enabled=True)
++        cluster = redis.RedisCluster(
++            protocol=3,
++            startup_nodes=PROXY_CLUSTER_NODES,
++            maint_notifications_config=maint_config,
++        )
++        try:
++            handler = cluster._oss_cluster_maint_notifications_handler
++            assert handler is not None
++
++            startup_nodes = list(cluster.nodes_manager.startup_nodes.values())
++            assert len(startup_nodes) == len(PROXY_CLUSTER_NODES)
++            for node in startup_nodes:
++                assert (
++                    node.connection_kwargs.get(
++                        "oss_cluster_maint_notifications_handler"
++                    )
++                    is handler
++                )
++        finally:
++            await cluster.aclose()
++
++
++@pytest.mark.asyncio
++@pytest.mark.fixed_client
++class TestAsyncClusterMaintNotificationsHandler(TestAsyncClusterMaintNotificationsBase):
++    """Test AsyncOSSMaintNotificationsHandler propagation to connections."""
++
++    def _validate_connection_handlers(self, conn, cluster_client, config):
++        """Validate that the connection's parser handlers are properly set."""
++        # The oss cluster handler function is correctly set on the parser
++        oss_handler = conn._parser.oss_cluster_maint_push_handler_func
++        assert oss_handler is not None
++        assert hasattr(oss_handler, "__self__")
++        assert hasattr(oss_handler, "__func__")
++        assert oss_handler.__self__.cluster_client is cluster_client
++        assert (
++            oss_handler.__self__._lock
++            is cluster_client._oss_cluster_maint_notifications_handler._lock
++        )
++        assert (
++            oss_handler.__self__._processed_notifications
++            is cluster_client._oss_cluster_maint_notifications_handler._processed_notifications
++        )
++
++        # The maintenance (connection-level) handler is correctly set on the parser
++        maint_handler = conn._parser.maintenance_push_handler_func
++        assert maint_handler is not None
++        assert hasattr(maint_handler, "__self__")
++        assert hasattr(maint_handler, "__func__")
++        assert maint_handler.__self__ is conn._maint_notifications_connection_handler
++        assert (
++            maint_handler.__func__
++            is conn._maint_notifications_connection_handler.handle_notification.__func__
++        )
++
++        assert conn._maint_notifications_connection_handler.config is config
++
++    async def test_oss_maint_handler_propagation(self):
++        """OSSMaintNotificationsHandler is propagated to all connections."""
++        config = MaintNotificationsConfig(
++            enabled="auto", proactive_reconnect=True, relaxed_timeout=30
++        )
++        cluster = await self._create_cluster_client(maint_config=config)
++        try:
++            await self._warm_up_connection_pools(cluster, created_connections_count=3)
++            for node in cluster.nodes_manager.nodes_cache.values():
++                for conn in _node_all_connections(node):
++                    assert conn._oss_cluster_maint_notifications_handler is not None
++                    self._validate_connection_handlers(
++                        conn, cluster, cluster.maint_notifications_config
++                    )
++        finally:
++            await cluster.aclose()
++
++
++class TestAsyncClusterMaintNotificationsHandlingBase(
++    TestAsyncClusterMaintNotificationsBase
++):
++    """Base class for async maintenance notifications handling tests.
++
++    Uses an autouse async fixture (instead of sync setup_method/teardown_method)
++    because cluster creation requires ``await initialize()``.
++    """
++
++    @pytest.fixture(autouse=True)
++    async def _setup_cluster(self):
++        self.proxy_helper = ProxyInterceptorHelper()
++        self.proxy_helper.cleanup_interceptors(CLUSTER_SLOTS_INTERCEPTOR_NAME)
++
++        self.config = MaintNotificationsConfig(
++            enabled="auto", proactive_reconnect=True, relaxed_timeout=30
++        )
++        self.cluster = await self._create_cluster_client(maint_config=self.config)
++        try:
++            yield
++        finally:
++            await self.cluster.aclose()
++            self.proxy_helper.cleanup_interceptors()
++
++
++@dataclass
++class ConnectionStateExpectation:
++    """Holds expected connection state details for validation."""
++
++    node_port: int
++    changed_connections_count: int = 0
++    state: MaintenanceState = MaintenanceState.NONE
++    relaxed_timeout: Optional[int] = None
++
++
++@pytest.mark.asyncio
++@pytest.mark.fixed_client
++class TestAsyncClusterMaintNotificationsHandling(
++    TestAsyncClusterMaintNotificationsHandlingBase
++):
++    """Test maintenance notifications handling with async RedisCluster."""
++
++    def _get_expected_node_state(
++        self, expectations_list: List[ConnectionStateExpectation], node_port: int
++    ) -> Optional[ConnectionStateExpectation]:
++        for expectation in expectations_list:
++            if expectation.node_port == node_port:
++                return expectation
++        return None
++
++    def _validate_connections_states(
++        self,
++        cluster: "redis.RedisCluster",
++        expected_states: List[ConnectionStateExpectation],
++    ):
++        """Validate per-node connection maintenance state / relaxed timeout."""
++        default_maint_state = MaintenanceState.NONE
++        default_timeout = None
++        for node in list(cluster.nodes_manager.nodes_cache.values()):
++            expected_state = self._get_expected_node_state(expected_states, node.port)
++            if expected_state is None:
++                continue
++            changed_connections_count = 0
++            for conn in _node_all_connections(node):
++                if (
++                    conn.maintenance_state != default_maint_state
++                    and conn.maintenance_state == expected_state.state
++                ) or (
++                    conn.socket_timeout != default_timeout
++                    and conn.socket_timeout == expected_state.relaxed_timeout
++                ):
++                    changed_connections_count += 1
++            assert changed_connections_count == expected_state.changed_connections_count
++
++    def _validate_removed_node_connections(self, node: ClusterNode):
++        """Validate connections in a removed node are disconnected / for reconnect."""
++        for conn in _node_free_connections(node):
++            assert conn._sock is None
++        for conn in _node_in_use_connections(node):
++            assert conn.should_reconnect()
++
++    async def test_receive_smigrating_notification(self):
++        """Receiving an SMIGRATING notification relaxes timeout on one connection."""
++        await self._warm_up_connection_pools(self.cluster, created_connections_count=3)
++
++        notification = RespTranslator.oss_maint_notification_to_resp(
++            "SMIGRATING 12 123,456,5000-7000"
++        )
++        self.proxy_helper.send_notification(notification)
++
++        # validate no timeout is relaxed on any connection yet
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(NODE_PORT_1, 0),
++                ConnectionStateExpectation(NODE_PORT_2, 0),
++                ConnectionStateExpectation(NODE_PORT_3, 0),
++            ],
++        )
++
++        # execute a command that will receive the notification
++        res = await self.cluster.set("anyprefix:{3}:k", "VAL")
++        assert res is True
++
++        # SMIGRATING is handled at the connection level (synchronously while reading
++        # the response) - no background task draining needed here.
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(
++                    NODE_PORT_1,
++                    changed_connections_count=1,
++                    state=MaintenanceState.MAINTENANCE,
++                    relaxed_timeout=self.config.relaxed_timeout,
++                ),
++                ConnectionStateExpectation(NODE_PORT_2, 0),
++                ConnectionStateExpectation(NODE_PORT_3, 0),
++            ],
++        )
++
++    async def test_receive_smigrating_with_disabled_relaxed_timeout(self):
++        """SMIGRATING with relaxed_timeout disabled does not change any connection."""
++        disabled_config = MaintNotificationsConfig(
++            enabled="auto",
++            relaxed_timeout=-1,  # disabled
++        )
++        cluster = await self._create_cluster_client(maint_config=disabled_config)
++        try:
++            await self._warm_up_connection_pools(cluster, created_connections_count=3)
++
++            notification = RespTranslator.oss_maint_notification_to_resp(
++                "SMIGRATING 12 123,456,5000-7000"
++            )
++            self.proxy_helper.send_notification(notification)
++
++            await cluster.set("anyprefix:{3}:k", "VAL")
++
++            self._validate_connections_states(
++                cluster,
++                [
++                    ConnectionStateExpectation(NODE_PORT_1, 0),
++                    ConnectionStateExpectation(NODE_PORT_2, 0),
++                    ConnectionStateExpectation(NODE_PORT_3, 0),
++                ],
++            )
++        finally:
++            await cluster.aclose()
++
++    async def test_receive_smigrated_notification(self):
++        """Receiving an SMIGRATED notification updates the cluster topology."""
++        await self._warm_up_connection_pools(self.cluster, created_connections_count=3)
++
++        self.proxy_helper.set_cluster_slots(
++            CLUSTER_SLOTS_INTERCEPTOR_NAME,
++            [
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_NEW, 0, 5460),
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_2, 5461, 10922),
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_3, 10923, 16383),
++            ],
++        )
++        notification = RespTranslator.oss_maint_notification_to_resp(
++            f"SMIGRATED 12 {NODE_IP_PROXY}:{NODE_PORT_1} "
++            f"{NODE_IP_PROXY}:{NODE_PORT_2} 123,456,5000-7000"
++        )
++        self.proxy_helper.send_notification(notification)
++
++        # execute a command that will receive the notification
++        res = await self.cluster.set("anyprefix:{3}:k", "VAL")
++        assert res is True
++
++        # SMIGRATED is handled in a background task in the async client
++        await self._drain_maint_notification_tasks(self.cluster)
++
++        new_node = self.cluster.nodes_manager.get_node(
++            host=NODE_IP_PROXY, port=NODE_PORT_NEW
++        )
++        assert new_node is not None
++
++    async def test_receive_smigrated_notification_with_two_nodes(self):
++        """SMIGRATED affecting two destination nodes updates the topology."""
++        await self._warm_up_connection_pools(self.cluster, created_connections_count=3)
++
++        self.proxy_helper.set_cluster_slots(
++            CLUSTER_SLOTS_INTERCEPTOR_NAME,
++            [
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_NEW, 0, 5460),
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_2, 5461, 10922),
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_3, 10923, 16383),
++            ],
++        )
++        notification = RespTranslator.oss_maint_notification_to_resp(
++            f"SMIGRATED 12 {NODE_IP_PROXY}:{NODE_PORT_1} "
++            f"{NODE_IP_PROXY}:{NODE_PORT_2} 123,456,5000-7000 "
++            f"{NODE_IP_PROXY}:{NODE_PORT_1} {NODE_IP_PROXY}:{NODE_PORT_NEW} 110-120"
++        )
++        self.proxy_helper.send_notification(notification)
++
++        res = await self.cluster.set("anyprefix:{3}:k", "VAL")
++        assert res is True
++
++        await self._drain_maint_notification_tasks(self.cluster)
++
++        new_node = self.cluster.nodes_manager.get_node(
++            host=NODE_IP_PROXY, port=NODE_PORT_NEW
++        )
++        assert new_node is not None
++
++    async def test_smigrating_smigrated_on_the_same_node_two_slot_ranges(self):
++        """Second in-progress migration must not unrelax the timeouts early."""
++        await self._warm_up_connection_pools(self.cluster, created_connections_count=1)
++
++        smigrating_node_1 = RespTranslator.oss_maint_notification_to_resp(
++            "SMIGRATING 12 1000-2000,2500-3000"
++        )
++        self.proxy_helper.send_notification(smigrating_node_1)
++        await self.cluster.set("anyprefix:{3}:k", "VAL")
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(
++                    NODE_PORT_1,
++                    changed_connections_count=1,
++                    state=MaintenanceState.MAINTENANCE,
++                    relaxed_timeout=self.config.relaxed_timeout,
++                ),
++            ],
++        )
++
++        smigrated_node_1 = RespTranslator.oss_maint_notification_to_resp(
++            f"SMIGRATED 14 {NODE_IP_PROXY}:{NODE_PORT_1} "
++            f"{NODE_IP_PROXY}:{NODE_PORT_2} 1000-2000 "
++            f"{NODE_IP_PROXY}:{NODE_PORT_1} {NODE_IP_PROXY}:{NODE_PORT_3} 2500-3000"
++        )
++        self.proxy_helper.send_notification(smigrated_node_1)
++        await self.cluster.set("anyprefix:{3}:k", "VAL")
++        await self._drain_maint_notification_tasks(self.cluster)
++
++        # second migration still in progress -> timeout remains relaxed
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(NODE_PORT_1),
++            ],
++        )
++
++        smigrated_node_1_2 = RespTranslator.oss_maint_notification_to_resp(
++            f"SMIGRATED 15 {NODE_IP_PROXY}:{NODE_PORT_1} "
++            f"{NODE_IP_PROXY}:{NODE_PORT_3} 3000-4000"
++        )
++        self.proxy_helper.send_notification(smigrated_node_1_2)
++        await self.cluster.set("anyprefix:{3}:k", "VAL")
++        await self._drain_maint_notification_tasks(self.cluster)
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(
++                    NODE_PORT_1,
++                    changed_connections_count=0,
++                ),
++            ],
++        )
++
++    async def test_smigrated_node_replacement_resets_topology_connection_configs(self):
++        """End-to-end node replacement over the proxy with three warmed-up nodes.
++
++        Start with three nodes, each with 3 connections created and used. An
++        SMIGRATING notification relaxes a connection on NODE_PORT_1, then an
++        SMIGRATED notification migrates all of NODE_PORT_1's slots to
++        NODE_PORT_NEW - so NODE_PORT_1 leaves the topology and NODE_PORT_NEW joins.
++
++        After the async handler drains, validate the end result:
++          * the topology was updated (NODE_PORT_NEW in, NODE_PORT_1 out);
++          * every node remaining in the topology has its connections back at the
++            default (non-relaxed) config - i.e. no connection is left in
++            MAINTENANCE / with a relaxed timeout;
++          * the replaced node's connections were cleaned up (each is either
++            disconnected or marked for reconnect, so none can serve a command
++            with the stale relaxed timeout).
++        """
++        await self._warm_up_connection_pools(self.cluster, created_connections_count=3)
++
++        # Grab the node that will be replaced before it leaves the topology.
++        removed_node = self.cluster.nodes_manager.get_node(
++            host=NODE_IP_PROXY, port=NODE_PORT_1
++        )
++        assert removed_node is not None
++        assert len(_node_all_connections(removed_node)) == 3
++
++        # 1) SMIGRATING relaxes a connection on NODE_PORT_1 (the migrating source).
++        self.proxy_helper.send_notification(
++            RespTranslator.oss_maint_notification_to_resp(
++                "SMIGRATING 12 123,456,5000-7000"
++            )
++        )
++        assert await self.cluster.set("anyprefix:{3}:k", "VAL") is True
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(
++                    NODE_PORT_1,
++                    changed_connections_count=1,
++                    state=MaintenanceState.MAINTENANCE,
++                    relaxed_timeout=self.config.relaxed_timeout,
++                ),
++                ConnectionStateExpectation(NODE_PORT_2, 0),
++                ConnectionStateExpectation(NODE_PORT_3, 0),
++            ],
++        )
++
++        # 2) SMIGRATED migrates all of NODE_PORT_1's slots to NODE_PORT_NEW, so
++        # NODE_PORT_1 is dropped from the topology and NODE_PORT_NEW is added.
++        self.proxy_helper.set_cluster_slots(
++            CLUSTER_SLOTS_INTERCEPTOR_NAME,
++            [
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_NEW, 0, 5460),
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_2, 5461, 10922),
++                SlotsRange(NODE_IP_PROXY, NODE_PORT_3, 10923, 16383),
++            ],
++        )
++        self.proxy_helper.send_notification(
++            RespTranslator.oss_maint_notification_to_resp(
++                f"SMIGRATED 13 {NODE_IP_PROXY}:{NODE_PORT_1} "
++                f"{NODE_IP_PROXY}:{NODE_PORT_NEW} 0-5460"
++            )
++        )
++        assert await self.cluster.set("anyprefix:{3}:k", "VAL") is True
++        await self._drain_maint_notification_tasks(self.cluster)
++
++        # Topology updated: new node joined, replaced node gone.
++        assert (
++            self.cluster.nodes_manager.get_node(host=NODE_IP_PROXY, port=NODE_PORT_NEW)
++            is not None
++        )
++        assert (
++            self.cluster.nodes_manager.get_node(host=NODE_IP_PROXY, port=NODE_PORT_1)
++            is None
++        )
++
++        # Every node remaining in the topology is back at the default config -
++        # no connection left relaxed / in MAINTENANCE.
++        self._validate_connections_states(
++            self.cluster,
++            [
++                ConnectionStateExpectation(NODE_PORT_NEW, 0),
++                ConnectionStateExpectation(NODE_PORT_2, 0),
++                ConnectionStateExpectation(NODE_PORT_3, 0),
++            ],
++        )
++
++        # The replaced node's connections were cleaned up: each is either
++        # disconnected (free connections) or marked for reconnect (in-use), so
++        # none can be reused with the stale relaxed timeout.
++        for conn in _node_all_connections(removed_node):
++            assert (not conn.is_connected) or conn.should_reconnect()
+diff --git a/tests/maint_notifications/test_async_maint_notifications_handling.py b/tests/maint_notifications/test_async_maint_notifications_handling.py
+index 9ca779b49d..f7d0564f43 100644
+--- a/tests/maint_notifications/test_async_maint_notifications_handling.py
++++ b/tests/maint_notifications/test_async_maint_notifications_handling.py
+@@ -15,6 +15,7 @@
+ from redis.asyncio.maint_notifications import (
+     AsyncMaintNotificationsConnectionHandler,
+     AsyncMaintNotificationsPoolHandler,
++    AsyncOSSMaintNotificationsHandler,
+ )
+ from redis.exceptions import ConnectionError as RedisConnectionError
+ from redis.exceptions import RedisError, ResponseError
+@@ -27,7 +28,6 @@
+     NodeMigratedNotification,
+     NodeMigratingNotification,
+     NodeMovingNotification,
+-    OSSNodeMigratingNotification,
+ )
+ from redis.utils import SENTINEL
+ 
+@@ -212,30 +212,6 @@ async def test_async_connection_handler_handles_failover_start_and_end():
+     assert relaxed_timeout_metric.await_count == 2
+ 
+ 
+-@pytest.mark.asyncio
+-async def test_async_connection_handler_ignores_oss_cluster_notifications():
+-    config = MaintNotificationsConfig(enabled=True, relaxed_timeout=RELAXED_TIMEOUT)
+-    connection = DummyAsyncConnection()
+-    handler = AsyncMaintNotificationsConnectionHandler(connection, config)
+-
+-    with (
+-        mock.patch(
+-            "redis.asyncio.maint_notifications.record_maint_notification_count",
+-            new=AsyncMock(),
+-        ) as notification_count,
+-        mock.patch(
+-            "redis.asyncio.maint_notifications.record_connection_relaxed_timeout",
+-            new=AsyncMock(),
+-        ) as relaxed_timeout_metric,
+-    ):
+-        await handler.handle_notification(OSSNodeMigratingNotification(id=1))
+-
+-    assert connection.maintenance_state == MaintenanceState.NONE
+-    assert connection.timeout_updates == []
+-    notification_count.assert_awaited_once()
+-    relaxed_timeout_metric.assert_not_awaited()
+-
+-
+ @pytest.mark.asyncio
+ @pytest.mark.parametrize(
+     "start_notification,end_notification",
+@@ -459,6 +435,67 @@ async def test_async_pool_update_config_wires_existing_connections():
+     )
+ 
+ 
++@pytest.mark.asyncio
++async def test_async_pool_update_oss_handler_wires_existing_connections():
++    """update_maint_notifications_config wires an OSS cluster handler onto every
++    existing connection in the pool.
++
++    Each connection's parser receives the OSS cluster and maintenance push
++    handlers and the connection references the handler. In-use connections are
++    marked for reconnect; free connections are wired then disconnected.
++    """
++    config = MaintNotificationsConfig(enabled=True)
++    pool = ConnectionPool(
++        host=DEFAULT_HOST,
++        port=DEFAULT_PORT,
++        protocol=3,
++        maint_notifications_config=config,
++    )
++    free_connection = pool.make_connection()
++    in_use_connection = pool.make_connection()
++    pool._available_connections.append(free_connection)
++    pool._in_use_connections.add(in_use_connection)
++
++    oss_handler = AsyncOSSMaintNotificationsHandler(MagicMock(), config)
++
++    await pool.update_maint_notifications_config(
++        config, oss_cluster_maint_notifications_handler=oss_handler
++    )
++
++    # In-use connection: parser has the OSS + maintenance push handlers wired
++    # and the connection is marked for reconnect.
++    assert in_use_connection._oss_cluster_maint_notifications_handler is oss_handler
++    in_use_oss_func = in_use_connection._parser.oss_cluster_maint_push_handler_func
++    assert in_use_oss_func is not None
++    assert in_use_oss_func.__func__ is oss_handler.handle_notification.__func__
++    assert in_use_connection._parser.maintenance_push_handler_func is not None
++    assert in_use_connection.should_reconnect()
++
++    # Free connection — the idle OSS path, wired then disconnected.
++    assert free_connection._oss_cluster_maint_notifications_handler is oss_handler
++    assert free_connection._parser.oss_cluster_maint_push_handler_func is not None
++    assert free_connection._parser.maintenance_push_handler_func is not None
++
++    # OSS cluster mode and pool-handler mode are mutually exclusive. The pool
++    # was created with the default (enabled) config, which wires a pool handler
++    # in __init__; switching to OSS mode must clear it from both the pool
++    # attribute and the shared connection kwargs so future connections are not
++    # configured with both handlers.
++    assert pool._maint_notifications_pool_handler is None
++    assert "maint_notifications_pool_handler" not in pool.connection_kwargs
++    assert (
++        pool.connection_kwargs.get("oss_cluster_maint_notifications_handler")
++        is oss_handler
++    )
++
++    # A connection created after the switch gets only the OSS cluster handler.
++    new_connection = pool.make_connection()
++    assert new_connection._maint_notifications_pool_handler is None
++    assert new_connection._parser.node_moving_push_handler_func is None
++    assert new_connection._oss_cluster_maint_notifications_handler is oss_handler
++    assert new_connection._parser.oss_cluster_maint_push_handler_func is not None
++
++
+ @pytest.mark.asyncio
+ async def test_async_handshake_sends_maint_notifications_command():
+     config = MaintNotificationsConfig(
+diff --git a/tests/maint_notifications/test_maint_notifications_handling.py b/tests/maint_notifications/test_maint_notifications_handling.py
+index 1e6b02ef5f..8434cc9cc8 100644
+--- a/tests/maint_notifications/test_maint_notifications_handling.py
++++ b/tests/maint_notifications/test_maint_notifications_handling.py
+@@ -27,6 +27,7 @@
+     NodeFailedOverNotification,
+     MaintNotificationsPoolHandler,
+     NodeMovingNotification,
++    OSSMaintNotificationsHandler,
+ )
+ 
+ 
+@@ -704,6 +705,65 @@ def test_maint_handler_init_for_existing_connections(self):
+         test_redis_client.connection_pool.release(existing_conn)
+         test_redis_client.connection_pool.release(new_conn)
+ 
++    def test_update_oss_handler_wires_existing_connections(self):
++        """update_maint_notifications_config wires an OSS cluster handler onto every
++        existing connection in the pool.
++
++        Each connection's parser receives the OSS cluster and maintenance push
++        handlers and the connection references the handler. In-use connections are
++        marked for reconnect; free connections are wired then disconnected.
++        """
++        config = MaintNotificationsConfig(enabled=True)
++        pool = ConnectionPool(
++            host=DEFAULT_ADDRESS.split(":")[0],
++            port=int(DEFAULT_ADDRESS.split(":")[1]),
++            protocol=3,
++            maint_notifications_config=config,
++        )
++        free_connection = pool.make_connection()
++        in_use_connection = pool.make_connection()
++        pool._available_connections.append(free_connection)
++        pool._in_use_connections.add(in_use_connection)
++
++        oss_handler = OSSMaintNotificationsHandler(MagicMock(), config)
++
++        pool.update_maint_notifications_config(
++            config, oss_cluster_maint_notifications_handler=oss_handler
++        )
++
++        # In-use connection: parser has the OSS + maintenance push handlers wired
++        # and the connection is marked for reconnect.
++        assert in_use_connection._oss_cluster_maint_notifications_handler is oss_handler
++        in_use_oss_func = in_use_connection._parser.oss_cluster_maint_push_handler_func
++        assert in_use_oss_func is not None
++        assert in_use_oss_func.__func__ is oss_handler.handle_notification.__func__
++        assert in_use_connection._parser.maintenance_push_handler_func is not None
++        assert in_use_connection.should_reconnect()
++
++        # Free connection — the idle OSS path, wired then disconnected.
++        assert free_connection._oss_cluster_maint_notifications_handler is oss_handler
++        assert free_connection._parser.oss_cluster_maint_push_handler_func is not None
++        assert free_connection._parser.maintenance_push_handler_func is not None
++
++        # OSS cluster mode and pool-handler mode are mutually exclusive. The pool
++        # was created with the default (enabled) config, which wires a pool
++        # handler in __init__; switching to OSS mode must clear it from both the
++        # pool attribute and the shared connection kwargs so future connections
++        # are not configured with both handlers.
++        assert pool._maint_notifications_pool_handler is None
++        assert "maint_notifications_pool_handler" not in pool.connection_kwargs
++        assert (
++            pool.connection_kwargs.get("oss_cluster_maint_notifications_handler")
++            is oss_handler
++        )
++
++        # A connection created after the switch gets only the OSS cluster handler.
++        new_connection = pool.make_connection()
++        assert new_connection._maint_notifications_pool_handler is None
++        assert new_connection._parser.node_moving_push_handler_func is None
++        assert new_connection._oss_cluster_maint_notifications_handler is oss_handler
++        assert new_connection._parser.oss_cluster_maint_push_handler_func is not None
++
+     @pytest.mark.parametrize("pool_class", [ConnectionPool, BlockingConnectionPool])
+     def test_connection_pool_creation_with_maintenance_notifications(self, pool_class):
+         """Test that connection pools are created with maintenance notifications configuration."""
+diff --git a/tests/test_asyncio/test_scenario/conftest.py b/tests/test_asyncio/test_scenario/conftest.py
+index 5665ae2bc8..d011c5c06f 100644
+--- a/tests/test_asyncio/test_scenario/conftest.py
++++ b/tests/test_asyncio/test_scenario/conftest.py
+@@ -6,7 +6,7 @@
+ import pytest
+ import pytest_asyncio
+ 
+-from redis.asyncio import Redis
++from redis.asyncio import Redis, RedisCluster
+ from redis.asyncio.multidb.client import MultiDBClient
+ from redis.asyncio.multidb.config import (
+     DatabaseConfig,
+@@ -49,6 +49,16 @@ def fault_injector_client():
+         return AsyncREFaultInjector(url)
+ 
+ 
++@pytest.fixture()
++def fault_injector_client_oss_api():
++    """Async fault injector client targeting the OSS-cluster API."""
++    if use_mock_proxy():
++        return AsyncProxyServerFaultInjector(oss_cluster=True)
++    else:
++        url = os.getenv("FAULT_INJECTION_API_URL", "http://127.0.0.1:20324")
++        return AsyncREFaultInjector(url)
++
++
+ def _get_async_client_maint_notifications(
+     endpoints_config,
+     protocol: int = 3,
+@@ -137,6 +147,71 @@ def get_async_standalone_client_maint_notifications(
+     )
+ 
+ 
++def get_async_cluster_client_maint_notifications(
++    endpoints_config,
++    protocol: int = 3,
++    enable_maintenance_notifications: bool = True,
++    endpoint_type: Optional[EndpointType] = None,
++    enable_relaxed_timeout: bool = True,
++    enable_proactive_reconnect: bool = True,
++    disable_retries: bool = False,
++    auth_ssl_client_certs: bool = False,
++    socket_timeout: Optional[float] = None,
++    socket_connect_timeout: Optional[float] = None,
++) -> RedisCluster:
++    """Create async RedisCluster client with maintenance notifications enabled."""
++    username = endpoints_config.get("username")
++    password = endpoints_config.get("password")
++
++    endpoints = endpoints_config.get("endpoints", [])
++    if not endpoints:
++        raise ValueError("No endpoints found in configuration")
++
++    parsed = urlparse(endpoints[0])
++    host = parsed.hostname
++    port = parsed.port
++
++    if not host:
++        raise ValueError(f"Could not parse host from endpoint URL: {endpoints[0]}")
++    if port is None:
++        raise ValueError(f"Could not parse port from endpoint URL: {endpoints[0]}")
++
++    maintenance_config = MaintNotificationsConfig(
++        enabled=enable_maintenance_notifications,
++        proactive_reconnect=enable_proactive_reconnect,
++        relaxed_timeout=RELAXED_TIMEOUT if enable_relaxed_timeout else -1,
++        endpoint_type=endpoint_type,
++    )
++
++    if disable_retries:
++        retry = Retry(NoBackoff(), 0)
++    else:
++        retry = Retry(
++            backoff=ExponentialWithJitterBackoff(base=0.01, cap=1), retries=10
++        )
++
++    tls_enabled = parsed.scheme == "rediss"
++    tls_kwargs = {"ssl": tls_enabled}
++    if tls_enabled:
++        ssl_config = _prepare_ssl_certificates(auth_ssl_client_certs)
++        tls_kwargs.update(ssl_config)
++
++    return RedisCluster(
++        host=host,
++        port=port,
++        socket_timeout=CLIENT_TIMEOUT if socket_timeout is None else socket_timeout,
++        socket_connect_timeout=(
++            CLIENT_TIMEOUT if socket_connect_timeout is None else socket_connect_timeout
++        ),
++        username=username,
++        password=password,
++        protocol=protocol,
++        maint_notifications_config=maintenance_config,
++        retry=retry,
++        **tls_kwargs,
++    )
++
++
+ @pytest_asyncio.fixture()
+ async def r_multi_db(
+     request,
+diff --git a/tests/test_asyncio/test_scenario/test_maint_notifications.py b/tests/test_asyncio/test_scenario/test_maint_notifications.py
+index 69c5ec1680..a6727087bb 100644
+--- a/tests/test_asyncio/test_scenario/test_maint_notifications.py
++++ b/tests/test_asyncio/test_scenario/test_maint_notifications.py
+@@ -1,21 +1,24 @@
+-"""Tests for Redis Enterprise maintenance push notifications — async standalone client."""
++"""Tests for Redis Enterprise maintenance push notifications — async client."""
+ 
+ import asyncio
+ import json
+ import logging
++import random
+ import time
+ from typing import Any, Dict, List, Literal, Optional, Union
+ 
+ import pytest
+ import pytest_asyncio
+ 
+-from redis.asyncio import Redis
++from redis.asyncio import Redis, RedisCluster
++from redis.exceptions import ConnectionError as RedisConnectionError
+ from redis.maint_notifications import (
+     EndpointType,
+     MaintenanceState,
+ )
+ from tests.test_asyncio.test_scenario.conftest import (
+     _get_async_client_maint_notifications,
++    get_async_cluster_client_maint_notifications,
+     get_async_standalone_client_maint_notifications,
+ )
+ from tests.test_asyncio.test_scenario.maint_notifications_helpers import (
+@@ -24,6 +27,7 @@
+ from tests.test_scenario.conftest import (
+     CLIENT_TIMEOUT,
+     RELAXED_TIMEOUT,
++    _FAULT_INJECTOR_CLIENT_OSS_API,
+     _FAULT_INJECTOR_STANDALONE_CLIENT,
+     use_mock_proxy,
+ )
+@@ -36,6 +40,7 @@
+     TopologyChangeStandaloneEffects,
+ )
+ from tests.test_scenario.maint_notifications_helpers import (
++    KeyGenerationHelpers,
+     generate_params,
+     is_endpoint_configured_correctly,
+ )
+@@ -47,12 +52,16 @@
+ )
+ 
+ logging.getLogger("redis.asyncio.maint_notifications").setLevel(logging.DEBUG)
++logging.getLogger("redis.asyncio.cluster").setLevel(logging.DEBUG)
+ 
+ STANDALONE_MAINT_TIMEOUT = 60
+ SLOT_SHUFFLE_TIMEOUT = 120
++SMIGRATING_TIMEOUT = 20
++SMIGRATED_TIMEOUT = 40
+ 
+ DEFAULT_BIND_TTL = 15
+ DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT = 1
++DEFAULT_OSS_API_CLIENT_SOCKET_TIMEOUT = 1
+ 
+ 
+ class TestAsyncPushNotificationsBase:
+@@ -1195,3 +1204,539 @@ async def execute_commands(duration: int):
+         while not errors.empty():
+             error_items.append(errors.get_nowait())
+         assert not error_items, f"Errors occurred in tasks: {error_items}"
++
++
++class TestAsyncClusterClientPushNotificationsWithEffectTriggerBase(
++    TestAsyncPushNotificationsBase
++):
++    async def setup_env(
++        self,
++        fault_injector_client: AsyncFaultInjectorClient,
++        db_config: Dict[str, Any],
++    ):
++        self._fault_injector = fault_injector_client
++        await self.delete_prev_db(fault_injector_client, db_config["name"])
++
++        cluster_endpoint_config = await self.create_db(fault_injector_client, db_config)
++        self._bdb_name = db_config["name"]
++
++        socket_timeout = DEFAULT_OSS_API_CLIENT_SOCKET_TIMEOUT
++        socket_connect_timeout = DEFAULT_OSS_API_CLIENT_SOCKET_TIMEOUT
++
++        auth_ssl_client_certs_config_info = db_config.get(
++            "authentication_ssl_client_certs", None
++        )
++        auth_ssl_client_certs = (
++            True
++            if auth_ssl_client_certs_config_info
++            and auth_ssl_client_certs_config_info[0].get("client_cert") is not None
++            else False
++        )
++
++        self._client = get_async_cluster_client_maint_notifications(
++            endpoints_config=cluster_endpoint_config,
++            disable_retries=True,
++            socket_timeout=socket_timeout,
++            socket_connect_timeout=socket_connect_timeout,
++            enable_maintenance_notifications=True,
++            auth_ssl_client_certs=auth_ssl_client_certs,
++        )
++        # The async cluster discovers its topology lazily.
++        await self._client.initialize()
++        return self._client, cluster_endpoint_config
++
++    async def _acquire_connected_connection(self, node):
++        """Acquire a connection from an async ClusterNode and connect it.
++
++        The async ClusterNode is its own pool. ``acquire_connection`` returns a
++        (possibly fresh) connection that is not yet connected; we connect it so
++        the maintenance push handlers are installed and the handshake is sent.
++        """
++        conn = node.acquire_connection()
++        await conn.connect()
++        return conn
++
++    async def _drain_maint_notification_tasks(self, client: RedisCluster):
++        """Wait for in-flight async OSS maintenance handling tasks to finish.
++
++        Unlike the sync client (where SMIGRATED handling completes inline while
++        reading the command response), the async client schedules the topology
++        update in a background task. Tests must drain these before asserting on
++        the resulting topology / connection state.
++        """
++        handler = client._oss_cluster_maint_notifications_handler
++        if handler is None:
++            return
++        for _ in range(100):
++            tasks = [t for t in handler._background_tasks if not t.done()]
++            if not tasks:
++                break
++            await asyncio.gather(*tasks, return_exceptions=True)
++        await asyncio.sleep(0)
++
++    @pytest_asyncio.fixture(autouse=True)
++    async def setup_and_cleanup(self):
++        self.maintenance_ops_tasks = []
++        self._bdb_name = None
++        self._fault_injector = None
++        self._client: RedisCluster | None = None
++
++        yield
++
++        logging.info("Starting cleanup...")
++
++        logging.info("Waiting for maintenance operation tasks to finish...")
++        if self.maintenance_ops_tasks:
++            await asyncio.gather(*self.maintenance_ops_tasks, return_exceptions=True)
++
++        if self._client is not None:
++            await self._client.aclose()
++
++        if self._bdb_name and self._fault_injector:
++            await self.delete_prev_db(self._fault_injector, self._bdb_name)
++
++        logging.info("Cleanup finished")
++
++
++class TestAsyncClusterClientPushNotificationsHandlingWithEffectTrigger(
++    TestAsyncClusterClientPushNotificationsWithEffectTriggerBase
++):
++    @pytest.mark.timeout(300)
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_CLIENT_OSS_API, [SlotMigrateEffects.SLOT_SHUFFLE]
++        ),
++    )
++    async def test_notification_handling_during_node_shuffle_no_node_replacement(
++        self,
++        fault_injector_client_oss_api: AsyncFaultInjectorClient,
++        effect_name: SlotMigrateEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++    ):
++        """Slots are moved between existing nodes; no node appears/disappears."""
++        logging.info(f"DB name: {db_name}")
++
++        client, cluster_endpoint_config = await self.setup_env(
++            fault_injector_client_oss_api, db_config
++        )
++
++        logging.info("Creating one connection in each node's pool.")
++        initial_cluster_nodes = client.nodes_manager.nodes_cache.copy()
++        in_use_connections = {}
++        for node in initial_cluster_nodes.values():
++            in_use_connections[node] = await self._acquire_connected_connection(node)
++
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_task = asyncio.create_task(
++            self._trigger_effect(
++                fault_injector_client_oss_api,
++                cluster_endpoint_config,
++                effect_name,
++                trigger,
++            )
++        )
++        self.maintenance_ops_tasks.append(trigger_task)
++
++        logging.info("Waiting for SMIGRATING push notifications in all connections...")
++        for conn in in_use_connections.values():
++            await AsyncClientValidations.wait_push_notification(
++                client,
++                timeout=int(SLOT_SHUFFLE_TIMEOUT / 2),
++                connection=conn,
++            )
++
++        logging.info("Validating connection maintenance state...")
++        for conn in in_use_connections.values():
++            assert conn.maintenance_state == MaintenanceState.MAINTENANCE
++            assert conn.socket_timeout == RELAXED_TIMEOUT
++            assert conn.should_reconnect() is False
++
++        assert len(initial_cluster_nodes) == len(client.nodes_manager.nodes_cache)
++        for node_key in initial_cluster_nodes.keys():
++            assert node_key in client.nodes_manager.nodes_cache
++
++        logging.info("Waiting for SMIGRATED push notifications...")
++        con_to_read_smigrated = random.choice(list(in_use_connections.values()))
++        await AsyncClientValidations.wait_push_notification(
++            client,
++            timeout=SMIGRATED_TIMEOUT,
++            connection=con_to_read_smigrated,
++        )
++        # SMIGRATED handling runs in a background task in the async client.
++        await self._drain_maint_notification_tasks(client)
++
++        logging.info("Validating connection state after SMIGRATED ...")
++        updated_cluster_nodes = client.nodes_manager.nodes_cache.copy()
++        removed_nodes = set(initial_cluster_nodes.values()) - set(
++            updated_cluster_nodes.values()
++        )
++        assert len(removed_nodes) == 0
++        assert len(initial_cluster_nodes) == len(updated_cluster_nodes)
++
++        marked_conns_for_reconnect = 0
++        for conn in in_use_connections.values():
++            if conn.should_reconnect():
++                marked_conns_for_reconnect += 1
++        # Async-specific: unlike the sync client (which marks only the src node's
++        # connection), the async NodesManager.set_nodes marks ALL preserved nodes'
++        # in-use connections for reconnect on every initialize() — the cluster
++        # topology refresh triggered while handling SMIGRATED defers disconnection
++        # via lazy reconnect since set_nodes is sync. So at least the src node's
++        # connection is marked; in practice every held connection is.
++        assert marked_conns_for_reconnect >= 1
++
++        logging.info("Releasing connections back to the pool...")
++        for node, conn in in_use_connections.items():
++            node.release(conn)
++
++        await trigger_task
++        self.maintenance_ops_tasks.remove(trigger_task)
++
++    @pytest.mark.timeout(300)
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_CLIENT_OSS_API,
++            [SlotMigrateEffects.REMOVE_ADD],
++        ),
++    )
++    async def test_notification_handling_with_node_replace(
++        self,
++        fault_injector_client_oss_api: AsyncFaultInjectorClient,
++        effect_name: SlotMigrateEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++    ):
++        """A node is removed and a new node is added during slot movement."""
++        logging.info(f"DB name: {db_name}")
++
++        client, cluster_endpoint_config = await self.setup_env(
++            fault_injector_client_oss_api, db_config
++        )
++
++        logging.info("Creating one connection in each node's pool.")
++        initial_cluster_nodes = client.nodes_manager.nodes_cache.copy()
++        in_use_connections = {}
++        for node in initial_cluster_nodes.values():
++            in_use_connections[node] = await self._acquire_connected_connection(node)
++
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_task = asyncio.create_task(
++            self._trigger_effect(
++                fault_injector_client_oss_api,
++                cluster_endpoint_config,
++                effect_name,
++                trigger,
++            )
++        )
++        self.maintenance_ops_tasks.append(trigger_task)
++
++        logging.info("Waiting for SMIGRATING push notifications in all connections...")
++        for conn in in_use_connections.values():
++            await AsyncClientValidations.wait_push_notification(
++                client,
++                timeout=SMIGRATING_TIMEOUT,
++                connection=conn,
++            )
++
++        logging.info("Validating connection maintenance state...")
++        for conn in in_use_connections.values():
++            assert conn.maintenance_state == MaintenanceState.MAINTENANCE
++            assert conn.socket_timeout == RELAXED_TIMEOUT
++            assert conn.should_reconnect() is False
++
++        assert len(initial_cluster_nodes) == len(client.nodes_manager.nodes_cache)
++
++        logging.info("Waiting for SMIGRATED push notifications...")
++        con_to_read_smigrated = random.choice(list(in_use_connections.values()))
++        await AsyncClientValidations.wait_push_notification(
++            client,
++            timeout=SMIGRATED_TIMEOUT,
++            connection=con_to_read_smigrated,
++        )
++        await self._drain_maint_notification_tasks(client)
++
++        logging.info("Validating connection state after SMIGRATED ...")
++        updated_cluster_nodes = client.nodes_manager.nodes_cache.copy()
++
++        removed_nodes = set(initial_cluster_nodes.values()) - set(
++            updated_cluster_nodes.values()
++        )
++        assert len(removed_nodes) == 1
++        removed_node = removed_nodes.pop()
++        assert removed_node is not None
++
++        added_nodes = set(updated_cluster_nodes.values()) - set(
++            initial_cluster_nodes.values()
++        )
++        assert len(added_nodes) == 1
++
++        conn = in_use_connections.get(removed_node)
++        # connection will be dropped, but it is marked for reconnect before
++        # being released; timeouts/state are not updated so are not checked
++        assert conn is not None
++        assert conn.should_reconnect() is True
++
++        logging.info("Releasing connections back to the pool...")
++        for node, conn in in_use_connections.items():
++            node.release(conn)
++
++        await trigger_task
++        self.maintenance_ops_tasks.remove(trigger_task)
++
++    @pytest.mark.timeout(300)
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_CLIENT_OSS_API,
++            [SlotMigrateEffects.REMOVE],
++        ),
++    )
++    async def test_notification_handling_with_node_remove(
++        self,
++        fault_injector_client_oss_api: AsyncFaultInjectorClient,
++        effect_name: SlotMigrateEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++    ):
++        """A node is removed during slot movement (no replacement added)."""
++        logging.info(f"DB name: {db_name}")
++
++        client, cluster_endpoint_config = await self.setup_env(
++            fault_injector_client_oss_api, db_config
++        )
++
++        logging.info("Creating one connection in each node's pool.")
++        initial_cluster_nodes = client.nodes_manager.nodes_cache.copy()
++        in_use_connections = {}
++        for node in initial_cluster_nodes.values():
++            in_use_connections[node] = await self._acquire_connected_connection(node)
++
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_task = asyncio.create_task(
++            self._trigger_effect(
++                fault_injector_client_oss_api,
++                cluster_endpoint_config,
++                effect_name,
++                trigger,
++            )
++        )
++        self.maintenance_ops_tasks.append(trigger_task)
++
++        logging.info("Waiting for SMIGRATING push notifications in all connections...")
++        for conn in in_use_connections.values():
++            await AsyncClientValidations.wait_push_notification(
++                client,
++                timeout=int(SLOT_SHUFFLE_TIMEOUT / 2),
++                connection=conn,
++            )
++
++        logging.info("Validating connection maintenance state...")
++        for conn in in_use_connections.values():
++            assert conn.maintenance_state == MaintenanceState.MAINTENANCE
++            assert conn.socket_timeout == RELAXED_TIMEOUT
++            assert conn.should_reconnect() is False
++
++        assert len(initial_cluster_nodes) == len(client.nodes_manager.nodes_cache)
++
++        logging.info("Waiting for SMIGRATED push notifications...")
++        con_to_read_smigrated = random.choice(list(in_use_connections.values()))
++        await AsyncClientValidations.wait_push_notification(
++            client,
++            timeout=SMIGRATED_TIMEOUT,
++            connection=con_to_read_smigrated,
++        )
++        await self._drain_maint_notification_tasks(client)
++
++        logging.info("Validating connection state after SMIGRATED ...")
++        updated_cluster_nodes = client.nodes_manager.nodes_cache.copy()
++
++        removed_nodes = set(initial_cluster_nodes.values()) - set(
++            updated_cluster_nodes.values()
++        )
++        assert len(removed_nodes) == 1
++        removed_node = removed_nodes.pop()
++        assert removed_node is not None
++
++        assert len(initial_cluster_nodes) == len(updated_cluster_nodes) + 1
++
++        conn = in_use_connections.get(removed_node)
++        assert conn is not None
++        assert conn.should_reconnect() is True
++
++        # Async-specific: the async NodesManager.set_nodes marks all preserved
++        # nodes' in-use connections for reconnect on initialize() (lazy reconnect,
++        # since set_nodes is sync), in addition to the removed node's connection.
++        # So at least the removed node's connection is marked; in practice all are.
++        marked_conns_for_reconnect = 0
++        for conn in in_use_connections.values():
++            if conn.should_reconnect():
++                marked_conns_for_reconnect += 1
++        assert marked_conns_for_reconnect >= 1
++
++        logging.info("Releasing connections back to the pool...")
++        for node, conn in in_use_connections.items():
++            node.release(conn)
++
++        await trigger_task
++        self.maintenance_ops_tasks.remove(trigger_task)
++
++
++class TestAsyncClusterClientCommandsExecutionWithPushNotificationsWithEffectTrigger(
++    TestAsyncClusterClientPushNotificationsWithEffectTriggerBase
++):
++    @pytest.mark.timeout(300)
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_CLIENT_OSS_API,
++            [
++                SlotMigrateEffects.SLOT_SHUFFLE,
++                SlotMigrateEffects.REMOVE,
++                SlotMigrateEffects.ADD,
++            ],
++        ),
++    )
++    async def test_command_execution_during_slot_shuffle_no_node_replacement(
++        self,
++        fault_injector_client_oss_api: AsyncFaultInjectorClient,
++        effect_name: SlotMigrateEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++    ):
++        """Commands keep succeeding while slots migrate between nodes."""
++        logging.info(f"DB name: {db_name}")
++
++        client, cluster_endpoint_config = await self.setup_env(
++            fault_injector_client_oss_api, db_config
++        )
++
++        shards_count = db_config["shards_count"]
++        logging.info(f"Shards count: {shards_count}")
++
++        errors = asyncio.Queue()
++        if isinstance(fault_injector_client_oss_api, AsyncProxyServerFaultInjector):
++            execution_duration = 20
++        else:
++            execution_duration = 40
++
++        # Warm up the per-node connection pools with a single sequential pass over
++        # all shards before launching the concurrent load. The async client runs on
++        # one event loop, so a burst of concurrent cold connects to the (remote)
++        # cluster nodes would starve each other's connect-timeout budget and fail
++        # before any migration begins. Connecting sequentially gives each node an
++        # uncontended connect window; the concurrent tasks then reuse the pooled
++        # connections. (The sync test gets this for free via thread parallelism.)
++        logging.info("Warming up connection pools to all shards...")
++        warmup_keys = KeyGenerationHelpers.generate_keys_for_all_shards(
++            shards_count,
++            prefix=f"warmup_{effect_name}_{trigger}_key",
++        )
++        for key in warmup_keys:
++            await client.set(key, "value")
++            await client.get(key)
++
++        # Pre-generate each task's key set BEFORE launching the concurrent tasks.
++        # generate_keys_for_all_shards brute-forces CRC16 (~16k iterations/key) and
++        # is fully synchronous. Calling it inside each task would run that CPU work
++        # on the event loop right as the tasks start, stalling the single loop
++        # during the connection-establishment burst and causing spurious connect
++        # timeouts. (The sync test is immune: each worker is its own OS thread.)
++        task_names = [f"cmd_execution_{i}" for i in range(10)]
++        keys_by_task = {
++            name: KeyGenerationHelpers.generate_keys_for_all_shards(
++                shards_count,
++                prefix=f"{name}_{effect_name}_{trigger}_key",
++            )
++            for name in task_names
++        }
++
++        async def execute_commands(duration: int, task_name: str):
++            start = time.time()
++            executed_commands_count = 0
++            keys_for_all_shards = keys_by_task[task_name]
++            while time.time() - start < duration:
++                for key in keys_for_all_shards:
++                    try:
++                        await client.set(key, "value")
++                        await client.get(key)
++                        executed_commands_count += 2
++                    except Exception as e:
++                        logging.error(f"Error in task {task_name}: {e}")
++                        await errors.put(f"Command failed in task {task_name}: {e}")
++                await asyncio.sleep(0.001)
++            logging.debug(f"{task_name}: task ended")
++
++        tasks = [
++            asyncio.create_task(
++                execute_commands(execution_duration, name),
++                name=name,
++            )
++            for name in task_names
++        ]
++
++        logging.info("Waiting for tasks to start and have a few cycles executed ...")
++        await asyncio.sleep(3)
++
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_task = asyncio.create_task(
++            self._trigger_effect(
++                fault_injector_client_oss_api,
++                cluster_endpoint_config,
++                effect_name,
++                trigger,
++            )
++        )
++        self.maintenance_ops_tasks.append(trigger_task)
++
++        await asyncio.gather(*tasks)
++
++        await trigger_task
++        self.maintenance_ops_tasks.remove(trigger_task)
++
++        # Drain any in-flight topology-update tasks before consuming buffers.
++        await self._drain_maint_notification_tasks(client)
++
++        # Consume all node connection buffers to validate no notifications were
++        # left unconsumed.
++        logging.info(
++            "Consuming all buffers to validate no notifications were left unconsumed..."
++        )
++        # Snapshot the node list before iterating: the awaits in this loop
++        # (sleep + read_response) yield to the event loop, where reading a push
++        # notification can schedule a background topology-update task that
++        # mutates nodes_cache (set_nodes with remove_old=True), causing
++        # "dictionary changed size during iteration". Same reason the inner loop
++        # snapshots node._connections.
++        for node in list(client.nodes_manager.nodes_cache.values()):
++            for conn in list(node._connections):
++                if conn.is_connected:
++                    # Async can_read() is non-blocking (it only checks the buffer),
++                    # unlike the sync can_read(timeout=...). Give any in-flight push
++                    # data a moment to land before draining the buffer.
++                    await asyncio.sleep(0.2)
++                    try:
++                        while await conn.can_read():
++                            await conn.read_response(push_request=True)
++                    except RedisConnectionError:
++                        # remove/failover migrations close connections to the
++                        # removed/failed-over node server-side. async can_read()
++                        # reports True on EOF (it also flags a closed/dirty
++                        # connection, not just buffered data), so the drain enters
++                        # read_response() and hits "Connection closed by server".
++                        # A closed connection has nothing left to drain — this is
++                        # expected during the migration, not an unconsumed push.
++                        pass
++            logging.info(f"Consumed all buffers for node: {node.name}")
++        logging.info("All buffers consumed.")
++
++        error_items = []
++        while not errors.empty():
++            error_items.append(errors.get_nowait())
++        assert not error_items, f"Errors occurred in tasks: {error_items}"
+diff --git a/tests/test_scenario/maint_notifications_helpers.py b/tests/test_scenario/maint_notifications_helpers.py
+index 91416d4754..90b88a40db 100644
+--- a/tests/test_scenario/maint_notifications_helpers.py
++++ b/tests/test_scenario/maint_notifications_helpers.py
+@@ -336,7 +336,7 @@ def generate_params(
+                         ip_type = requirement["oss_cluster_api"]["ip_type"]
+                         if ip_type == "internal":
+                             continue
+-                    db_name_pattern = dbconfig.get("name").rsplit("-", 1)[0]
++                    db_name_pattern = dbconfig.get("name").rsplit("-", 2)[0]
+                     dbconfig["name"] = db_name_pattern
+ 
+                     if endpoint_types is not None:

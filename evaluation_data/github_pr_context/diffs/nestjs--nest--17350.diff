@@ -1,0 +1,242 @@
+diff --git a/integration/hello-world/e2e/repro-11802.spec.ts b/integration/hello-world/e2e/repro-11802.spec.ts
+new file mode 100644
+index 00000000000..8f370c7f1ce
+--- /dev/null
++++ b/integration/hello-world/e2e/repro-11802.spec.ts
+@@ -0,0 +1,95 @@
++import {
++  Controller,
++  Get,
++  Injectable,
++  MiddlewareConsumer,
++  Module,
++  NestMiddleware,
++  NestModule,
++} from '@nestjs/common';
++import {
++  FastifyAdapter,
++  NestFastifyApplication,
++} from '@nestjs/platform-fastify';
++import { Test } from '@nestjs/testing';
++import { expect } from 'chai';
++import { FastifyInstance } from 'fastify';
++
++describe('Middleware + Fastify plugin registered with a prefix (#11802 repro)', () => {
++  let app: NestFastifyApplication;
++  let middlewareHits = 0;
++
++  @Injectable()
++  class CountingMiddleware implements NestMiddleware {
++    use(req: any, res: any, next: () => void) {
++      middlewareHits += 1;
++      next();
++    }
++  }
++
++  // A minimal stand-in for a third-party plugin like bull-board: a PLAIN
++  // (not fastify-plugin-wrapped) plugin function that registers its own
++  // routes under a prefix via fastify.register(). Not wrapping with `fp()`
++  // is deliberate and important - `fp()` breaks Fastify's encapsulation,
++  // which would skip creating the child instance this bug is actually
++  // about. Real plugins like bull-board register this way too.
++  function thirdPartyPlugin(
++    instance: FastifyInstance,
++    _opts: unknown,
++    next: (err?: Error) => void,
++  ) {
++    instance.get('/', async () => 'plugin-root');
++    next();
++  }
++
++  @Controller()
++  class RootController {
++    @Get('other')
++    other() {
++      return 'other';
++    }
++  }
++
++  @Module({ controllers: [RootController] })
++  class AppModule implements NestModule {
++    configure(consumer: MiddlewareConsumer) {
++      consumer.apply(CountingMiddleware).forRoutes('/queues');
++    }
++  }
++
++  beforeEach(async () => {
++    middlewareHits = 0;
++    app = (
++      await Test.createTestingModule({ imports: [AppModule] }).compile()
++    ).createNestApplication<NestFastifyApplication>(new FastifyAdapter());
++
++    // Registered AFTER app.init(), matching how a real module (e.g.
++    // bull-board's BullBoardModule) registers its Fastify plugin from an
++    // injected HttpAdapterHost inside a provider - by that point Nest's own
++    // middleware setup (and @fastify/middie's registration) has already run.
++    await app.init();
++
++    app
++      .getHttpAdapter()
++      .getInstance()
++      .register(thirdPartyPlugin, { prefix: '/queues' });
++
++    await app.getHttpAdapter().getInstance().ready();
++  });
++
++  afterEach(async () => {
++    await app.close();
++  });
++
++  it('runs the middleware for a route registered inside the plugin', async () => {
++    const response = await app.inject({ method: 'GET', url: '/queues' });
++    expect(response.statusCode).to.equal(200);
++    expect(response.payload).to.equal('plugin-root');
++    expect(middlewareHits).to.equal(1);
++  });
++
++  it('still runs the middleware for a normal Nest route under the same prefix-like path', async () => {
++    const response = await app.inject({ method: 'GET', url: '/other' });
++    expect(response.statusCode).to.equal(200);
++  });
++});
+diff --git a/packages/platform-fastify/adapters/middie/fastify-middie.ts b/packages/platform-fastify/adapters/middie/fastify-middie.ts
+index f7f8edc2805..7aa755b6e00 100644
+--- a/packages/platform-fastify/adapters/middie/fastify-middie.ts
++++ b/packages/platform-fastify/adapters/middie/fastify-middie.ts
+@@ -363,8 +363,10 @@ function fastifyMiddie(
+     instance[kMiddieHasMiddlewares] = false;
+     instance.decorate('use', use as any);
+     for (const middleware of middlewares) {
+-      (instance.use as any)(...middleware);
++      instance[kMiddlewares].push(middleware as any);
++      (instance[kMiddie].use as any)(...middleware);
+     }
++    instance[kMiddieHasMiddlewares] = middlewares.length > 0;
+   }
+ 
+   next();
+diff --git a/packages/platform-fastify/test/adapters/middie.spec.ts b/packages/platform-fastify/test/adapters/middie.spec.ts
+new file mode 100644
+index 00000000000..67b7fcc1492
+--- /dev/null
++++ b/packages/platform-fastify/test/adapters/middie.spec.ts
+@@ -0,0 +1,119 @@
++import { expect } from 'chai';
++import { fastifyMiddie } from '../../adapters/middie/fastify-middie';
++
++describe('@fastify/middie', () => {
++  it('keeps inherited middleware paths stable across nested prefixes', () => {
++    const hooks: Record<string, Function> = {};
++    const root: any = {
++      prefix: '',
++      initialConfig: {
++        caseSensitive: true,
++        ignoreDuplicateSlashes: false,
++        ignoreTrailingSlash: false,
++      },
++      decorate(name: string, value: unknown) {
++        this[name] = value;
++        return this;
++      },
++      addHook(name: string, hook: Function) {
++        hooks[name] = hook;
++        this[name] = hook;
++        return this;
++      },
++    };
++
++    fastifyMiddie(root, {}, () => undefined);
++
++    let middlewareCalls = 0;
++    root.use('/my-prefix', (_req: unknown, _res: unknown, next: Function) => {
++      middlewareCalls += 1;
++      next();
++    });
++
++    const child: any = {
++      prefix: '/my-prefix',
++      initialConfig: root.initialConfig,
++      decorate(name: string, value: unknown) {
++        this[name] = value;
++        return this;
++      },
++      addHook(name: string, hook: Function) {
++        this[name] = hook;
++        return this;
++      },
++    };
++
++    Object.setPrototypeOf(child, root);
++    hooks.onRegister(child);
++
++    let requestFinished = false;
++    child.onRequest(
++      {
++        body: undefined,
++        id: 'test-id',
++        hostname: 'localhost',
++        ip: '127.0.0.1',
++        ips: [],
++        log: {},
++        method: 'GET',
++        query: {},
++        raw: { url: '/my-prefix/queues', method: 'GET' },
++        url: '/my-prefix/queues',
++      },
++      {
++        finished: false,
++        raw: {},
++        writableEnded: false,
++      },
++      () => {
++        requestFinished = true;
++      },
++    );
++
++    expect(middlewareCalls).to.equal(1);
++    expect(requestFinished).to.equal(true);
++
++    const grandchild: any = {
++      prefix: '/my-prefix/nested',
++      initialConfig: root.initialConfig,
++      decorate(name: string, value: unknown) {
++        this[name] = value;
++        return this;
++      },
++      addHook(name: string, hook: Function) {
++        this[name] = hook;
++        return this;
++      },
++    };
++
++    Object.setPrototypeOf(grandchild, child);
++    hooks.onRegister(grandchild);
++
++    let grandchildFinished = false;
++    grandchild.onRequest(
++      {
++        body: undefined,
++        id: 'test-id-2',
++        hostname: 'localhost',
++        ip: '127.0.0.1',
++        ips: [],
++        log: {},
++        method: 'GET',
++        query: {},
++        raw: { url: '/my-prefix/nested/queues', method: 'GET' },
++        url: '/my-prefix/nested/queues',
++      },
++      {
++        finished: false,
++        raw: {},
++        writableEnded: false,
++      },
++      () => {
++        grandchildFinished = true;
++      },
++    );
++
++    expect(middlewareCalls).to.equal(2);
++    expect(grandchildFinished).to.equal(true);
++  });
++});

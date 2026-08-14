@@ -154,12 +154,12 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual("value:x", registry.invoke("lookup", {"key": "x"}))
         self.assertEqual(["x"], calls)
 
-    def test_context_manager_compresses_large_diff_and_keeps_risk_evidence(self):
+    def test_context_manager_batches_large_all_added_diff_without_losing_evidence(self):
         added = ["+value_%03d = %d\n" % (index, index) for index in range(300)]
         added[250] = "+result = eval(user_input)\n"
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1,300 @@\n" + "".join(added)
 
-        bundle = ContextManager(max_tokens=512, reserved_tokens=64).build(
+        bundles = ContextManager(max_tokens=512, reserved_tokens=64).build_batches(
             diff, {
                 "risk_domains": ["security"],
                 "objective": "find injection",
@@ -167,12 +167,17 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             }
         )
 
-        self.assertTrue(bundle.compressed)
-        self.assertLess(bundle.final_tokens, bundle.original_tokens)
-        self.assertIn("eval(user_input)", bundle.text)
-        self.assertEqual("priority-tier-hunk-compression", bundle.strategy)
+        rendered = "".join(bundle.text for bundle in bundles)
+        self.assertGreater(len(bundles), 1)
+        self.assertIn("eval(user_input)", rendered)
+        self.assertEqual(300, sum(
+            bundle.text.count("+value_") for bundle in bundles
+        ) + rendered.count("+result = eval(user_input)"))
+        self.assertTrue(all(
+            bundle.strategy == "hunk-batch" for bundle in bundles
+        ))
 
-    def test_context_manager_keeps_the_hunk_containing_a_router_focus_line(self):
+    def test_router_focus_does_not_change_diff_batch_content(self):
         ordinary = "x" * 90
         first = "".join(
             "+first_%02d = '%s'\n" % (index, ordinary) for index in range(8)
@@ -186,7 +191,8 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             + "@@ -20 +20,8 @@\n" + focused
         )
 
-        bundle = ContextManager(max_tokens=512, reserved_tokens=256).build(
+        manager = ContextManager(max_tokens=512, reserved_tokens=256)
+        focused_bundles = manager.build_batches(
             diff,
             {
                 "agent": "security-reviewer",
@@ -194,11 +200,19 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             },
         )
 
-        self.assertTrue(bundle.compressed)
-        self.assertIn("focus_04", bundle.text)
-        self.assertNotIn("first_04", bundle.text)
+        plain_bundles = manager.build_batches(
+            diff, {"agent": "security-reviewer"}
+        )
 
-    def test_context_manager_covers_changed_files_before_remaining_hunks(self):
+        self.assertEqual(
+            [bundle.text for bundle in plain_bundles],
+            [bundle.text for bundle in focused_bundles],
+        )
+        rendered = "".join(bundle.text for bundle in focused_bundles)
+        self.assertIn("focus_04", rendered)
+        self.assertIn("first_04", rendered)
+
+    def test_context_manager_covers_every_changed_file_across_batches(self):
         dense = "q" * 45
         file_a = "--- a/a.py\n+++ b/a.py\n" + "".join(
             "@@ -{0} +{0},4 @@\n".format(1 + group * 10)
@@ -217,15 +231,18 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             "+c_value = '%s'\n" % ("c" * 180)
         )
 
-        bundle = ContextManager(max_tokens=512, reserved_tokens=192).build(
+        bundles = ContextManager(max_tokens=512, reserved_tokens=192).build_batches(
             file_a + file_b + file_c,
             {"agent": "correctness-reviewer"},
         )
 
-        self.assertTrue(bundle.compressed)
-        self.assertIn("+++ b/a.py", bundle.text)
-        self.assertIn("b_value", bundle.text)
-        self.assertIn("c_value", bundle.text)
+        rendered = "".join(bundle.text for bundle in bundles)
+        self.assertIn("+++ b/a.py", rendered)
+        self.assertIn("b_value", rendered)
+        self.assertIn("c_value", rendered)
+        for group in range(4):
+            for line in range(4):
+                self.assertIn("+a_%d_%d" % (group, line), rendered)
 
     def test_memory_does_not_change_which_diff_hunk_is_selected(self):
         ordinary = "v" * 90

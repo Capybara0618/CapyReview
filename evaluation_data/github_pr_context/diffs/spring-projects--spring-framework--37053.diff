@@ -1,0 +1,107 @@
+diff --git a/spring-core/src/main/java/org/springframework/core/io/buffer/DataBufferUtils.java b/spring-core/src/main/java/org/springframework/core/io/buffer/DataBufferUtils.java
+index bf6a56f99f7a..4554f269989e 100644
+--- a/spring-core/src/main/java/org/springframework/core/io/buffer/DataBufferUtils.java
++++ b/spring-core/src/main/java/org/springframework/core/io/buffer/DataBufferUtils.java
+@@ -917,6 +917,14 @@ protected TwoByteMatcher(byte[] delimiter) {
+ 			super(delimiter);
+ 			Assert.isTrue(delimiter.length == 2, "Expected a 2-byte delimiter");
+ 		}
++
++		@Override
++		public boolean match(byte b) {
++			if (getMatches() > 0 && b != delimiter()[getMatches()]) {
++				setMatches(0);
++			}
++			return super.match(b);
++		}
+ 	}
+ 
+ 
+diff --git a/spring-core/src/test/java/org/springframework/core/codec/StringDecoderTests.java b/spring-core/src/test/java/org/springframework/core/codec/StringDecoderTests.java
+index e1a52e7fa483..66e001a5ecdf 100644
+--- a/spring-core/src/test/java/org/springframework/core/codec/StringDecoderTests.java
++++ b/spring-core/src/test/java/org/springframework/core/codec/StringDecoderTests.java
+@@ -153,6 +153,30 @@ void decodeNewlinesAcrossBuffers() {
+ 				.verify());
+ 	}
+ 
++	@Test
++	void decodePreservesCharacterBeforeLoneNewlineAfterCarriageReturn() {
++		Flux<DataBuffer> input = Flux.just(stringBuffer("a\rXY\nb"));
++
++		testDecode(input, String.class, step -> step
++				.expectNext("a\rXY")
++				.expectNext("b")
++				.expectComplete()
++				.verify());
++	}
++
++	@Test
++	void decodePreservesCharacterAcrossBuffersAfterCarriageReturn() {
++		Flux<DataBuffer> input = Flux.just(
++				stringBuffer("a\r"),
++				stringBuffer("Xb\n")
++		);
++
++		testDecode(input, String.class, step -> step
++				.expectNext("a\rXb")
++				.expectComplete()
++				.verify());
++	}
++
+ 	@Test
+ 	void maxInMemoryLimit() {
+ 		Flux<DataBuffer> input = Flux.just(
+diff --git a/spring-core/src/test/java/org/springframework/core/io/buffer/DataBufferUtilsTests.java b/spring-core/src/test/java/org/springframework/core/io/buffer/DataBufferUtilsTests.java
+index 6c0be595624a..a4a352b4edda 100644
+--- a/spring-core/src/test/java/org/springframework/core/io/buffer/DataBufferUtilsTests.java
++++ b/spring-core/src/test/java/org/springframework/core/io/buffer/DataBufferUtilsTests.java
+@@ -1323,6 +1323,48 @@ void matcher3(DataBufferFactory bufferFactory) {
+ 		release(foo);
+ 	}
+ 
++	@ParameterizedDataBufferAllocatingTest
++	void matcherDoesNotMatchAcrossNonContiguousDelimiterBytes(DataBufferFactory bufferFactory) {
++		super.bufferFactory = bufferFactory;
++
++		DataBuffer buffer = stringBuffer("a\rXY\nb");
++
++		byte[] delims = "\r\n".getBytes(StandardCharsets.UTF_8);
++		DataBufferUtils.Matcher matcher = DataBufferUtils.matcher(delims);
++		int result = matcher.match(buffer);
++		assertThat(result).isEqualTo(-1);
++
++		release(buffer);
++	}
++
++	@ParameterizedDataBufferAllocatingTest
++	void matcherMatchesContiguousTwoByteDelimiter(DataBufferFactory bufferFactory) {
++		super.bufferFactory = bufferFactory;
++
++		DataBuffer buffer = stringBuffer("a\r\nb");
++
++		byte[] delims = "\r\n".getBytes(StandardCharsets.UTF_8);
++		DataBufferUtils.Matcher matcher = DataBufferUtils.matcher(delims);
++		int result = matcher.match(buffer);
++		assertThat(result).isEqualTo(2);
++
++		release(buffer);
++	}
++
++	@ParameterizedDataBufferAllocatingTest
++	void matcherDoesNotMatchAfterRepeatedFirstDelimiterByte(DataBufferFactory bufferFactory) {
++		super.bufferFactory = bufferFactory;
++
++		DataBuffer buffer = stringBuffer("a\r\rX\nb");
++
++		byte[] delims = "\r\n".getBytes(StandardCharsets.UTF_8);
++		DataBufferUtils.Matcher matcher = DataBufferUtils.matcher(delims);
++		int result = matcher.match(buffer);
++		assertThat(result).isEqualTo(-1);
++
++		release(buffer);
++	}
++
+ 	@ParameterizedDataBufferAllocatingTest
+ 	void propagateContextByteChannel(DataBufferFactory bufferFactory) throws IOException {
+ 		Path path = Paths.get(this.resource.getURI());

@@ -1,0 +1,82 @@
+diff --git a/integration/hello-world/e2e/middleware-fastify.spec.ts b/integration/hello-world/e2e/middleware-fastify.spec.ts
+index f0b6353a0a9..9e4dd68e8f0 100644
+--- a/integration/hello-world/e2e/middleware-fastify.spec.ts
++++ b/integration/hello-world/e2e/middleware-fastify.spec.ts
+@@ -763,6 +763,60 @@ describe('Middleware (FastifyAdapter)', () => {
+     });
+   });
+ 
++  describe('should run middleware on routes excluded from the global prefix', () => {
++    @Controller()
++    class ExcludedRouteController {
++      @Get('graphql')
++      graphql(@Req() req: FastifyRequest['raw']) {
++        return { success: true, pong: req?.['raw']?.headers?.ping };
++      }
++
++      @Get('data')
++      data(@Req() req: FastifyRequest['raw']) {
++        return { success: true, pong: req?.['raw']?.headers?.ping };
++      }
++    }
++
++    @Module({
++      controllers: [ExcludedRouteController],
++    })
++    class ExcludedRouteModule implements NestModule {
++      configure(consumer: MiddlewareConsumer) {
++        consumer
++          .apply((req, res, next) => {
++            req.headers['ping'] = 'pong';
++            next();
++          })
++          .forRoutes('/{*path}');
++      }
++    }
++
++    beforeEach(async () => {
++      app = (
++        await Test.createTestingModule({
++          imports: [ExcludedRouteModule],
++        }).compile()
++      ).createNestApplication<NestFastifyApplication>(new FastifyAdapter());
++    });
++
++    it(`GET forRoutes('/{*path}') with global prefix and excluded route`, async () => {
++      app.setGlobalPrefix('/api', { exclude: ['/graphql'] });
++      await app.init();
++      await app.getHttpAdapter().getInstance().ready();
++
++      await request(app.getHttpServer())
++        .get('/graphql')
++        .expect(200, { success: true, pong: 'pong' });
++      await request(app.getHttpServer())
++        .get('/api/data')
++        .expect(200, { success: true, pong: 'pong' });
++    });
++
++    afterEach(async () => {
++      await app.close();
++    });
++  });
++
+   describe('should respect fastify routing options', () => {
+     const MIDDLEWARE_RETURN_VALUE = 'middleware_return';
+ 
+diff --git a/packages/platform-fastify/adapters/fastify-adapter.ts b/packages/platform-fastify/adapters/fastify-adapter.ts
+index 115a5e24a57..bc8092cb525 100644
+--- a/packages/platform-fastify/adapters/fastify-adapter.ts
++++ b/packages/platform-fastify/adapters/fastify-adapter.ts
+@@ -685,7 +685,11 @@ export class FastifyAdapter<
+       normalizedPath = normalizedPath === '/*path' ? '*path' : normalizedPath;
+ 
+       // Normalize the path to support the prefix if it set in application
+-      if (this._pathPrefix && !normalizedPath.startsWith(this._pathPrefix)) {
++      if (
++        this._pathPrefix &&
++        !normalizedPath.startsWith(this._pathPrefix) &&
++        (normalizedPath === '/' || normalizedPath === '')
++      ) {
+         normalizedPath = `${this._pathPrefix}${normalizedPath}`;
+         if (normalizedPath.endsWith('/')) {
+           normalizedPath = `${normalizedPath}{*path}`;

@@ -1,0 +1,451 @@
+diff --git a/framework-docs/modules/ROOT/pages/integration/jmx/notifications.adoc b/framework-docs/modules/ROOT/pages/integration/jmx/notifications.adoc
+index 43c7371671f1..5d5e4ae90341 100644
+--- a/framework-docs/modules/ROOT/pages/integration/jmx/notifications.adoc
++++ b/framework-docs/modules/ROOT/pages/integration/jmx/notifications.adoc
+@@ -32,7 +32,7 @@ example writes notifications to the console:
+ 		}
+ 
+ 		public boolean isNotificationEnabled(Notification notification) {
+-			return AttributeChangeNotification.class.isAssignableFrom(notification.getClass());
++			return (notification instanceof AttributeChangeNotification);
+ 		}
+ 
+ 	}
+diff --git a/spring-aop/src/main/java/org/springframework/aop/aspectj/AspectJAfterThrowingAdvice.java b/spring-aop/src/main/java/org/springframework/aop/aspectj/AspectJAfterThrowingAdvice.java
+index e43a9d25709e..42a5467d9fc5 100644
+--- a/spring-aop/src/main/java/org/springframework/aop/aspectj/AspectJAfterThrowingAdvice.java
++++ b/spring-aop/src/main/java/org/springframework/aop/aspectj/AspectJAfterThrowingAdvice.java
+@@ -75,7 +75,7 @@ public void setThrowingName(String name) {
+ 	 * is only invoked if the thrown exception is a subtype of the given throwing type.
+ 	 */
+ 	private boolean shouldInvokeOnThrowing(Throwable ex) {
+-		return getDiscoveredThrowingType().isAssignableFrom(ex.getClass());
++		return getDiscoveredThrowingType().isInstance(ex);
+ 	}
+ 
+ }
+diff --git a/spring-beans/src/main/java/org/springframework/beans/factory/support/SimpleInstantiationStrategy.java b/spring-beans/src/main/java/org/springframework/beans/factory/support/SimpleInstantiationStrategy.java
+index 1a0c0cbabd51..c3a8d21088b9 100644
+--- a/spring-beans/src/main/java/org/springframework/beans/factory/support/SimpleInstantiationStrategy.java
++++ b/spring-beans/src/main/java/org/springframework/beans/factory/support/SimpleInstantiationStrategy.java
+@@ -159,7 +159,7 @@ public Object instantiate(RootBeanDefinition bd, @Nullable String beanName, Bean
+ 				return result;
+ 			}
+ 			catch (IllegalArgumentException ex) {
+-				if (factoryBean != null && !factoryMethod.getDeclaringClass().isAssignableFrom(factoryBean.getClass())) {
++				if (factoryBean != null && !factoryMethod.getDeclaringClass().isInstance(factoryBean)) {
+ 					throw new BeanInstantiationException(factoryMethod,
+ 							"Illegal factory instance for factory method '" + factoryMethod.getName() + "'; " +
+ 									"instance: " + factoryBean.getClass().getName(), ex);
+diff --git a/spring-context/src/main/java/org/springframework/context/annotation/ComponentScanBeanDefinitionParser.java b/spring-context/src/main/java/org/springframework/context/annotation/ComponentScanBeanDefinitionParser.java
+index 9baba919be03..e0cede612972 100644
+--- a/spring-context/src/main/java/org/springframework/context/annotation/ComponentScanBeanDefinitionParser.java
++++ b/spring-context/src/main/java/org/springframework/context/annotation/ComponentScanBeanDefinitionParser.java
+@@ -276,7 +276,7 @@ private Object instantiateUserDefinedStrategy(
+ 					strategyType.getName() + "]: a zero-argument constructor is required", ex);
+ 		}
+ 
+-		if (!strategyType.isAssignableFrom(result.getClass())) {
++		if (!strategyType.isInstance(result)) {
+ 			throw new IllegalArgumentException("Provided class name must be an implementation of " + strategyType);
+ 		}
+ 		return result;
+diff --git a/spring-core/src/main/java/org/springframework/util/ReflectionUtils.java b/spring-core/src/main/java/org/springframework/util/ReflectionUtils.java
+index 022357a041f3..0b618354e3e5 100644
+--- a/spring-core/src/main/java/org/springframework/util/ReflectionUtils.java
++++ b/spring-core/src/main/java/org/springframework/util/ReflectionUtils.java
+@@ -768,7 +768,7 @@ private static Field[] getDeclaredFields(Class<?> clazz) {
+ 	public static void shallowCopyFieldState(final Object src, final Object dest) {
+ 		Assert.notNull(src, "Source for field copy cannot be null");
+ 		Assert.notNull(dest, "Destination for field copy cannot be null");
+-		if (!src.getClass().isAssignableFrom(dest.getClass())) {
++		if (!src.getClass().isInstance(dest)) {
+ 			throw new IllegalArgumentException("Destination class [" + dest.getClass().getName() +
+ 					"] must be same or subclass as source class [" + src.getClass().getName() + "]");
+ 		}
+diff --git a/spring-expression/src/main/java/org/springframework/expression/spel/ast/OperatorInstanceof.java b/spring-expression/src/main/java/org/springframework/expression/spel/ast/OperatorInstanceof.java
+index 72303465ce59..841d2c9f20f7 100644
+--- a/spring-expression/src/main/java/org/springframework/expression/spel/ast/OperatorInstanceof.java
++++ b/spring-expression/src/main/java/org/springframework/expression/spel/ast/OperatorInstanceof.java
+@@ -72,7 +72,7 @@ public BooleanTypedValue getValueInternal(ExpressionState state) throws Evaluati
+ 			result = BooleanTypedValue.FALSE;  // null is not an instanceof anything
+ 		}
+ 		else {
+-			result = BooleanTypedValue.forValue(rightClass.isAssignableFrom(leftValue.getClass()));
++			result = BooleanTypedValue.forValue(rightClass.isInstance(leftValue));
+ 		}
+ 		this.type = rightClass;
+ 		if (rightOperand instanceof TypeReference) {
+diff --git a/spring-jdbc/src/main/java/org/springframework/jdbc/support/GeneratedKeyHolder.java b/spring-jdbc/src/main/java/org/springframework/jdbc/support/GeneratedKeyHolder.java
+index dc8caf396067..be4bcf9d3259 100644
+--- a/spring-jdbc/src/main/java/org/springframework/jdbc/support/GeneratedKeyHolder.java
++++ b/spring-jdbc/src/main/java/org/springframework/jdbc/support/GeneratedKeyHolder.java
+@@ -78,7 +78,7 @@ public GeneratedKeyHolder(List<Map<String, Object>> keyList) {
+ 		Iterator<Object> keyIter = this.keyList.get(0).values().iterator();
+ 		if (keyIter.hasNext()) {
+ 			Object key = keyIter.next();
+-			if (key == null || !(keyType.isAssignableFrom(key.getClass()))) {
++			if (key == null || !(keyType.isInstance(key))) {
+ 				throw new DataRetrievalFailureException(
+ 						"The generated key type is not supported. " +
+ 						"Unable to cast [" + (key != null ? key.getClass().getName() : null) +
+diff --git a/spring-jdbc/src/test/java/org/springframework/jdbc/support/CustomSQLExceptionTranslatorRegistrarTests.java b/spring-jdbc/src/test/java/org/springframework/jdbc/support/CustomSQLExceptionTranslatorRegistrarTests.java
+index 5ef6ce4fadf1..32da46a6b362 100644
+--- a/spring-jdbc/src/test/java/org/springframework/jdbc/support/CustomSQLExceptionTranslatorRegistrarTests.java
++++ b/spring-jdbc/src/test/java/org/springframework/jdbc/support/CustomSQLExceptionTranslatorRegistrarTests.java
+@@ -45,11 +45,11 @@ void customErrorCodeTranslation() {
+ 
+ 		DataAccessException exFor4200 = sext.doTranslate("", "", new SQLException("Ouch", "42000", 42000));
+ 		assertThat(exFor4200).as("Should have been translated").isNotNull();
+-		assertThat(BadSqlGrammarException.class.isAssignableFrom(exFor4200.getClass())).as("Should have been instance of BadSqlGrammarException").isTrue();
++		assertThat(exFor4200).isInstanceOf(BadSqlGrammarException.class);
+ 
+ 		DataAccessException exFor2 = sext.doTranslate("", "", new SQLException("Ouch", "42000", 2));
+ 		assertThat(exFor2).as("Should have been translated").isNotNull();
+-		assertThat(TransientDataAccessResourceException.class.isAssignableFrom(exFor2.getClass())).as("Should have been instance of TransientDataAccessResourceException").isTrue();
++		assertThat(exFor2).isInstanceOf(TransientDataAccessResourceException.class);
+ 
+ 		DataAccessException exFor3 = sext.doTranslate("", "", new SQLException("Ouch", "42000", 3));
+ 		assertThat(exFor3).as("Should not have been translated").isNull();
+diff --git a/spring-messaging/src/main/java/org/springframework/messaging/MessageHeaders.java b/spring-messaging/src/main/java/org/springframework/messaging/MessageHeaders.java
+index 5d6e9be42b11..cf650644ce23 100644
+--- a/spring-messaging/src/main/java/org/springframework/messaging/MessageHeaders.java
++++ b/spring-messaging/src/main/java/org/springframework/messaging/MessageHeaders.java
+@@ -205,7 +205,7 @@ protected static IdGenerator getIdGenerator() {
+ 		if (value == null) {
+ 			return null;
+ 		}
+-		if (!type.isAssignableFrom(value.getClass())) {
++		if (!type.isInstance(value)) {
+ 			throw new IllegalArgumentException("Incorrect type specified for header '" +
+ 					key + "'. Expected [" + type + "] but actual type is [" + value.getClass() + "]");
+ 		}
+diff --git a/spring-messaging/src/main/java/org/springframework/messaging/handler/CompositeMessageCondition.java b/spring-messaging/src/main/java/org/springframework/messaging/handler/CompositeMessageCondition.java
+index 5cd8ed31f5af..0ce9dfb8e21c 100644
+--- a/spring-messaging/src/main/java/org/springframework/messaging/handler/CompositeMessageCondition.java
++++ b/spring-messaging/src/main/java/org/springframework/messaging/handler/CompositeMessageCondition.java
+@@ -57,7 +57,7 @@ public List<MessageCondition<?>> getMessageConditions() {
+ 	@SuppressWarnings("unchecked")
+ 	public <T extends MessageCondition<T>> T getCondition(Class<T> messageConditionType) {
+ 		for (MessageCondition<?> condition : this.messageConditions) {
+-			if (messageConditionType.isAssignableFrom(condition.getClass())) {
++			if (messageConditionType.isInstance(condition)) {
+ 				return (T) condition;
+ 			}
+ 		}
+diff --git a/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/reactive/HeadersMethodArgumentResolver.java b/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/reactive/HeadersMethodArgumentResolver.java
+index 5cf74d26e3cb..a4a641434fe5 100644
+--- a/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/reactive/HeadersMethodArgumentResolver.java
++++ b/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/reactive/HeadersMethodArgumentResolver.java
+@@ -61,7 +61,7 @@ else if (MessageHeaderAccessor.class == paramType) {
+ 		}
+ 		else if (MessageHeaderAccessor.class.isAssignableFrom(paramType)) {
+ 			MessageHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, MessageHeaderAccessor.class);
+-			if (accessor != null && paramType.isAssignableFrom(accessor.getClass())) {
++			if (accessor != null && paramType.isInstance(accessor)) {
+ 				return accessor;
+ 			}
+ 			else {
+diff --git a/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/HeadersMethodArgumentResolver.java b/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/HeadersMethodArgumentResolver.java
+index a992b6e88c20..7d674bdd99c4 100644
+--- a/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/HeadersMethodArgumentResolver.java
++++ b/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/HeadersMethodArgumentResolver.java
+@@ -61,7 +61,7 @@ else if (MessageHeaderAccessor.class == paramType) {
+ 		}
+ 		else if (MessageHeaderAccessor.class.isAssignableFrom(paramType)) {
+ 			MessageHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, MessageHeaderAccessor.class);
+-			if (accessor != null && paramType.isAssignableFrom(accessor.getClass())) {
++			if (accessor != null && paramType.isInstance(accessor)) {
+ 				return accessor;
+ 			}
+ 			else {
+diff --git a/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/MessageMethodArgumentResolver.java b/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/MessageMethodArgumentResolver.java
+index cbd2f7f990fa..29cdc6889e41 100644
+--- a/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/MessageMethodArgumentResolver.java
++++ b/spring-messaging/src/main/java/org/springframework/messaging/handler/annotation/support/MessageMethodArgumentResolver.java
+@@ -74,7 +74,7 @@ public Object resolveArgument(MethodParameter parameter, Message<?> message) thr
+ 		Class<?> targetMessageType = parameter.getParameterType();
+ 		Class<?> targetPayloadType = getPayloadType(parameter, message);
+ 
+-		if (!targetMessageType.isAssignableFrom(message.getClass())) {
++		if (!targetMessageType.isInstance(message)) {
+ 			throw new MethodArgumentTypeMismatchException(message, parameter, "Actual message type '" +
+ 					ClassUtils.getDescriptiveType(message) + "' does not match expected type '" +
+ 					ClassUtils.getQualifiedName(targetMessageType) + "'");
+diff --git a/spring-messaging/src/main/java/org/springframework/messaging/support/AbstractHeaderMapper.java b/spring-messaging/src/main/java/org/springframework/messaging/support/AbstractHeaderMapper.java
+index b55945938015..10338ea5e4cd 100644
+--- a/spring-messaging/src/main/java/org/springframework/messaging/support/AbstractHeaderMapper.java
++++ b/spring-messaging/src/main/java/org/springframework/messaging/support/AbstractHeaderMapper.java
+@@ -95,7 +95,7 @@ protected String toHeaderName(String propertyName) {
+ 		if (value == null) {
+ 			return null;
+ 		}
+-		if (!type.isAssignableFrom(value.getClass())) {
++		if (!type.isInstance(value)) {
+ 			if (logger.isDebugEnabled()) {
+ 				logger.debug("Skipping header '" + name + "': expected type [" + type + "], but got [" +
+ 						value.getClass() + "]");
+diff --git a/spring-messaging/src/test/java/org/springframework/messaging/handler/annotation/reactive/PayloadMethodArgumentResolverTests.java b/spring-messaging/src/test/java/org/springframework/messaging/handler/annotation/reactive/PayloadMethodArgumentResolverTests.java
+index b6668600cb33..e944fd3fcb46 100644
+--- a/spring-messaging/src/test/java/org/springframework/messaging/handler/annotation/reactive/PayloadMethodArgumentResolverTests.java
++++ b/spring-messaging/src/test/java/org/springframework/messaging/handler/annotation/reactive/PayloadMethodArgumentResolverTests.java
+@@ -169,8 +169,7 @@ private DataBuffer toDataBuffer(String value) {
+ 
+ 		Object value = result.block(Duration.ofSeconds(5));
+ 		if (value != null) {
+-			Class<?> expectedType = param.getParameterType();
+-			assertThat(expectedType.isAssignableFrom(value.getClass())).as("Unexpected return value type: " + value).isTrue();
++			assertThat(value).isInstanceOf(param.getParameterType());
+ 		}
+ 		return (T) value;
+ 	}
+diff --git a/spring-messaging/src/test/java/org/springframework/messaging/simp/SimpMessagingTemplateTests.java b/spring-messaging/src/test/java/org/springframework/messaging/simp/SimpMessagingTemplateTests.java
+index e5c1fa771b21..c9f7eba135c7 100644
+--- a/spring-messaging/src/test/java/org/springframework/messaging/simp/SimpMessagingTemplateTests.java
++++ b/spring-messaging/src/test/java/org/springframework/messaging/simp/SimpMessagingTemplateTests.java
+@@ -163,8 +163,7 @@ void convertAndSendWithMutableSimpMessageHeaders() {
+ 	void processHeadersToSend() {
+ 		Map<String, Object> map = this.messagingTemplate.processHeadersToSend(null);
+ 
+-		assertThat(map).isNotNull();
+-		assertThat(MessageHeaders.class.isAssignableFrom(map.getClass())).as("Actual: " + map.getClass()).isTrue();
++		assertThat(map).isInstanceOf(MessageHeaders.class);
+ 
+ 		SimpMessageHeaderAccessor headerAccessor =
+ 				MessageHeaderAccessor.getAccessor((MessageHeaders) map, SimpMessageHeaderAccessor.class);
+diff --git a/spring-test/src/main/java/org/springframework/test/web/ModelAndViewAssert.java b/spring-test/src/main/java/org/springframework/test/web/ModelAndViewAssert.java
+index e8c3fbf1f35d..175fd119b494 100644
+--- a/spring-test/src/main/java/org/springframework/test/web/ModelAndViewAssert.java
++++ b/spring-test/src/main/java/org/springframework/test/web/ModelAndViewAssert.java
+@@ -61,7 +61,7 @@ public static <T> T assertAndReturnModelAttributeOfType(ModelAndView mav, String
+ 			fail("Model attribute with name '" + modelName + "' is null");
+ 		}
+ 		assertTrue("Model attribute is not of expected type '" + expectedType.getName() + "' but rather of type '" +
+-				obj.getClass().getName() + "'", expectedType.isAssignableFrom(obj.getClass()));
++				obj.getClass().getName() + "'", expectedType.isInstance(obj));
+ 		return (T) obj;
+ 	}
+ 
+diff --git a/spring-web/src/main/java/org/springframework/web/util/TagUtils.java b/spring-web/src/main/java/org/springframework/web/util/TagUtils.java
+index a7522b982fe4..aa7a495d3f38 100644
+--- a/spring-web/src/main/java/org/springframework/web/util/TagUtils.java
++++ b/spring-web/src/main/java/org/springframework/web/util/TagUtils.java
+@@ -95,7 +95,7 @@ public static boolean hasAncestorOfType(Tag tag, Class<?> ancestorTagClass) {
+ 		}
+ 		Tag ancestor = tag.getParent();
+ 		while (ancestor != null) {
+-			if (ancestorTagClass.isAssignableFrom(ancestor.getClass())) {
++			if (ancestorTagClass.isInstance(ancestor)) {
+ 				return true;
+ 			}
+ 			ancestor = ancestor.getParent();
+diff --git a/spring-webflux/src/main/java/org/springframework/web/reactive/result/SimpleHandlerAdapter.java b/spring-webflux/src/main/java/org/springframework/web/reactive/result/SimpleHandlerAdapter.java
+index 4204609779d8..e64cf6a019d8 100644
+--- a/spring-webflux/src/main/java/org/springframework/web/reactive/result/SimpleHandlerAdapter.java
++++ b/spring-webflux/src/main/java/org/springframework/web/reactive/result/SimpleHandlerAdapter.java
+@@ -36,7 +36,7 @@ public class SimpleHandlerAdapter implements HandlerAdapter {
+ 
+ 	@Override
+ 	public boolean supports(Object handler) {
+-		return WebHandler.class.isAssignableFrom(handler.getClass());
++		return (handler instanceof WebHandler);
+ 	}
+ 
+ 	@Override
+diff --git a/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/ErrorsMethodArgumentResolver.java b/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/ErrorsMethodArgumentResolver.java
+index 2214f567bcf8..e66418fcbddb 100644
+--- a/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/ErrorsMethodArgumentResolver.java
++++ b/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/ErrorsMethodArgumentResolver.java
+@@ -65,10 +65,10 @@ public Mono<Object> resolveArgument(
+ 		// This is done to enable early argument resolution here. When the Mono actually
+ 		// completes it is replaced in the model with the actual value.
+ 
+-		if (Mono.class.isAssignableFrom(errors.getClass())) {
++		if (errors instanceof Mono) {
+ 			return ((Mono<?>) errors).cast(Object.class);
+ 		}
+-		else if (Errors.class.isAssignableFrom(errors.getClass())) {
++		else if (errors instanceof Errors) {
+ 			return Mono.just(errors);
+ 		}
+ 		else {
+diff --git a/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/RequestAttributeMethodArgumentResolver.java b/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/RequestAttributeMethodArgumentResolver.java
+index 045b3cf6cd41..d6a73cfa07ee 100644
+--- a/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/RequestAttributeMethodArgumentResolver.java
++++ b/spring-webflux/src/main/java/org/springframework/web/reactive/result/method/annotation/RequestAttributeMethodArgumentResolver.java
+@@ -76,7 +76,7 @@ protected NamedValueInfo createNamedValueInfo(MethodParameter parameter) {
+ 								parameter.getGenericParameterType() + " doesn't support empty values.");
+ 				return toAdapter.fromPublisher(Mono.empty());
+ 			}
+-			if (parameter.getParameterType().isAssignableFrom(value.getClass())) {
++			if (parameter.getParameterType().isInstance(value)) {
+ 				return value;
+ 			}
+ 			ReactiveAdapter fromAdapter = getAdapterRegistry().getAdapter(value.getClass());
+diff --git a/spring-webflux/src/main/java/org/springframework/web/reactive/socket/server/support/WebSocketHandlerAdapter.java b/spring-webflux/src/main/java/org/springframework/web/reactive/socket/server/support/WebSocketHandlerAdapter.java
+index 45ad18d4d2a1..242cafbe78b3 100644
+--- a/spring-webflux/src/main/java/org/springframework/web/reactive/socket/server/support/WebSocketHandlerAdapter.java
++++ b/spring-webflux/src/main/java/org/springframework/web/reactive/socket/server/support/WebSocketHandlerAdapter.java
+@@ -99,7 +99,7 @@ public WebSocketService getWebSocketService() {
+ 
+ 	@Override
+ 	public boolean supports(Object handler) {
+-		return WebSocketHandler.class.isAssignableFrom(handler.getClass());
++		return (handler instanceof WebSocketHandler);
+ 	}
+ 
+ 	@Override
+diff --git a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/HttpEntityMethodArgumentResolverTests.java b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/HttpEntityMethodArgumentResolverTests.java
+index c0892f1b8a7e..0d8c9ef5c2fd 100644
+--- a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/HttpEntityMethodArgumentResolverTests.java
++++ b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/HttpEntityMethodArgumentResolverTests.java
+@@ -274,8 +274,7 @@ private <T> T resolveValue(ServerWebExchange exchange, ResolvableType type) {
+ 		Mono<Object> result = this.resolver.resolveArgument(param, new BindingContext(), exchange);
+ 		Object value = result.block(Duration.ofSeconds(5));
+ 
+-		assertThat(value).isNotNull();
+-		assertThat(param.getParameterType().isAssignableFrom(value.getClass())).as("Unexpected return value type: " + value.getClass()).isTrue();
++		assertThat(value).isInstanceOf(param.getParameterType());
+ 
+ 		return (T) value;
+ 	}
+diff --git a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/MessageReaderArgumentResolverTests.java b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/MessageReaderArgumentResolverTests.java
+index 16025392f4de..984aa0a5a57d 100644
+--- a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/MessageReaderArgumentResolverTests.java
++++ b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/MessageReaderArgumentResolverTests.java
+@@ -294,8 +294,7 @@ private <T> T resolveValue(MethodParameter param, String body) {
+ 		Mono<Object> result = this.resolver.readBody(param, true, this.bindingContext, exchange);
+ 		Object value = result.block(Duration.ofSeconds(5));
+ 
+-		assertThat(value).isNotNull();
+-		assertThat(param.getParameterType().isAssignableFrom(value.getClass())).as("Unexpected return value type: " + value).isTrue();
++		assertThat(value).isInstanceOf(param.getParameterType());
+ 
+ 		return (T) value;
+ 	}
+diff --git a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestBodyMethodArgumentResolverTests.java b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestBodyMethodArgumentResolverTests.java
+index 88564e9ace7f..7f7f49effe5d 100644
+--- a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestBodyMethodArgumentResolverTests.java
++++ b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestBodyMethodArgumentResolverTests.java
+@@ -233,9 +233,7 @@ private <T> T resolveValue(MethodParameter param, String body) {
+ 		Mono<Object> result = this.resolver.readBody(param, true, new BindingContext(), exchange);
+ 		Object value = result.block(Duration.ofSeconds(5));
+ 
+-		assertThat(value).isNotNull();
+-		assertThat(param.getParameterType().isAssignableFrom(value.getClass()))
+-				.as("Unexpected return value type: " + value).isTrue();
++		assertThat(value).isInstanceOf(param.getParameterType());
+ 
+ 		//no inspection unchecked
+ 		return (T) value;
+@@ -248,8 +246,7 @@ private <T> T resolveValueWithEmptyBody(MethodParameter param) {
+ 		Object value = result.block(Duration.ofSeconds(5));
+ 
+ 		if (value != null) {
+-			assertThat(param.getParameterType().isAssignableFrom(value.getClass()))
+-					.as("Unexpected parameter type: " + value).isTrue();
++			assertThat(value).isInstanceOf(param.getParameterType());
+ 		}
+ 
+ 		//no inspection unchecked
+diff --git a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestPartMethodArgumentResolverTests.java b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestPartMethodArgumentResolverTests.java
+index 5d372db2892a..2c1c75fd6bb8 100644
+--- a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestPartMethodArgumentResolverTests.java
++++ b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/RequestPartMethodArgumentResolverTests.java
+@@ -299,8 +299,7 @@ private <T> T resolveArgument(MethodParameter param, MultipartBodyBuilder builde
+ 		Mono<Object> result = this.resolver.resolveArgument(param, new BindingContext(), exchange);
+ 		Object value = result.block(Duration.ofSeconds(5));
+ 
+-		assertThat(value).isNotNull();
+-		assertThat(param.getParameterType().isAssignableFrom(value.getClass())).isTrue();
++		assertThat(value).isInstanceOf(param.getParameterType());
+ 		return (T) value;
+ 	}
+ 
+diff --git a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/WebSessionMethodArgumentResolverTests.java b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/WebSessionMethodArgumentResolverTests.java
+index 3c4be1b090eb..6dfd026982a4 100644
+--- a/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/WebSessionMethodArgumentResolverTests.java
++++ b/spring-webflux/src/test/java/org/springframework/web/reactive/result/method/annotation/WebSessionMethodArgumentResolverTests.java
+@@ -67,14 +67,12 @@ void resolverArgument() {
+ 
+ 		param = this.testMethod.arg(Mono.class, WebSession.class);
+ 		actual = this.resolver.resolveArgument(param, context, exchange).block();
+-		assertThat(actual).isNotNull();
+-		assertThat(Mono.class.isAssignableFrom(actual.getClass())).isTrue();
++		assertThat(actual).isInstanceOf(Mono.class);
+ 		assertThat(((Mono<?>) actual).block()).isSameAs(session);
+ 
+ 		param = this.testMethod.arg(Single.class, WebSession.class);
+ 		actual = this.resolver.resolveArgument(param, context, exchange).block();
+-		assertThat(actual).isNotNull();
+-		assertThat(Single.class.isAssignableFrom(actual.getClass())).isTrue();
++		assertThat(actual).isInstanceOf(Single.class);
+ 		assertThat(((Single<?>) actual).blockingGet()).isSameAs(session);
+ 	}
+ 
+diff --git a/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/ReactiveTypeHandler.java b/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/ReactiveTypeHandler.java
+index 1833702d3711..5bd707a6edee 100644
+--- a/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/ReactiveTypeHandler.java
++++ b/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/ReactiveTypeHandler.java
+@@ -579,11 +579,11 @@ private ContextSnapshotHelper(@Nullable ContextSnapshotFactory factory) {
+ 
+ 		@SuppressWarnings("ReactiveStreamsUnusedPublisher")
+ 		public Object writeReactorContext(Object returnValue) {
+-			if (Mono.class.isAssignableFrom(returnValue.getClass())) {
++			if (returnValue instanceof Mono) {
+ 				ContextSnapshot snapshot = this.snapshotFactory.captureAll();
+ 				return ((Mono<?>) returnValue).contextWrite(snapshot::updateContext);
+ 			}
+-			else if (Flux.class.isAssignableFrom(returnValue.getClass())) {
++			else if (returnValue instanceof Flux) {
+ 				ContextSnapshot snapshot = this.snapshotFactory.captureAll();
+ 				return ((Flux<?>) returnValue).contextWrite(snapshot::updateContext);
+ 			}
+diff --git a/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/RequestResponseBodyAdviceChain.java b/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/RequestResponseBodyAdviceChain.java
+index 30d5cb28ef79..cc5b550c9050 100644
+--- a/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/RequestResponseBodyAdviceChain.java
++++ b/spring-webmvc/src/main/java/org/springframework/web/servlet/mvc/method/annotation/RequestResponseBodyAdviceChain.java
+@@ -160,7 +160,7 @@ private <A> List<A> getMatchingAdvice(MethodParameter parameter, Class<? extends
+ 				}
+ 				advice = adviceBean.resolveBean();
+ 			}
+-			if (adviceType.isAssignableFrom(advice.getClass())) {
++			if (adviceType.isInstance(advice)) {
+ 				result.add((A) advice);
+ 			}
+ 		}
+diff --git a/spring-webmvc/src/test/java/org/springframework/web/servlet/ComplexWebApplicationContext.java b/spring-webmvc/src/test/java/org/springframework/web/servlet/ComplexWebApplicationContext.java
+index e29ba91f95a8..efc467eca1a9 100644
+--- a/spring-webmvc/src/test/java/org/springframework/web/servlet/ComplexWebApplicationContext.java
++++ b/spring-webmvc/src/test/java/org/springframework/web/servlet/ComplexWebApplicationContext.java
+@@ -251,7 +251,7 @@ public int getOrder() {
+ 
+ 		@Override
+ 		public boolean supports(Object handler) {
+-			return handler != null && MyHandler.class.isAssignableFrom(handler.getClass());
++			return (handler instanceof MyHandler);
+ 		}
+ 
+ 		@Override
+@@ -268,7 +268,7 @@ public static class MyDummyAdapter extends ApplicationObjectSupport implements H
+ 
+ 		@Override
+ 		public boolean supports(Object handler) {
+-			return handler != null && MyHandler.class.isAssignableFrom(handler.getClass());
++			return (handler instanceof MyHandler);
+ 		}
+ 
+ 		@Override
+diff --git a/spring-websocket/src/main/java/org/springframework/web/socket/WebSocketExtension.java b/spring-websocket/src/main/java/org/springframework/web/socket/WebSocketExtension.java
+index 41b02ae4781d..4466ab3c391b 100644
+--- a/spring-websocket/src/main/java/org/springframework/web/socket/WebSocketExtension.java
++++ b/spring-websocket/src/main/java/org/springframework/web/socket/WebSocketExtension.java
+@@ -103,7 +103,7 @@ public boolean equals(@Nullable Object other) {
+ 		if (this == other) {
+ 			return true;
+ 		}
+-		if (other == null || !WebSocketExtension.class.isAssignableFrom(other.getClass())) {
++		if (other == null || !(other instanceof WebSocketExtension)) {
+ 			return false;
+ 		}
+ 		WebSocketExtension otherExt = (WebSocketExtension) other;

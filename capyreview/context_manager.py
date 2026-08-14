@@ -5,7 +5,9 @@ import re
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 
-HUNK_RANGE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+HUNK_RANGE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,8 @@ class ContextBundle:
     omitted_files: List[str] = field(default_factory=list)
     omitted_hunks: int = 0
     strategy: str = "full-diff"
+    batch_index: int = 1
+    batch_count: int = 1
 
     def metadata(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -54,18 +58,10 @@ class _Hunk:
     path: str
     header: str
     text: str
+    old_start: int = 0
+    old_count: int = 0
     new_start: int = 0
     new_count: int = 0
-
-    def contains_new_line(self, line: int) -> bool:
-        return self.new_count > 0 and self.new_start <= line < self.new_start + self.new_count
-
-    def changed_lines(self) -> int:
-        return sum(
-            1 for line in self.text.splitlines()
-            if (line.startswith("+") and not line.startswith("+++"))
-            or (line.startswith("-") and not line.startswith("---"))
-        )
 
     def byte_cost(self) -> int:
         return len(self.text.encode("utf-8"))
@@ -139,154 +135,106 @@ class ContextManager:
         )
         return self.estimate_tokens(rendered)
 
+    def runtime_tokens(
+        self, feedback: Sequence[Any] = (),
+        inbox: Sequence[Dict[str, Any]] = (),
+        memories: Sequence[Dict[str, Any]] = (),
+        observations: Sequence[Dict[str, Any]] = (),
+    ) -> int:
+        """Estimate the dynamic material already present for one loop call."""
+        parts: List[str] = []
+        if inbox:
+            parts.append(self._render_line("COLLABORATION", {
+                "count": len(inbox),
+                "kinds": sorted({str(item.get("kind", "")) for item in inbox}),
+                "senders": sorted({str(item.get("sender", "")) for item in inbox}),
+            }))
+        for item in reversed(observations):
+            parts.append(self._render_line("OBSERVATION", {
+                key: item.get(key)
+                for key in ("id", "step", "tool", "ok", "result", "error")
+                if item.get(key) is not None
+            }))
+        for item in feedback:
+            parts.append(self._render_line(
+                "CRITIC_FEEDBACK", str(item)[:1200]
+            ))
+        for item in memories:
+            parts.append(self._render_line("MEMORY", {
+                "scope": item.get("scope"), "kind": item.get("kind"),
+                "content": str(item.get("content", ""))[:1200],
+                "score": item.get("recall_score"),
+            }))
+        return self.estimate_tokens("".join(parts)) if parts else 0
+
     def build(
         self, diff: str, assignment: Dict[str, Any] = None,
         memories: Sequence[Dict[str, Any]] = (),
         fixed_tokens: int = 0,
     ) -> ContextBundle:
+        # Compatibility wrapper for callers that do not yet consume a batch plan.
+        # Multi-batch execution is handled by ``build_batches`` users.
+        return self.build_batches(
+            diff, assignment, memories, fixed_tokens=fixed_tokens
+        )[0]
+
+    def build_batches(
+        self, diff: str, assignment: Dict[str, Any] = None,
+        memories: Sequence[Dict[str, Any]] = (), fixed_tokens: int = 0,
+    ) -> List[ContextBundle]:
+        """Return full Diff, a compact change view, or bounded Hunk batches.
+
+        The method does not rank code by risk. Compression is activated only when
+        the complete Diff cannot fit after the caller's fixed context. It removes
+        unchanged Unified Diff context while preserving every addition, deletion,
+        file header and Hunk header. If that lossless change view still cannot fit,
+        it is split in source order without dropping a Hunk.
+        """
+        del assignment, memories
         original_tokens = self.estimate_tokens(diff)
-        available_tokens = self.max_tokens - self.reserved_tokens - max(
-            0, int(fixed_tokens)
-        )
+        available_tokens = self.max_tokens - max(0, int(fixed_tokens))
         if available_tokens < 32:
             raise ValueError("fixed context leaves no room for diff evidence")
         if original_tokens <= available_tokens:
-            return ContextBundle(
+            return [ContextBundle(
                 diff, False, original_tokens, original_tokens,
                 strategy="full-diff",
-            )
-
-        assignment = assignment or {}
-        # Memory is injected later by ``compose``. Historical hints must not decide
-        # whether current PR code is visible to the reviewer.
-        _ = memories
-        file_headers, hunks = self._parse(diff)
-        byte_budget = max(128, available_tokens * 4)
-        selected: List[_Hunk] = []
-        selected_ids = set()
-        used = 0
-        included_headers = set()
-
-        focus_by_path: Dict[str, set] = {}
-        for item in assignment.get("focus_lines") or []:
-            if not isinstance(item, dict):
-                continue
-            path = str(item.get("path", ""))
-            try:
-                line = int(item.get("line", 0))
-            except (TypeError, ValueError):
-                continue
-            if path and line > 0:
-                focus_by_path.setdefault(path, set()).add(line)
-
-        p0 = [
-            hunk for hunk in hunks
-            if any(
-                hunk.contains_new_line(line)
-                for line in focus_by_path.get(hunk.path, set())
-            )
-        ]
-        represented = {hunk.path for hunk in p0}
-        remaining = [hunk for hunk in hunks if hunk.index not in {item.index for item in p0}]
-
-        path_order = []
-        for path in list(assignment.get("files") or []) + list(file_headers):
-            if path in file_headers and path not in path_order:
-                path_order.append(path)
-        p1 = []
-        for path in path_order:
-            if path in represented:
-                continue
-            candidates = [hunk for hunk in remaining if hunk.path == path]
-            if not candidates:
-                continue
-            representative = max(
-                candidates,
-                key=lambda item: (
-                    item.changed_lines() / max(1, item.byte_cost()),
-                    item.changed_lines(), -item.index,
-                ),
-            )
-            p1.append(representative)
-            represented.add(path)
-
-        priority_ids = {item.index for item in p0 + p1}
-        p2 = [hunk for hunk in hunks if hunk.index not in priority_ids]
-
-        def add_hunk(hunk: _Hunk, allowance: int, focused: bool = False) -> bool:
-            nonlocal used
-            if hunk.index in selected_ids:
-                return False
-            file_header = file_headers.get(hunk.path, "")
-            header_cost = (
-                len(file_header.encode("utf-8"))
-                if hunk.path not in included_headers else 0
-            )
-            remaining_bytes = byte_budget - used - header_cost
-            content_budget = min(remaining_bytes, max(0, allowance - header_cost))
-            if content_budget < 48:
-                return False
-            content = hunk.text
-            if hunk.byte_cost() > content_budget:
-                content = self._compact_hunk(
-                    hunk, content_budget,
-                    focus_by_path.get(hunk.path, set()) if focused else set(),
-                )
-            if not content:
-                return False
-            selected.append(_Hunk(
-                hunk.index, hunk.path, hunk.header, content,
-                hunk.new_start, hunk.new_count,
-            ))
-            selected_ids.add(hunk.index)
-            used += header_cost + len(content.encode("utf-8"))
-            included_headers.add(hunk.path)
-            return True
-
-        def add_tier(items: Sequence[_Hunk], focused: bool = False) -> None:
-            for position, hunk in enumerate(items):
-                available = byte_budget - used
-                if available < 48:
-                    break
-                remaining_items = max(1, len(items) - position)
-                allowance = max(128, available // remaining_items)
-                add_hunk(hunk, allowance, focused)
-
-        add_tier(p0, focused=True)
-        add_tier(p1)
-        for hunk in p2:
-            if byte_budget - used < 48:
-                break
-            add_hunk(hunk, byte_budget - used)
-
-        if not selected and hunks:
-            first = (p0 or p1 or hunks)[0]
-            selected = [_Hunk(
-                first.index, first.path, first.header,
-                self._compact_hunk(
-                    first, byte_budget, focus_by_path.get(first.path, set())
-                ) or first.text[:byte_budget],
-                first.new_start, first.new_count,
             )]
-            included_headers.add(first.path)
 
-        pieces = []
-        current_path = None
-        for hunk in sorted(selected, key=lambda item: item.index):
-            if hunk.path != current_path:
-                pieces.append(file_headers.get(hunk.path, ""))
-                current_path = hunk.path
-            pieces.append(hunk.text)
-        compressed = "".join(pieces).strip() + "\n"
-        all_paths = list(file_headers)
-        omitted_files = [path for path in all_paths if path not in included_headers]
-        omitted_hunks = max(0, len(hunks) - len(selected))
-        final_tokens = self.estimate_tokens(compressed)
-        return ContextBundle(
-            compressed, True, original_tokens, final_tokens,
-            omitted_files=omitted_files, omitted_hunks=omitted_hunks,
-            strategy="priority-tier-hunk-compression",
+        file_headers, hunks = self._parse(diff)
+        compact_hunks = [
+            _Hunk(
+                hunk.index, hunk.path, hunk.header,
+                self._compact_change_view(hunk),
+                hunk.old_start, hunk.old_count,
+                hunk.new_start, hunk.new_count,
+            )
+            for hunk in hunks
+        ]
+        compact = self._render_hunks(file_headers, compact_hunks)
+        compact_tokens = self.estimate_tokens(compact)
+        if compact_tokens <= available_tokens:
+            return [ContextBundle(
+                compact, True, original_tokens, compact_tokens,
+                strategy="compact-change-view",
+            )]
+
+        batches = self._batch_hunks(
+            file_headers, compact_hunks, available_tokens * 4
         )
+        count = len(batches)
+        was_compacted = compact_tokens < original_tokens
+        return [
+            ContextBundle(
+                text, was_compacted, original_tokens,
+                self.estimate_tokens(text),
+                strategy=(
+                    "compact-hunk-batch" if was_compacted else "hunk-batch"
+                ),
+                batch_index=index, batch_count=count,
+            )
+            for index, text in enumerate(batches, 1)
+        ]
 
     def compose(
         self, diff_bundle: ContextBundle, assignment: Dict[str, Any],
@@ -297,14 +245,17 @@ class ContextManager:
         skills: Sequence[Dict[str, Any]] = (),
         system_prompt: str = "",
     ) -> ManagedContext:
-        """Fit all changing loop state into one deterministic token budget.
-
-        The diff owns ``max_tokens - reserved_tokens``. Assignment, tool schemas,
-        critique, recalled memories and tool observations share the reserved
-        portion. Lower-priority records are dropped instead of silently growing
-        the model request on every loop iteration.
-        """
-        optional_bytes = max(0, self.reserved_tokens * 4)
+        """Assemble full loop material, reducing optional history only on overflow."""
+        complete_tokens = (
+            self.contract_tokens(system_prompt, assignment, skills, tools)
+            + self.runtime_tokens(feedback, inbox, memories, observations)
+            + self.estimate_tokens("DIFF_CONTEXT:\n" + diff_bundle.text)
+        )
+        complete_fits = complete_tokens <= self.max_tokens
+        optional_bytes = (
+            self.max_tokens * 4
+            if complete_fits else max(0, self.reserved_tokens * 4)
+        )
         parts: List[str] = []
         optional_used = 0
         was_truncated = False
@@ -421,19 +372,6 @@ class ContextManager:
             dropped_observations=max(0, len(observations) - kept_observations),
         )
 
-    @staticmethod
-    def _truncate_utf8(value: bytes, limit: int) -> bytes:
-        if limit <= 0:
-            return b""
-        clipped = value[:limit]
-        while clipped:
-            try:
-                clipped.decode("utf-8")
-                return clipped
-            except UnicodeDecodeError:
-                clipped = clipped[:-1]
-        return b""
-
     def _parse(self, diff: str) -> Tuple[Dict[str, str], List[_Hunk]]:
         lines = diff.splitlines(True)
         files: List[Tuple[str, List[str]]] = []
@@ -471,82 +409,144 @@ class ContextManager:
                     index, path, block[start].rstrip(), text,
                     int(match.group(1)) if match else 0,
                     int(match.group(2) or 1) if match else 0,
+                    int(match.group(3)) if match else 0,
+                    int(match.group(4) or 1) if match else 0,
                 ))
                 index += 1
         return headers, hunks
 
     @staticmethod
-    def _compact_hunk(hunk: _Hunk, byte_budget: int, focus_lines: set) -> str:
-        if byte_budget < 128:
-            return ""
+    def _compact_change_view(hunk: _Hunk) -> str:
+        """Remove unchanged Hunk context without dropping change evidence."""
         lines = hunk.text.splitlines(True)
         if not lines:
             return ""
-        added_indices = []
-        focused_indices = []
+        output = [lines[0]] if lines[0].startswith("@@") else []
+        body = lines[1:] if output else lines
+        omitted = 0
+        changed = False
+        old_line = hunk.old_start
         new_line = hunk.new_start
-        for index, line in enumerate(lines):
-            if index == 0 and line.startswith("@@"):
-                continue
-            added = line.startswith("+") and not line.startswith("+++")
-            removed = line.startswith("-") and not line.startswith("---")
-            if added:
-                added_indices.append(index)
-                if new_line in focus_lines:
-                    focused_indices.append(index)
+
+        def flush_omitted() -> None:
+            nonlocal omitted
+            if omitted:
+                output.append(
+                    "... [%d unchanged lines omitted; next old=%d, new=%d] ...\n"
+                    % (omitted, old_line, new_line)
+                )
+                omitted = 0
+
+        for line in body:
+            is_change = (
+                (line.startswith("+") and not line.startswith("+++"))
+                or (line.startswith("-") and not line.startswith("---"))
+            )
+            if is_change:
+                flush_omitted()
+                output.append(line)
+                changed = True
+                if line.startswith("+"):
+                    new_line += 1
+                else:
+                    old_line += 1
+            elif line.startswith("\\"):
+                flush_omitted()
+                output.append(line)
+            else:
+                omitted += 1
+                old_line += 1
                 new_line += 1
-            elif not removed and not line.startswith("\\"):
-                new_line += 1
+        flush_omitted()
+        # Metadata-only changes (rename, mode, binary marker) have no Hunk changes.
+        return "".join(output) if changed else hunk.text
 
-        mandatory = [0]
-        for index in focused_indices:
-            mandatory.extend([
-                index, max(0, index - 1), min(len(lines) - 1, index + 1)
-            ])
-        if not focused_indices and added_indices:
-            mandatory.extend([added_indices[0], added_indices[-1]])
+    @staticmethod
+    def _render_hunks(
+        file_headers: Dict[str, str], hunks: Sequence[_Hunk],
+    ) -> str:
+        pieces: List[str] = []
+        current_path = None
+        for hunk in hunks:
+            if hunk.path != current_path:
+                pieces.append(file_headers.get(hunk.path, ""))
+                current_path = hunk.path
+            pieces.append(hunk.text)
+        rendered = "".join(pieces)
+        return rendered if not rendered or rendered.endswith("\n") else rendered + "\n"
 
-        selected = set()
-        estimated = 0
-        for index in mandatory:
-            if index in selected:
-                continue
-            cost = len(lines[index].encode("utf-8"))
-            if estimated + cost > byte_budget:
-                continue
-            selected.add(index)
-            estimated += cost
-        # Leave room for omission markers and the mandatory lines when results are
-        # rendered back in source order. Optional additions may never crowd out a
-        # Router focus line near the end of a large hunk.
-        optional_limit = int(byte_budget * (0.75 if focused_indices else 0.9))
-        for index in added_indices:
-            if index in selected:
-                continue
-            cost = len(lines[index].encode("utf-8"))
-            if estimated + cost > optional_limit:
-                break
-            selected.add(index)
-            estimated += cost
-        output = []
-        previous = -2
-        used = 0
-        for index in sorted(selected):
-            if index - previous > 1 and output:
-                marker = " ... [unchanged context omitted by CapyReview] ...\n"
-                marker_cost = len(marker.encode("utf-8"))
-                line_cost = len(lines[index].encode("utf-8"))
-                if used + marker_cost + line_cost <= byte_budget:
-                    output.append(marker)
-                    used += marker_cost
-            encoded = lines[index].encode("utf-8")
-            if used + len(encoded) > byte_budget:
-                continue
-            output.append(lines[index])
-            used += len(encoded)
-            previous = index
-        return "".join(output)
+    def _split_compact_hunk(
+        self, hunk: _Hunk, content_budget: int,
+    ) -> List[_Hunk]:
+        """Split one oversized compact Hunk at line boundaries."""
+        lines = hunk.text.splitlines(True)
+        if not lines:
+            return []
+        header = lines[0] if lines[0].startswith("@@") else ""
+        body = lines[1:] if header else lines
+        header_cost = len(header.encode("utf-8"))
+        if content_budget <= header_cost:
+            raise ValueError("context budget cannot fit a Hunk header")
+        parts: List[_Hunk] = []
+        current: List[str] = []
+        used = header_cost
+        for line in body:
+            cost = len(line.encode("utf-8"))
+            if cost + header_cost > content_budget:
+                raise ValueError(
+                    "a single changed Diff line exceeds the context budget"
+                )
+            if current and used + cost > content_budget:
+                text = header + "".join(current)
+                parts.append(_Hunk(
+                    hunk.index, hunk.path, hunk.header, text,
+                    hunk.old_start, hunk.old_count,
+                    hunk.new_start, hunk.new_count,
+                ))
+                current = []
+                used = header_cost
+            current.append(line)
+            used += cost
+        if current:
+            parts.append(_Hunk(
+                hunk.index, hunk.path, hunk.header,
+                header + "".join(current),
+                hunk.old_start, hunk.old_count,
+                hunk.new_start, hunk.new_count,
+            ))
+        return parts
 
+    def _batch_hunks(
+        self, file_headers: Dict[str, str], hunks: Sequence[_Hunk],
+        byte_budget: int,
+    ) -> List[str]:
+        expanded: List[_Hunk] = []
+        for hunk in hunks:
+            header_cost = len(file_headers.get(hunk.path, "").encode("utf-8"))
+            if header_cost + hunk.byte_cost() <= byte_budget:
+                expanded.append(hunk)
+                continue
+            expanded.extend(self._split_compact_hunk(
+                hunk, byte_budget - header_cost
+            ))
+
+        batches: List[str] = []
+        current: List[_Hunk] = []
+        for hunk in expanded:
+            candidate = current + [hunk]
+            rendered = self._render_hunks(file_headers, candidate)
+            if current and len(rendered.encode("utf-8")) > byte_budget:
+                batches.append(self._render_hunks(file_headers, current))
+                current = [hunk]
+            else:
+                current = candidate
+        if current:
+            batches.append(self._render_hunks(file_headers, current))
+        if not batches:
+            raise ValueError("Diff contains no reviewable content")
+        if any(len(item.encode("utf-8")) > byte_budget for item in batches):
+            raise ValueError("a compact Diff batch exceeds the context budget")
+        return batches
 
 def render_memories(memories: Iterable[Dict[str, Any]], max_chars: int = 5000) -> str:
     """Render recalled memory as untrusted, compact runtime context."""

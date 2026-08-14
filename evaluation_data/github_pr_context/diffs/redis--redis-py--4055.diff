@@ -1,0 +1,1790 @@
+diff --git a/.github/workflows/integration.yaml b/.github/workflows/integration.yaml
+index db6fa787a6..b07f7ed2ec 100644
+--- a/.github/workflows/integration.yaml
++++ b/.github/workflows/integration.yaml
+@@ -47,6 +47,8 @@ jobs:
+             CVE-2026-34073 # DNS name constraints were validated only against SANs, not against the peer name used in verification
+                            # Update version when msal dependency in entraid is updated
+             CVE-2026-4539  # pygments ReDoS in AdlLexer, local access only, no fix available yet
++            PYSEC-2025-183 # PyJWT weak-encryption advisory disputed by maintainer (key length is the caller's responsibility);
++                           # no fixed version published — 2.12.1 is the latest release.
+ 
+   lint:
+     name: Code linters
+diff --git a/redis/_parsers/helpers.py b/redis/_parsers/helpers.py
+index 6900936a14..788b57c559 100644
+--- a/redis/_parsers/helpers.py
++++ b/redis/_parsers/helpers.py
+@@ -771,6 +771,12 @@ def parse_xautoclaim(response, **options):
+     return response
+ 
+ 
++def parse_arinfo(response, **options):
++    if isinstance(response, list):
++        return pairs_to_dict(response, decode_keys=True)
++    return {str_if_bytes(k): v for k, v in response.items()}
++
++
+ def parse_xinfo_stream(response, **options):
+     if isinstance(response, list):
+         data = pairs_to_dict(response, decode_keys=True)
+diff --git a/redis/_parsers/response_callbacks.py b/redis/_parsers/response_callbacks.py
+index 9904725fcd..510f96eba4 100644
+--- a/redis/_parsers/response_callbacks.py
++++ b/redis/_parsers/response_callbacks.py
+@@ -42,6 +42,7 @@
+     parse_acl_log,
+     parse_acl_log_resp3_to_resp2_legacy,
+     parse_acl_log_resp3_unified,
++    parse_arinfo,
+     parse_client_info,
+     parse_client_kill,
+     parse_client_list,
+@@ -215,6 +216,7 @@
+     "XGROUP CREATE": bool_ok,
+     "XGROUP DESTROY": bool,
+     "XGROUP SETID": bool_ok,
++    "ARINFO": parse_arinfo,
+     "XINFO STREAM": parse_xinfo_stream,
+     "XPENDING": parse_xpending,
+     "ZSCAN": parse_zscan,
+diff --git a/redis/commands/core.py b/redis/commands/core.py
+index 38e02eacd4..58cc78c1d4 100644
+--- a/redis/commands/core.py
++++ b/redis/commands/core.py
+@@ -5379,6 +5379,535 @@ def sort_ro(
+ AsyncListCommands = ListCommands
+ 
+ 
++class ArrayAggregateOperations(Enum):
++    SUM = "SUM"
++    MIN = "MIN"
++    MAX = "MAX"
++    AND = "AND"
++    OR = "OR"
++    XOR = "XOR"
++    MATCH = "MATCH"
++    USED = "USED"
++
++
++class ArrayPredicateType(Enum):
++    EXACT = "EXACT"
++    MATCH = "MATCH"
++    GLOB = "GLOB"
++    RE = "RE"
++
++
++class ArrayPredicateCombinator(Enum):
++    AND = "AND"
++    OR = "OR"
++
++
++class ArrayCommands(CommandsProtocol):
++    """
++    Redis commands for Array data type.
++    """
++
++    @overload
++    def arset(
++        self: SyncClientProtocol, name: KeyT, index: int, *values: FieldT
++    ) -> int: ...
++
++    @overload
++    def arset(
++        self: AsyncClientProtocol, name: KeyT, index: int, *values: FieldT
++    ) -> Awaitable[int]: ...
++
++    def arset(self, name: KeyT, index: int, *values: FieldT) -> int | Awaitable[int]:
++        """
++        Set one or more contiguous ``values`` in the array stored at ``name``
++        starting at ``index``. When multiple values are provided, they are
++        stored at consecutive indices beginning at ``index``.
++
++        Returns the number of new slots that were set (previously empty).
++
++        For more information, see https://redis.io/commands/arset
++        """
++        return self.execute_command("ARSET", name, index, *values)
++
++    @overload
++    def armset(
++        self: SyncClientProtocol, name: KeyT, mapping: Mapping[int, FieldT]
++    ) -> int: ...
++
++    @overload
++    def armset(
++        self: AsyncClientProtocol, name: KeyT, mapping: Mapping[int, FieldT]
++    ) -> Awaitable[int]: ...
++
++    def armset(self, name: KeyT, mapping: Mapping[int, FieldT]) -> int | Awaitable[int]:
++        """
++        Set multiple index/value pairs in the array stored at ``name``.
++        ``mapping`` is a dictionary of zero-based integer indices to values.
++        Pairs may be non-contiguous and in any order.
++
++        Returns the number of new slots that were set (previously empty).
++
++        For more information, see https://redis.io/commands/armset
++        """
++        items: list = []
++        for pair in mapping.items():
++            items.extend(pair)
++        return self.execute_command("ARMSET", name, *items)
++
++    @overload
++    def arget(
++        self: SyncClientProtocol, name: KeyT, index: int
++    ) -> bytes | str | None: ...
++
++    @overload
++    def arget(
++        self: AsyncClientProtocol, name: KeyT, index: int
++    ) -> Awaitable[bytes | str | None]: ...
++
++    def arget(self, name: KeyT, index: int) -> (bytes | str | None) | Awaitable[
++        bytes | str | None
++    ]:
++        """
++        Return the value at ``index`` in the array stored at ``name``.
++
++        Returns ``None`` if ``name`` does not exist or no value is set at
++        ``index``.
++
++        For more information, see https://redis.io/commands/arget
++        """
++        return self.execute_command("ARGET", name, index)
++
++    @overload
++    def armget(
++        self: SyncClientProtocol, name: KeyT, *indices: int
++    ) -> list[bytes | str | None]: ...
++
++    @overload
++    def armget(
++        self: AsyncClientProtocol, name: KeyT, *indices: int
++    ) -> Awaitable[list[bytes | str | None]]: ...
++
++    def armget(
++        self, name: KeyT, *indices: int
++    ) -> list[bytes | str | None] | Awaitable[list[bytes | str | None]]:
++        """
++        Return the values at the specified ``indices`` in the array stored at
++        ``name``. The reply preserves the order of the requested indices and
++        returns ``None`` for any index that is not set or when ``name`` does
++        not exist.
++
++        For more information, see https://redis.io/commands/armget
++        """
++        return self.execute_command("ARMGET", name, *indices)
++
++    @overload
++    def argetrange(
++        self: SyncClientProtocol, name: KeyT, start: int, end: int
++    ) -> list[bytes | str | None]: ...
++
++    @overload
++    def argetrange(
++        self: AsyncClientProtocol, name: KeyT, start: int, end: int
++    ) -> Awaitable[list[bytes | str | None]]: ...
++
++    def argetrange(
++        self, name: KeyT, start: int, end: int
++    ) -> list[bytes | str | None] | Awaitable[list[bytes | str | None]]:
++        """
++        Return the values in the inclusive index range [``start``, ``end``]
++        in the array stored at ``name``. If ``start`` is greater than ``end``,
++        elements are returned in reverse index order.
++
++        For more information, see https://redis.io/commands/argetrange
++        """
++        return self.execute_command("ARGETRANGE", name, start, end)
++
++    @overload
++    def arscan(
++        self: SyncClientProtocol,
++        name: KeyT,
++        start: int,
++        end: int,
++        limit: int | None = None,
++    ) -> list[list[int | bytes | str]]: ...
++
++    @overload
++    def arscan(
++        self: AsyncClientProtocol,
++        name: KeyT,
++        start: int,
++        end: int,
++        limit: int | None = None,
++    ) -> Awaitable[list[list[int | bytes | str]]]: ...
++
++    def arscan(
++        self,
++        name: KeyT,
++        start: int,
++        end: int,
++        limit: int | None = None,
++    ) -> list[list[int | bytes | str]] | Awaitable[list[list[int | bytes | str]]]:
++        """
++        Iterate populated elements of the array stored at ``name`` in the
++        inclusive range [``start``, ``end``] and return a list of
++        ``[index, value]`` pairs in traversal order:
++        ``[[idx1, val1], [idx2, val2], ...]``. Empty slots are skipped. If
++        ``start`` is greater than ``end``, the iteration is reversed.
++
++        ``limit`` caps the number of populated elements returned. When
++        omitted, all populated elements in range are returned.
++
++        For more information, see https://redis.io/commands/arscan
++        """
++        pieces: list = [name, start, end]
++        if limit is not None:
++            pieces.extend([b"LIMIT", limit])
++        return self.execute_command("ARSCAN", *pieces)
++
++    @overload
++    def argrep(
++        self: SyncClientProtocol,
++        name: KeyT,
++        start: int,
++        end: int,
++        predicates: list[tuple[ArrayPredicateType, EncodableT]],
++        combinator: ArrayPredicateCombinator | None = None,
++        limit: int | None = None,
++        withvalues: bool = False,
++        nocase: bool = False,
++    ) -> list[int] | list[list[int | bytes | str]]: ...
++
++    @overload
++    def argrep(
++        self: AsyncClientProtocol,
++        name: KeyT,
++        start: int,
++        end: int,
++        predicates: list[tuple[ArrayPredicateType, EncodableT]],
++        combinator: ArrayPredicateCombinator | None = None,
++        limit: int | None = None,
++        withvalues: bool = False,
++        nocase: bool = False,
++    ) -> Awaitable[list[int] | list[list[int | bytes | str]]]: ...
++
++    def argrep(
++        self,
++        name: KeyT,
++        start: int,
++        end: int,
++        predicates: list[tuple[ArrayPredicateType, EncodableT]],
++        combinator: ArrayPredicateCombinator | None = None,
++        limit: int | None = None,
++        withvalues: bool = False,
++        nocase: bool = False,
++    ) -> (
++        list[int]
++        | list[list[int | bytes | str]]
++        | Awaitable[list[int] | list[list[int | bytes | str]]]
++    ):
++        """
++        Search elements of the array stored at ``name`` within the inclusive
++        index range [``start``, ``end``] using one or more textual
++        ``predicates``. Each predicate is a ``(type, value)`` tuple where
++        ``type`` is a member of ``ArrayPredicateType``
++        (``EXACT``, ``MATCH``, ``GLOB``, ``RE``).
++
++        Multiple predicates are combined via ``combinator``
++        (``ArrayPredicateCombinator.AND`` or ``OR``); the server defaults to
++        OR when omitted. ``limit`` caps the number of matches.
++        ``withvalues=True`` returns a list of ``[index, value]`` pairs
++        (``[[idx, val], ...]``) instead of a flat list of indices.
++        ``nocase=True`` makes all comparisons case-insensitive.
++
++        Without ``withvalues``, returns a flat list of matching indices in
++        traversal order. With ``withvalues``, returns a list of
++        ``[index, value]`` pairs in traversal order. Empty slots are
++        skipped.
++
++        For more information, see https://redis.io/commands/argrep
++        """
++        pieces: list = [name, start, end]
++        for predicate_type, value in predicates:
++            pieces.extend([predicate_type.value, value])
++        if combinator is not None:
++            pieces.append(combinator.value)
++        if limit is not None:
++            pieces.extend([b"LIMIT", limit])
++        if withvalues:
++            pieces.append(b"WITHVALUES")
++        if nocase:
++            pieces.append(b"NOCASE")
++        return self.execute_command("ARGREP", *pieces)
++
++    @overload
++    def ardel(self: SyncClientProtocol, name: KeyT, *indices: int) -> int: ...
++
++    @overload
++    def ardel(
++        self: AsyncClientProtocol, name: KeyT, *indices: int
++    ) -> Awaitable[int]: ...
++
++    def ardel(self, name: KeyT, *indices: int) -> int | Awaitable[int]:
++        """
++        Delete elements at the specified ``indices`` in the array stored at
++        ``name``. Deleting an index that does not exist counts as zero
++        elements deleted and does not modify the array.
++
++        Returns the number of elements deleted.
++
++        For more information, see https://redis.io/commands/ardel
++        """
++        return self.execute_command("ARDEL", name, *indices)
++
++    @overload
++    def ardelrange(
++        self: SyncClientProtocol, name: KeyT, *ranges: tuple[int, int]
++    ) -> int: ...
++
++    @overload
++    def ardelrange(
++        self: AsyncClientProtocol, name: KeyT, *ranges: tuple[int, int]
++    ) -> Awaitable[int]: ...
++
++    def ardelrange(self, name: KeyT, *ranges: tuple[int, int]) -> int | Awaitable[int]:
++        """
++        Delete elements within one or more inclusive index ranges in the
++        array stored at ``name``. Each range is a ``(start, end)`` tuple.
++        If ``start`` is greater than ``end`` for a given pair, the range is
++        processed in ascending order regardless. Multiple pairs may overlap;
++        each element is counted at most once.
++
++        Returns the number of elements deleted.
++
++        For more information, see https://redis.io/commands/ardelrange
++        """
++        pieces: list = [name]
++        for start, end in ranges:
++            pieces.extend([start, end])
++        return self.execute_command("ARDELRANGE", *pieces)
++
++    @overload
++    def arcount(self: SyncClientProtocol, name: KeyT) -> int: ...
++
++    @overload
++    def arcount(self: AsyncClientProtocol, name: KeyT) -> Awaitable[int]: ...
++
++    def arcount(self, name: KeyT) -> int | Awaitable[int]:
++        """
++        Return the number of non-empty elements in the array stored at
++        ``name``. Returns 0 if ``name`` does not exist.
++
++        For more information, see https://redis.io/commands/arcount
++        """
++        return self.execute_command("ARCOUNT", name)
++
++    @overload
++    def arlen(self: SyncClientProtocol, name: KeyT) -> int: ...
++
++    @overload
++    def arlen(self: AsyncClientProtocol, name: KeyT) -> Awaitable[int]: ...
++
++    def arlen(self, name: KeyT) -> int | Awaitable[int]:
++        """
++        Return the length of the array stored at ``name``, defined as the
++        maximum set index plus one. Returns 0 if ``name`` does not exist.
++
++        For more information, see https://redis.io/commands/arlen
++        """
++        return self.execute_command("ARLEN", name)
++
++    @overload
++    def arinfo(
++        self: SyncClientProtocol, name: KeyT, full: bool = False
++    ) -> dict[str, int]: ...
++
++    @overload
++    def arinfo(
++        self: AsyncClientProtocol, name: KeyT, full: bool = False
++    ) -> Awaitable[dict[str, int]]: ...
++
++    def arinfo(
++        self, name: KeyT, full: bool = False
++    ) -> dict[str, int] | Awaitable[dict[str, int]]:
++        """
++        Return metadata about the array stored at ``name`` as a dictionary.
++        When ``full`` is ``True``, additionally include per-slice statistics
++        (dense/sparse slice counts, average sizes, fill rates), which makes
++        the call O(N) instead of O(1).
++
++        Raises ``ResponseError`` when the key does not exist.
++
++        For more information, see https://redis.io/commands/arinfo
++        """
++        pieces: list = [name]
++        if full:
++            pieces.append(b"FULL")
++        return self.execute_command("ARINFO", *pieces)
++
++    @overload
++    def arnext(self: SyncClientProtocol, name: KeyT) -> int | None: ...
++
++    @overload
++    def arnext(self: AsyncClientProtocol, name: KeyT) -> Awaitable[int | None]: ...
++
++    def arnext(self, name: KeyT) -> (int | None) | Awaitable[int | None]:
++        """
++        Return the next index ``ARINSERT`` would use for the array stored at
++        ``name``. Returns 0 if ``name`` does not exist or no insert happened
++        yet, and ``None`` when the insertion cursor is exhausted (next insert
++        would overflow).
++
++        For more information, see https://redis.io/commands/arnext
++        """
++        return self.execute_command("ARNEXT", name)
++
++    @overload
++    def arseek(self: SyncClientProtocol, name: KeyT, index: int) -> int: ...
++
++    @overload
++    def arseek(self: AsyncClientProtocol, name: KeyT, index: int) -> Awaitable[int]: ...
++
++    def arseek(self, name: KeyT, index: int) -> int | Awaitable[int]:
++        """
++        Set the insert cursor of the array stored at ``name`` to ``index``.
++        Subsequent ``ARINSERT`` and ``ARRING`` operations begin inserting at
++        this position.
++
++        Returns 1 if the cursor was set, 0 if ``name`` does not exist.
++
++        For more information, see https://redis.io/commands/arseek
++        """
++        return self.execute_command("ARSEEK", name, index)
++
++    @overload
++    def arinsert(self: SyncClientProtocol, name: KeyT, *values: FieldT) -> int: ...
++
++    @overload
++    def arinsert(
++        self: AsyncClientProtocol, name: KeyT, *values: FieldT
++    ) -> Awaitable[int]: ...
++
++    def arinsert(self, name: KeyT, *values: FieldT) -> int | Awaitable[int]:
++        """
++        Insert one or more ``values`` at consecutive indices in the array
++        stored at ``name``, beginning at the current insert cursor position.
++        The cursor advances by one for each value inserted. Use ``ARNEXT``
++        to inspect the current cursor position and ``ARSEEK`` to reposition
++        it.
++
++        Returns the last index where a value was inserted.
++
++        For more information, see https://redis.io/commands/arinsert
++        """
++        return self.execute_command("ARINSERT", name, *values)
++
++    @overload
++    def arring(
++        self: SyncClientProtocol, name: KeyT, size: int, *values: FieldT
++    ) -> int: ...
++
++    @overload
++    def arring(
++        self: AsyncClientProtocol, name: KeyT, size: int, *values: FieldT
++    ) -> Awaitable[int]: ...
++
++    def arring(self, name: KeyT, size: int, *values: FieldT) -> int | Awaitable[int]:
++        """
++        Insert one or more ``values`` into the array stored at ``name`` as a
++        fixed-size ring buffer of ``size`` slots. Each value is placed at
++        ``insert_idx % size``, wrapping back to index 0 once the end is
++        reached and overwriting older values when full. If ``size`` is
++        smaller than the current window, the array is truncated to fit.
++
++        Returns the last index where a value was inserted.
++
++        For more information, see https://redis.io/commands/arring
++        """
++        return self.execute_command("ARRING", name, size, *values)
++
++    @overload
++    def arlastitems(
++        self: SyncClientProtocol, name: KeyT, count: int, rev: bool = False
++    ) -> list[bytes | str | None]: ...
++
++    @overload
++    def arlastitems(
++        self: AsyncClientProtocol, name: KeyT, count: int, rev: bool = False
++    ) -> Awaitable[list[bytes | str | None]]: ...
++
++    def arlastitems(
++        self, name: KeyT, count: int, rev: bool = False
++    ) -> list[bytes | str | None] | Awaitable[list[bytes | str | None]]:
++        """
++        Return up to ``count`` most recently inserted elements from the array
++        stored at ``name``. If the array contains fewer elements than
++        ``count``, all elements are returned.
++
++        When ``rev`` is ``True``, elements are returned in reverse
++        chronological order (most recent first) instead of the default
++        oldest-first order.
++
++        For more information, see https://redis.io/commands/arlastitems
++        """
++        pieces: list = [name, count]
++        if rev:
++            pieces.append(b"REV")
++        return self.execute_command("ARLASTITEMS", *pieces)
++
++    @overload
++    def arop(
++        self: SyncClientProtocol,
++        name: KeyT,
++        start: int,
++        end: int,
++        operation: ArrayAggregateOperations,
++        value: EncodableT | None = None,
++    ) -> bytes | str | int | None: ...
++
++    @overload
++    def arop(
++        self: AsyncClientProtocol,
++        name: KeyT,
++        start: int,
++        end: int,
++        operation: ArrayAggregateOperations,
++        value: EncodableT | None = None,
++    ) -> Awaitable[bytes | str | int | None]: ...
++
++    def arop(
++        self,
++        name: KeyT,
++        start: int,
++        end: int,
++        operation: ArrayAggregateOperations,
++        value: EncodableT | None = None,
++    ) -> (bytes | str | int | None) | Awaitable[bytes | str | int | None]:
++        """
++        Perform an aggregate ``operation`` on elements of the array stored at
++        ``name`` in the inclusive index range [``start``, ``end``]. The range
++        is always scanned from the lower to the higher index regardless of
++        argument order.
++
++        ``operation`` is one of the members of ``ArrayAggregateOperations``.
++        ``value`` is required when ``operation`` is
++        ``ArrayAggregateOperations.MATCH`` and specifies the value to compare
++        against.
++
++        Returns a bulk string for ``SUM``, ``MIN`` and ``MAX``, an integer
++        for ``AND``, ``OR``, ``XOR``, ``MATCH`` and ``USED``, or ``None``
++        when no elements match the operation.
++
++        For more information, see https://redis.io/commands/arop
++        """
++        pieces: list = [name, start, end, operation.value]
++        if value is not None:
++            pieces.append(value)
++        return self.execute_command("AROP", *pieces)
++
++
++AsyncArrayCommands = ArrayCommands
++
++
+ class ScanCommands(CommandsProtocol):
+     """
+     Redis SCAN commands.
+@@ -11534,6 +12063,7 @@ class DataAccessCommands(
+     HashCommands,
+     GeoCommands,
+     ListCommands,
++    ArrayCommands,
+     ScanCommands,
+     SetCommands,
+     StreamCommands,
+@@ -11551,6 +12081,7 @@ class AsyncDataAccessCommands(
+     AsyncHashCommands,
+     AsyncGeoCommands,
+     AsyncListCommands,
++    AsyncArrayCommands,
+     AsyncScanCommands,
+     AsyncSetCommands,
+     AsyncStreamCommands,
+diff --git a/tests/test_asyncio/test_commands.py b/tests/test_asyncio/test_commands.py
+index 76cbdcbdd9..12552346b5 100644
+--- a/tests/test_asyncio/test_commands.py
++++ b/tests/test_asyncio/test_commands.py
+@@ -21,7 +21,13 @@
+     parse_info,
+ )
+ from redis.client import EMPTY_RESPONSE, NEVER_DECODE
+-from redis.commands.core import DataPersistOptions, HotkeysMetricsTypes
++from redis.commands.core import (
++    ArrayAggregateOperations,
++    ArrayPredicateCombinator,
++    ArrayPredicateType,
++    DataPersistOptions,
++    HotkeysMetricsTypes,
++)
+ from redis.commands.json.path import Path
+ from redis.commands.search.field import TextField
+ from redis.commands.search.query import Query
+@@ -2575,6 +2581,556 @@ async def test_lset(self, r: redis.Redis):
+         assert await r.lset("a", 1, "4")
+         assert await r.lrange("a", 0, 2) == [b"1", b"4", b"3"]
+ 
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arset_at_index_zero(self, r: redis.Redis):
++        assert await r.arset("a", 0, "v0") == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arset_at_positive_index(self, r: redis.Redis):
++        assert await r.arset("a", 1, "v1") == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arset_multiple_values(self, r: redis.Redis):
++        assert await r.arset("a", 0, "v0", "v1", "v2") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arset_negative_index(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        with pytest.raises(redis.ResponseError):
++            await r.arset("a", -1, "vlast")
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armset_sets_values_at_correct_indices(self, r: redis.Redis):
++        assert await r.armset("a", {0: "v0", 2: "v2", 4: "v4"}) == 3
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 1) is None
++        assert await r.arget("a", 2) == b"v2"
++        assert await r.arget("a", 3) is None
++        assert await r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armset_single_pair(self, r: redis.Redis):
++        assert await r.armset("a", {3: "v3"}) == 1
++        assert await r.arget("a", 3) == b"v3"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armset_overwrites_existing_indices(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.armset("a", {0: "new0", 1: "new1", 2: "new2"}) == 0
++        assert await r.arget("a", 0) == b"new0"
++        assert await r.arget("a", 1) == b"new1"
++        assert await r.arget("a", 2) == b"new2"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armset_mixed_new_and_existing_indices(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1")
++        assert await r.armset("a", {0: "new0", 2: "v2", 3: "v3"}) == 2
++        assert await r.arget("a", 0) == b"new0"
++        assert await r.arget("a", 1) == b"v1"
++        assert await r.arget("a", 2) == b"v2"
++        assert await r.arget("a", 3) == b"v3"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arget_returns_value_at_index(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 1) == b"v1"
++        assert await r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arget_missing_key_returns_none(self, r: redis.Redis):
++        assert await r.arget("a", 0) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arget_missing_index_returns_none(self, r: redis.Redis):
++        await r.arset("a", 0, "v0")
++        assert await r.arget("a", 5) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armget_returns_values_at_indices(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.armget("a", 0, 1, 2) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armget_preserves_requested_order(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.armget("a", 2, 0, 1) == [b"v2", b"v0", b"v1"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armget_missing_key_returns_nones(self, r: redis.Redis):
++        assert await r.armget("a", 0, 2, 5) == [None, None, None]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armget_missing_indices_return_nones(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1")
++        assert await r.armget("a", 0, 5, 1, 10) == [b"v0", None, b"v1", None]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_armget_single_index(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1")
++        assert await r.armget("a", 1) == [b"v1"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argetrange_returns_values_in_range(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.argetrange("a", 0, 2) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arinsert_single_value(self, r: redis.Redis):
++        assert await r.arinsert("a", "v0") == 0
++        assert await r.armget("a", 0) == [b"v0"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arinsert_multiple_values(self, r: redis.Redis):
++        assert await r.arinsert("a", "v0", "v1", "v2") == 2
++        assert await r.armget("a", 0, 1, 2) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arinsert_cursor_advancement(self, r: redis.Redis):
++        assert await r.arinsert("a", "v0", "v1") == 1
++        assert await r.arnext("a") == 2
++        assert await r.arinsert("a", "v2") == 2
++        assert await r.armget("a", 0, 1, 2) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arscan_returns_index_value_pairs(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.arscan("a", 0, 2) == [[0, b"v0"], [1, b"v1"], [2, b"v2"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arscan_skips_empty_slots(self, r: redis.Redis):
++        await r.armset("a", {0: "a", 5: "b", 9: "c"})
++        assert await r.arscan("a", 0, 10) == [[0, b"a"], [5, b"b"], [9, b"c"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arscan_reverse(self, r: redis.Redis):
++        await r.armset("a", {0: "a", 5: "b", 9: "c"})
++        assert await r.arscan("a", 10, 0) == [[9, b"c"], [5, b"b"], [0, b"a"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arscan_with_limit(self, r: redis.Redis):
++        await r.armset("a", {0: "a", 5: "b", 9: "c"})
++        assert await r.arscan("a", 0, 10, limit=2) == [[0, b"a"], [5, b"b"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arscan_missing_key_returns_empty(self, r: redis.Redis):
++        assert await r.arscan("a", 0, 10) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_exact_match(self, r: redis.Redis):
++        await r.armset("a", {0: "boot", 1: "warn", 2: "error", 3: "boot"})
++        assert await r.argrep("a", 0, 3, [(ArrayPredicateType.EXACT, "boot")]) == [0, 3]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_substring_match(self, r: redis.Redis):
++        await r.armset("a", {0: "boot: ok", 1: "warn: disk", 2: "ERROR: cpu"})
++        assert await r.argrep("a", 0, 2, [(ArrayPredicateType.MATCH, "warn")]) == [1]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_glob_match(self, r: redis.Redis):
++        await r.armset("a", {0: "warn:disk", 1: "info:ok", 2: "warn:net"})
++        result = await r.argrep("a", 0, 2, [(ArrayPredicateType.GLOB, "warn:*")])
++        assert result == [0, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_regex_match(self, r: redis.Redis):
++        await r.armset("a", {0: "boot: ok", 1: "ERROR: cpu", 2: "error: net"})
++        result = await r.argrep(
++            "a",
++            0,
++            2,
++            [(ArrayPredicateType.RE, r"^[A-Za-z]+: (cpu|net)$")],
++            nocase=True,
++        )
++        assert result == [1, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_nocase(self, r: redis.Redis):
++        await r.armset("a", {0: "ERROR", 1: "info", 2: "Error"})
++        assert await r.argrep(
++            "a", 0, 2, [(ArrayPredicateType.MATCH, "error")], nocase=True
++        ) == [0, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_withvalues(self, r: redis.Redis):
++        await r.armset("a", {0: "ERROR: cpu", 1: "info", 2: "error: net"})
++        result = await r.argrep(
++            "a",
++            0,
++            2,
++            [(ArrayPredicateType.MATCH, "error")],
++            withvalues=True,
++            nocase=True,
++        )
++        assert result == [[0, b"ERROR: cpu"], [2, b"error: net"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_limit(self, r: redis.Redis):
++        await r.armset("a", {0: "ERROR", 1: "info", 2: "Error"})
++        result = await r.argrep(
++            "a",
++            0,
++            2,
++            [(ArrayPredicateType.MATCH, "error")],
++            limit=1,
++            nocase=True,
++        )
++        assert result == [0]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_combinator_and(self, r: redis.Redis):
++        await r.armset("a", {0: "warn: ok", 1: "error: ok", 2: "warn: bad"})
++        result = await r.argrep(
++            "a",
++            0,
++            2,
++            [
++                (ArrayPredicateType.MATCH, "warn"),
++                (ArrayPredicateType.MATCH, "ok"),
++            ],
++            combinator=ArrayPredicateCombinator.AND,
++        )
++        assert result == [0]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_combinator_or(self, r: redis.Redis):
++        await r.armset("a", {0: "warn", 1: "info", 2: "error"})
++        result = await r.argrep(
++            "a",
++            0,
++            2,
++            [
++                (ArrayPredicateType.EXACT, "warn"),
++                (ArrayPredicateType.EXACT, "error"),
++            ],
++            combinator=ArrayPredicateCombinator.OR,
++        )
++        assert result == [0, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_missing_key(self, r: redis.Redis):
++        assert await r.argrep("a", 0, 10, [(ArrayPredicateType.MATCH, "x")]) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_argrep_reverse(self, r: redis.Redis):
++        await r.armset("a", {0: "warn", 1: "info", 2: "warn"})
++        assert await r.argrep("a", 2, 0, [(ArrayPredicateType.EXACT, "warn")]) == [2, 0]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardel_single_index(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.ardel("a", 1) == 1
++        assert await r.arget("a", 1) is None
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardel_multiple_indices(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2", "v3")
++        assert await r.ardel("a", 0, 2, 3) == 3
++        assert await r.arget("a", 0) is None
++        assert await r.arget("a", 1) == b"v1"
++        assert await r.arget("a", 2) is None
++        assert await r.arget("a", 3) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardel_non_existing_index(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1")
++        assert await r.ardel("a", 10) == 0
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 1) == b"v1"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardel_mixed_existing_and_missing(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.ardel("a", 0, 10, 2) == 2
++        assert await r.arget("a", 0) is None
++        assert await r.arget("a", 1) == b"v1"
++        assert await r.arget("a", 2) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardelrange_single_range(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert await r.ardelrange("a", (1, 3)) == 3
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 1) is None
++        assert await r.arget("a", 2) is None
++        assert await r.arget("a", 3) is None
++        assert await r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardelrange_multiple_ranges(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2", "v3", "v4", "v5")
++        assert await r.ardelrange("a", (0, 1), (4, 5)) == 4
++        assert await r.arget("a", 0) is None
++        assert await r.arget("a", 1) is None
++        assert await r.arget("a", 2) == b"v2"
++        assert await r.arget("a", 3) == b"v3"
++        assert await r.arget("a", 4) is None
++        assert await r.arget("a", 5) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardelrange_reversed_range(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert await r.ardelrange("a", (3, 1)) == 3
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 1) is None
++        assert await r.arget("a", 2) is None
++        assert await r.arget("a", 3) is None
++        assert await r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardelrange_overlapping_ranges(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert await r.ardelrange("a", (0, 2), (1, 3)) == 4
++        assert await r.arget("a", 0) is None
++        assert await r.arget("a", 1) is None
++        assert await r.arget("a", 2) is None
++        assert await r.arget("a", 3) is None
++        assert await r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardelrange_missing_key(self, r: redis.Redis):
++        assert await r.ardelrange("a", (0, 4)) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_ardelrange_empty_indices(self, r: redis.Redis):
++        await r.arset("a", 0, "v0")
++        assert await r.ardelrange("a", (5, 10)) == 0
++        assert await r.arget("a", 0) == b"v0"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arcount_missing_key(self, r: redis.Redis):
++        assert await r.arcount("a") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arcount_returns_number_of_elements(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.arcount("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arcount_after_delete(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2", "v3")
++        await r.ardel("a", 1, 3)
++        assert await r.arcount("a") == 2
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlen_missing_key(self, r: redis.Redis):
++        assert await r.arlen("a") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlen_returns_length(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.arlen("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlen_uses_max_index_plus_one(self, r: redis.Redis):
++        await r.arset("a", 7, "v7")
++        assert await r.arlen("a") == 8
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlen_unchanged_after_delete(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        await r.ardel("a", 1)
++        assert await r.arlen("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arinfo_returns_basic_fields(self, r: redis.Redis):
++        await r.armset("a", {0: "x", 1: "y", 100: "z"})
++        info = await r.arinfo("a")
++        assert isinstance(info, dict)
++        assert info["count"] == 3
++        assert info["len"] == 101
++        for field in ("next-insert-index", "slices", "slice-size"):
++            assert field in info
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arinfo_full_includes_slice_stats(self, r: redis.Redis):
++        await r.armset("a", {0: "x", 1: "y", 100: "z"})
++        info = await r.arinfo("a", full=True)
++        for field in (
++            "dense-slices",
++            "sparse-slices",
++            "avg-dense-size",
++            "avg-dense-fill",
++            "avg-sparse-size",
++        ):
++            assert field in info
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arinfo_missing_key_raises(self, r: redis.Redis):
++        with pytest.raises(redis.ResponseError):
++            await r.arinfo("a")
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arnext_missing_key(self, r: redis.Redis):
++        assert await r.arnext("a") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arnext_returns_next_index(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2")
++        assert await r.arnext("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arnext_after_delete(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2")
++        await r.ardel("a", 1)
++        assert await r.arnext("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arseek_missing_key_returns_zero(self, r: redis.Redis):
++        assert await r.arseek("a", 5) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arseek_repositions_insert_cursor(self, r: redis.Redis):
++        await r.arinsert("a", "v0")
++        assert await r.arseek("a", 10) == 1
++        assert await r.arnext("a") == 10
++        await r.arinsert("a", "v10")
++        assert await r.arget("a", 10) == b"v10"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arseek_followed_by_arnext(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1")
++        assert await r.arseek("a", 7) == 1
++        assert await r.arnext("a") == 7
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arring_inserts_sequentially(self, r: redis.Redis):
++        assert await r.arring("a", 3, "v0") == 0
++        assert await r.arring("a", 3, "v1") == 1
++        assert await r.arring("a", 3, "v2") == 2
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 1) == b"v1"
++        assert await r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arring_wraps_when_full(self, r: redis.Redis):
++        await r.arring("a", 3, "v0", "v1", "v2")
++        assert await r.arring("a", 3, "v3") == 0
++        assert await r.arget("a", 0) == b"v3"
++        assert await r.arget("a", 1) == b"v1"
++        assert await r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arring_multiple_values_in_one_call(self, r: redis.Redis):
++        assert await r.arring("a", 4, "v0", "v1", "v2") == 2
++        assert await r.arget("a", 0) == b"v0"
++        assert await r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arring_returns_last_inserted_index(self, r: redis.Redis):
++        assert await r.arring("a", 5, "v0", "v1", "v2", "v3", "v4", "v5") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arring_truncates_on_smaller_size(self, r: redis.Redis):
++        await r.arring("a", 5, "v0", "v1", "v2", "v3", "v4")
++        assert await r.arring("a", 3, "v5") == 0
++        assert await r.arlen("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlastitems_returns_last_elements(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2", "v3", "v4")
++        assert await r.arlastitems("a", 3) == [b"v2", b"v3", b"v4"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlastitems_reverse_order(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2", "v3", "v4")
++        assert await r.arlastitems("a", 3, rev=True) == [b"v4", b"v3", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlastitems_count_greater_than_size(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2")
++        assert await r.arlastitems("a", 10) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlastitems_count_greater_than_size_reverse(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2")
++        assert await r.arlastitems("a", 10, rev=True) == [b"v2", b"v1", b"v0"]
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlastitems_missing_key(self, r: redis.Redis):
++        assert await r.arlastitems("a", 3) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arlastitems_zero_count(self, r: redis.Redis):
++        await r.arinsert("a", "v0", "v1", "v2")
++        assert await r.arlastitems("a", 0) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_sum(self, r: redis.Redis):
++        await r.arset("a", 0, 1, 2, 3, 4, 5)
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.SUM) == b"15"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_min_max(self, r: redis.Redis):
++        await r.arset("a", 0, 5, 1, 4, 2, 3)
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.MIN) == b"1"
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.MAX) == b"5"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_bitwise(self, r: redis.Redis):
++        await r.arset("a", 0, 1, 2, 3, 4, 5)
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.AND) == 0
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.OR) == 7
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.XOR) == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_match(self, r: redis.Redis):
++        await r.arset("a", 0, 1, 2, 3, 2, 1)
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.MATCH, 2) == 2
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.MATCH, 7) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_used(self, r: redis.Redis):
++        await r.arset("a", 0, "v0", "v1", "v2")
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 3
++        await r.ardel("a", 1)
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 2
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_reversed_range(self, r: redis.Redis):
++        await r.arset("a", 0, 1, 2, 3, 4, 5)
++        assert await r.arop("a", 4, 0, ArrayAggregateOperations.SUM) == b"15"
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_non_numeric_values(self, r: redis.Redis):
++        await r.arset("a", 0, "x", "y", "z")
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.SUM) is None
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.MIN) is None
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.MAX) is None
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 3
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.MATCH, "y") == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_mixed_numeric_non_numeric(self, r: redis.Redis):
++        await r.arset("a", 0, 1, "x", 3)
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.SUM) == b"4"
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.MIN) == b"1"
++        assert await r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_empty_range(self, r: redis.Redis):
++        await r.arset("a", 0, 1, 2, 3)
++        assert await r.arop("a", 100, 200, ArrayAggregateOperations.SUM) is None
++        assert await r.arop("a", 100, 200, ArrayAggregateOperations.AND) is None
++        assert await r.arop("a", 100, 200, ArrayAggregateOperations.OR) is None
++        assert await r.arop("a", 100, 200, ArrayAggregateOperations.XOR) is None
++        assert await r.arop("a", 100, 200, ArrayAggregateOperations.USED) == 0
++        assert await r.arop("a", 100, 200, ArrayAggregateOperations.MATCH, 1) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_missing_key(self, r: redis.Redis):
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.SUM) is None
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.AND) is None
++        assert await r.arop("a", 0, 4, ArrayAggregateOperations.USED) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    async def test_arop_match_requires_value(self, r: redis.Redis):
++        await r.arset("a", 0, 1, 2, 3)
++        with pytest.raises(redis.ResponseError):
++            await r.arop("a", 0, 2, ArrayAggregateOperations.MATCH)
++
+     async def test_ltrim(self, r: redis.Redis):
+         await r.rpush("a", "1", "2", "3")
+         assert await r.ltrim("a", 0, 1)
+diff --git a/tests/test_commands.py b/tests/test_commands.py
+index dc657a54aa..9d4021e25d 100644
+--- a/tests/test_commands.py
++++ b/tests/test_commands.py
+@@ -21,7 +21,13 @@
+     zset_score_pairs,
+ )
+ from redis.client import EMPTY_RESPONSE, NEVER_DECODE
+-from redis.commands.core import DataPersistOptions, HotkeysMetricsTypes
++from redis.commands.core import (
++    ArrayAggregateOperations,
++    ArrayPredicateCombinator,
++    ArrayPredicateType,
++    DataPersistOptions,
++    HotkeysMetricsTypes,
++)
+ from redis.commands.json.path import Path
+ from redis.commands.search.field import TextField
+ from redis.commands.search.query import Query
+@@ -3377,6 +3383,588 @@ def test_lset(self, r):
+         assert r.lset("a", 1, "4")
+         assert r.lrange("a", 0, 2) == [b"1", b"4", b"3"]
+ 
++    @skip_if_server_version_lt("8.7.2")
++    def test_arset_at_index_zero(self, r):
++        assert r.arset("a", 0, "v0") == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arset_at_positive_index(self, r):
++        assert r.arset("a", 1, "v1") == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arset_multiple_values(self, r):
++        assert r.arset("a", 0, "v0", "v1", "v2") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arset_negative_index(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        with pytest.raises(redis.ResponseError):
++            r.arset("a", -1, "vlast")
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armset_sets_values_at_correct_indices(self, r):
++        assert r.armset("a", {0: "v0", 2: "v2", 4: "v4"}) == 3
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) is None
++        assert r.arget("a", 2) == b"v2"
++        assert r.arget("a", 3) is None
++        assert r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armset_single_pair(self, r):
++        assert r.armset("a", {3: "v3"}) == 1
++        assert r.arget("a", 3) == b"v3"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armset_overwrites_existing_indices(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.armset("a", {0: "new0", 1: "new1", 2: "new2"}) == 0
++        assert r.arget("a", 0) == b"new0"
++        assert r.arget("a", 1) == b"new1"
++        assert r.arget("a", 2) == b"new2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armset_mixed_new_and_existing_indices(self, r):
++        r.arset("a", 0, "v0", "v1")
++        assert r.armset("a", {0: "new0", 2: "v2", 3: "v3"}) == 2
++        assert r.arget("a", 0) == b"new0"
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) == b"v2"
++        assert r.arget("a", 3) == b"v3"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arget_returns_value_at_index(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arget_missing_key_returns_none(self, r):
++        assert r.arget("a", 0) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arget_missing_index_returns_none(self, r):
++        r.arset("a", 0, "v0")
++        assert r.arget("a", 5) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armget_returns_values_at_indices(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.armget("a", 0, 1, 2) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armget_preserves_requested_order(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.armget("a", 2, 0, 1) == [b"v2", b"v0", b"v1"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armget_missing_key_returns_nones(self, r):
++        assert r.armget("a", 0, 2, 5) == [None, None, None]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armget_missing_indices_return_nones(self, r):
++        r.arset("a", 0, "v0", "v1")
++        assert r.armget("a", 0, 5, 1, 10) == [b"v0", None, b"v1", None]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_armget_single_index(self, r):
++        r.arset("a", 0, "v0", "v1")
++        assert r.armget("a", 1) == [b"v1"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_returns_array_slice(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert r.argetrange("a", 1, 3) == [b"v1", b"v2", b"v3"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_full_range(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.argetrange("a", 0, 2) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_reversed_range(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert r.argetrange("a", 3, 1) == [b"v3", b"v2", b"v1"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_single_index(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.argetrange("a", 1, 1) == [b"v1"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_includes_empty_indices(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        r.ardel("a", 1)
++        assert r.argetrange("a", 0, 2) == [b"v0", None, b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_missing_key(self, r):
++        assert r.argetrange("a", 0, 4) == [None] * 5
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argetrange_out_of_bounds(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.argetrange("a", 10, 20) == [None] * 11
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arscan_returns_index_value_pairs(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.arscan("a", 0, 2) == [[0, b"v0"], [1, b"v1"], [2, b"v2"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arscan_skips_empty_slots(self, r):
++        r.armset("a", {0: "a", 5: "b", 9: "c"})
++        assert r.arscan("a", 0, 10) == [[0, b"a"], [5, b"b"], [9, b"c"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arscan_reverse(self, r):
++        r.armset("a", {0: "a", 5: "b", 9: "c"})
++        assert r.arscan("a", 10, 0) == [[9, b"c"], [5, b"b"], [0, b"a"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arscan_with_limit(self, r):
++        r.armset("a", {0: "a", 5: "b", 9: "c"})
++        assert r.arscan("a", 0, 10, limit=2) == [[0, b"a"], [5, b"b"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arscan_missing_key_returns_empty(self, r):
++        assert r.arscan("a", 0, 10) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_exact_match(self, r):
++        r.armset("a", {0: "boot", 1: "warn", 2: "error", 3: "boot"})
++        assert r.argrep("a", 0, 3, [(ArrayPredicateType.EXACT, "boot")]) == [0, 3]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_substring_match(self, r):
++        r.armset("a", {0: "boot: ok", 1: "warn: disk", 2: "ERROR: cpu"})
++        assert r.argrep("a", 0, 2, [(ArrayPredicateType.MATCH, "warn")]) == [1]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_glob_match(self, r):
++        r.armset("a", {0: "warn:disk", 1: "info:ok", 2: "warn:net"})
++        result = r.argrep("a", 0, 2, [(ArrayPredicateType.GLOB, "warn:*")])
++        assert result == [0, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_regex_match(self, r):
++        r.armset("a", {0: "boot: ok", 1: "ERROR: cpu", 2: "error: net"})
++        result = r.argrep(
++            "a",
++            0,
++            2,
++            [(ArrayPredicateType.RE, r"^[A-Za-z]+: (cpu|net)$")],
++            nocase=True,
++        )
++        assert result == [1, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_nocase(self, r):
++        r.armset("a", {0: "ERROR", 1: "info", 2: "Error"})
++        assert r.argrep(
++            "a", 0, 2, [(ArrayPredicateType.MATCH, "error")], nocase=True
++        ) == [0, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_withvalues(self, r):
++        r.armset("a", {0: "ERROR: cpu", 1: "info", 2: "error: net"})
++        result = r.argrep(
++            "a",
++            0,
++            2,
++            [(ArrayPredicateType.MATCH, "error")],
++            withvalues=True,
++            nocase=True,
++        )
++        assert result == [[0, b"ERROR: cpu"], [2, b"error: net"]]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_limit(self, r):
++        r.armset("a", {0: "ERROR", 1: "info", 2: "Error"})
++        result = r.argrep(
++            "a",
++            0,
++            2,
++            [(ArrayPredicateType.MATCH, "error")],
++            limit=1,
++            nocase=True,
++        )
++        assert result == [0]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_combinator_and(self, r):
++        r.armset("a", {0: "warn: ok", 1: "error: ok", 2: "warn: bad"})
++        result = r.argrep(
++            "a",
++            0,
++            2,
++            [
++                (ArrayPredicateType.MATCH, "warn"),
++                (ArrayPredicateType.MATCH, "ok"),
++            ],
++            combinator=ArrayPredicateCombinator.AND,
++        )
++        assert result == [0]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_combinator_or(self, r):
++        r.armset("a", {0: "warn", 1: "info", 2: "error"})
++        result = r.argrep(
++            "a",
++            0,
++            2,
++            [
++                (ArrayPredicateType.EXACT, "warn"),
++                (ArrayPredicateType.EXACT, "error"),
++            ],
++            combinator=ArrayPredicateCombinator.OR,
++        )
++        assert result == [0, 2]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_missing_key(self, r):
++        assert r.argrep("a", 0, 10, [(ArrayPredicateType.MATCH, "x")]) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_argrep_reverse(self, r):
++        r.armset("a", {0: "warn", 1: "info", 2: "warn"})
++        assert r.argrep("a", 2, 0, [(ArrayPredicateType.EXACT, "warn")]) == [2, 0]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardel_single_index(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.ardel("a", 1) == 1
++        assert r.arget("a", 1) is None
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardel_multiple_indices(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3")
++        assert r.ardel("a", 0, 2, 3) == 3
++        assert r.arget("a", 0) is None
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) is None
++        assert r.arget("a", 3) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardel_non_existing_index(self, r):
++        r.arset("a", 0, "v0", "v1")
++        assert r.ardel("a", 10) == 0
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) == b"v1"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardel_mixed_existing_and_missing(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.ardel("a", 0, 10, 2) == 2
++        assert r.arget("a", 0) is None
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardelrange_single_range(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert r.ardelrange("a", (1, 3)) == 3
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) is None
++        assert r.arget("a", 2) is None
++        assert r.arget("a", 3) is None
++        assert r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardelrange_multiple_ranges(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3", "v4", "v5")
++        assert r.ardelrange("a", (0, 1), (4, 5)) == 4
++        assert r.arget("a", 0) is None
++        assert r.arget("a", 1) is None
++        assert r.arget("a", 2) == b"v2"
++        assert r.arget("a", 3) == b"v3"
++        assert r.arget("a", 4) is None
++        assert r.arget("a", 5) is None
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardelrange_reversed_range(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert r.ardelrange("a", (3, 1)) == 3
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) is None
++        assert r.arget("a", 2) is None
++        assert r.arget("a", 3) is None
++        assert r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardelrange_overlapping_ranges(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3", "v4")
++        assert r.ardelrange("a", (0, 2), (1, 3)) == 4
++        assert r.arget("a", 0) is None
++        assert r.arget("a", 1) is None
++        assert r.arget("a", 2) is None
++        assert r.arget("a", 3) is None
++        assert r.arget("a", 4) == b"v4"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardelrange_missing_key(self, r):
++        assert r.ardelrange("a", (0, 4)) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_ardelrange_empty_indices(self, r):
++        r.arset("a", 0, "v0")
++        assert r.ardelrange("a", (5, 10)) == 0
++        assert r.arget("a", 0) == b"v0"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arcount_missing_key(self, r):
++        assert r.arcount("a") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arcount_returns_number_of_elements(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.arcount("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arcount_after_delete(self, r):
++        r.arset("a", 0, "v0", "v1", "v2", "v3")
++        r.ardel("a", 1, 3)
++        assert r.arcount("a") == 2
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlen_missing_key(self, r):
++        assert r.arlen("a") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlen_returns_length(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.arlen("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlen_uses_max_index_plus_one(self, r):
++        r.arset("a", 7, "v7")
++        assert r.arlen("a") == 8
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlen_unchanged_after_delete(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        r.ardel("a", 1)
++        assert r.arlen("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arinfo_returns_basic_fields(self, r):
++        r.armset("a", {0: "x", 1: "y", 100: "z"})
++        info = r.arinfo("a")
++        assert isinstance(info, dict)
++        assert info["count"] == 3
++        assert info["len"] == 101
++        for field in ("next-insert-index", "slices", "slice-size"):
++            assert field in info
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arinfo_full_includes_slice_stats(self, r):
++        r.armset("a", {0: "x", 1: "y", 100: "z"})
++        info = r.arinfo("a", full=True)
++        for field in (
++            "dense-slices",
++            "sparse-slices",
++            "avg-dense-size",
++            "avg-dense-fill",
++            "avg-sparse-size",
++        ):
++            assert field in info
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arinfo_missing_key_raises(self, r):
++        with pytest.raises(redis.ResponseError):
++            r.arinfo("a")
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arnext_missing_key(self, r):
++        assert r.arnext("a") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arnext_returns_next_index(self, r):
++        r.arinsert("a", "v0", "v1", "v2")
++        assert r.arnext("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arnext_after_delete(self, r):
++        r.arinsert("a", "v0", "v1", "v2")
++        r.ardel("a", 1)
++        assert r.arnext("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arseek_missing_key_returns_zero(self, r):
++        assert r.arseek("a", 5) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arseek_repositions_insert_cursor(self, r):
++        r.arinsert("a", "v0")
++        assert r.arseek("a", 10) == 1
++        assert r.arnext("a") == 10
++        r.arinsert("a", "v10")
++        assert r.arget("a", 10) == b"v10"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arseek_followed_by_arnext(self, r):
++        r.arinsert("a", "v0", "v1")
++        assert r.arseek("a", 7) == 1
++        assert r.arnext("a") == 7
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arinsert_single_value(self, r):
++        assert r.arinsert("a", "v0") == 0
++        assert r.arget("a", 0) == b"v0"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arinsert_multiple_values(self, r):
++        assert r.arinsert("a", "v0", "v1", "v2") == 2
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arinsert_advances_cursor(self, r):
++        r.arinsert("a", "v0", "v1")
++        assert r.arnext("a") == 2
++        assert r.arinsert("a", "v2") == 2
++        assert r.arnext("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arring_inserts_sequentially(self, r):
++        assert r.arring("a", 3, "v0") == 0
++        assert r.arring("a", 3, "v1") == 1
++        assert r.arring("a", 3, "v2") == 2
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arring_wraps_when_full(self, r):
++        r.arring("a", 3, "v0", "v1", "v2")
++        assert r.arring("a", 3, "v3") == 0
++        assert r.arget("a", 0) == b"v3"
++        assert r.arget("a", 1) == b"v1"
++        assert r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arring_multiple_values_in_one_call(self, r):
++        assert r.arring("a", 4, "v0", "v1", "v2") == 2
++        assert r.arget("a", 0) == b"v0"
++        assert r.arget("a", 2) == b"v2"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arring_returns_last_inserted_index(self, r):
++        assert r.arring("a", 5, "v0", "v1", "v2", "v3", "v4", "v5") == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arring_truncates_on_smaller_size(self, r):
++        r.arring("a", 5, "v0", "v1", "v2", "v3", "v4")
++        assert r.arring("a", 3, "v5") == 0
++        assert r.arlen("a") == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlastitems_returns_last_elements(self, r):
++        r.arinsert("a", "v0", "v1", "v2", "v3", "v4")
++        assert r.arlastitems("a", 3) == [b"v2", b"v3", b"v4"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlastitems_reverse_order(self, r):
++        r.arinsert("a", "v0", "v1", "v2", "v3", "v4")
++        assert r.arlastitems("a", 3, rev=True) == [b"v4", b"v3", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlastitems_count_greater_than_size(self, r):
++        r.arinsert("a", "v0", "v1", "v2")
++        assert r.arlastitems("a", 10) == [b"v0", b"v1", b"v2"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlastitems_count_greater_than_size_reverse(self, r):
++        r.arinsert("a", "v0", "v1", "v2")
++        assert r.arlastitems("a", 10, rev=True) == [b"v2", b"v1", b"v0"]
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlastitems_missing_key(self, r):
++        assert r.arlastitems("a", 3) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arlastitems_zero_count(self, r):
++        r.arinsert("a", "v0", "v1", "v2")
++        assert r.arlastitems("a", 0) == []
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_sum(self, r):
++        r.arset("a", 0, 1, 2, 3, 4, 5)
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.SUM) == b"15"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_min_max(self, r):
++        r.arset("a", 0, 5, 1, 4, 2, 3)
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.MIN) == b"1"
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.MAX) == b"5"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_bitwise(self, r):
++        r.arset("a", 0, 1, 2, 3, 4, 5)
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.AND) == 0
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.OR) == 7
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.XOR) == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_match(self, r):
++        r.arset("a", 0, 1, 2, 3, 2, 1)
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.MATCH, 2) == 2
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.MATCH, 7) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_used(self, r):
++        r.arset("a", 0, "v0", "v1", "v2")
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 3
++        r.ardel("a", 1)
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 2
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_reversed_range(self, r):
++        r.arset("a", 0, 1, 2, 3, 4, 5)
++        assert r.arop("a", 4, 0, ArrayAggregateOperations.SUM) == b"15"
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_non_numeric_values(self, r):
++        r.arset("a", 0, "x", "y", "z")
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.SUM) is None
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.MIN) is None
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.MAX) is None
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 3
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.MATCH, "y") == 1
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_mixed_numeric_non_numeric(self, r):
++        r.arset("a", 0, 1, "x", 3)
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.SUM) == b"4"
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.MIN) == b"1"
++        assert r.arop("a", 0, 2, ArrayAggregateOperations.USED) == 3
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_empty_range(self, r):
++        r.arset("a", 0, 1, 2, 3)
++        assert r.arop("a", 100, 200, ArrayAggregateOperations.SUM) is None
++        assert r.arop("a", 100, 200, ArrayAggregateOperations.AND) is None
++        assert r.arop("a", 100, 200, ArrayAggregateOperations.OR) is None
++        assert r.arop("a", 100, 200, ArrayAggregateOperations.XOR) is None
++        assert r.arop("a", 100, 200, ArrayAggregateOperations.USED) == 0
++        assert r.arop("a", 100, 200, ArrayAggregateOperations.MATCH, 1) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_missing_key(self, r):
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.SUM) is None
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.AND) is None
++        assert r.arop("a", 0, 4, ArrayAggregateOperations.USED) == 0
++
++    @skip_if_server_version_lt("8.7.2")
++    def test_arop_match_requires_value(self, r):
++        r.arset("a", 0, 1, 2, 3)
++        with pytest.raises(redis.ResponseError):
++            r.arop("a", 0, 2, ArrayAggregateOperations.MATCH)
++
+     def test_ltrim(self, r):
+         r.rpush("a", "1", "2", "3")
+         assert r.ltrim("a", 0, 1)

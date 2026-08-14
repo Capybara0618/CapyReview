@@ -1,0 +1,2747 @@
+diff --git a/tests/test_scenario/conftest.py b/tests/test_scenario/conftest.py
+index 6805db2122..153f1283e2 100644
+--- a/tests/test_scenario/conftest.py
++++ b/tests/test_scenario/conftest.py
+@@ -55,6 +55,14 @@ def use_mock_proxy():
+     else REFaultInjector(os.getenv("FAULT_INJECTION_API_URL", "http://127.0.0.1:20324"))
+ )
+ 
++# Module-level singleton for fault injector client used in parametrize
++# This ensures we create only ONE instance that's shared between parametrize and fixture
++_FAULT_INJECTOR_STANDALONE_CLIENT = (
++    ProxyServerFaultInjector(oss_cluster=False)
++    if use_mock_proxy()
++    else REFaultInjector(os.getenv("FAULT_INJECTION_API_URL", "http://127.0.0.1:20324"))
++)
++
+ 
+ @pytest.fixture()
+ def endpoint_name(request):
+@@ -259,11 +267,6 @@ def _prepare_ssl_certificates(cert_chain: bool) -> dict:
+     }
+ 
+ 
+-@pytest.fixture()
+-def client_maint_notifications(endpoints_config):
+-    return _get_client_maint_notifications(endpoints_config)
+-
+-
+ def _get_client_maint_notifications(
+     endpoints_config,
+     protocol: int = 3,
+@@ -272,6 +275,7 @@ def _get_client_maint_notifications(
+     enable_relaxed_timeout: bool = True,
+     enable_proactive_reconnect: bool = True,
+     disable_retries: bool = False,
++    auth_ssl_client_certs: bool = False,
+     socket_timeout: Optional[float] = None,
+     host_config: Optional[str] = None,
+ ):
+@@ -313,6 +317,11 @@ def _get_client_maint_notifications(
+     tls_enabled = True if parsed.scheme == "rediss" else False
+     logging.info(f"TLS enabled: {tls_enabled}")
+ 
++    tls_kwargs = {"ssl": tls_enabled}
++    if tls_enabled:
++        ssl_config = _prepare_ssl_certificates(auth_ssl_client_certs)
++        tls_kwargs.update(ssl_config)
++
+     # Create Redis client with maintenance notifications config
+     # This will automatically create the MaintNotificationsPoolHandler
+     client = Redis(
+@@ -321,12 +330,10 @@ def _get_client_maint_notifications(
+         socket_timeout=CLIENT_TIMEOUT if socket_timeout is None else socket_timeout,
+         username=username,
+         password=password,
+-        ssl=tls_enabled,
+-        ssl_cert_reqs="none",
+-        ssl_check_hostname=False,
+         protocol=protocol,  # RESP3 required for push notifications
+         maint_notifications_config=maintenance_config,
+         retry=retry,
++        **tls_kwargs,
+     )
+     logging.info("Redis client created with maintenance notifications enabled")
+     logging.info(f"Client uses Protocol: {client.connection_pool.get_protocol()}")
+@@ -334,6 +341,80 @@ def _get_client_maint_notifications(
+     return client
+ 
+ 
++def get_standalone_client_maint_notifications(
++    endpoints_config,
++    protocol: int = 3,
++    enable_maintenance_notifications: bool = True,
++    endpoint_type: Optional[EndpointType] = None,
++    enable_relaxed_timeout: bool = True,
++    enable_proactive_reconnect: bool = True,
++    disable_retries: bool = False,
++    auth_ssl_client_certs: bool = False,
++    socket_timeout: Optional[float] = None,
++):
++    """Create Redis stanalone client with maintenance notifications enabled."""
++    # Get credentials from the configuration
++    username = endpoints_config.get("username")
++    password = endpoints_config.get("password")
++
++    # Parse host and port from endpoints URL
++    endpoints = endpoints_config.get("endpoints", [])
++    if not endpoints:
++        raise ValueError("No endpoints found in configuration")
++
++    parsed = urlparse(endpoints[0])
++    host = parsed.hostname
++    port = parsed.port
++
++    if not host:
++        raise ValueError(f"Could not parse host from endpoint URL: {endpoints[0]}")
++
++    logging.info(f"Connecting to Redis Enterprise: {host}:{port} with user: {username}")
++
++    if disable_retries:
++        retry = Retry(NoBackoff(), 0)
++    else:
++        retry = Retry(
++            backoff=ExponentialWithJitterBackoff(base=0.01, cap=1), retries=10
++        )
++
++    tls_enabled = True if parsed.scheme == "rediss" else False
++    logging.info(f"TLS enabled: {tls_enabled}")
++
++    tls_kwargs = {"ssl": tls_enabled}
++
++    if tls_enabled:
++        # Prepare SSL certificate configuration
++        ssl_config = _prepare_ssl_certificates(auth_ssl_client_certs)
++        tls_kwargs.update(ssl_config)
++
++    # Configure maintenance notifications
++    maintenance_config = MaintNotificationsConfig(
++        enabled=enable_maintenance_notifications,
++        proactive_reconnect=enable_proactive_reconnect,
++        relaxed_timeout=RELAXED_TIMEOUT if enable_relaxed_timeout else -1,
++        endpoint_type=endpoint_type,
++    )
++
++    # Create Redis cluster client with maintenance notifications config
++    client = Redis(
++        host=host,
++        port=port,
++        socket_timeout=CLIENT_TIMEOUT if socket_timeout is None else socket_timeout,
++        username=username,
++        password=password,
++        protocol=protocol,  # RESP3 required for push notifications
++        maint_notifications_config=maintenance_config,
++        retry=retry,
++        **tls_kwargs,
++    )
++    logging.info(
++        "Redis standalone client created with maintenance notifications enabled"
++    )
++
++    return client
++
++
+ def get_cluster_client_maint_notifications(
+     endpoints_config,
+     protocol: int = 3,
+@@ -394,6 +475,9 @@ def get_cluster_client_maint_notifications(
+         host=host,
+         port=port,
+         socket_timeout=CLIENT_TIMEOUT if socket_timeout is None else socket_timeout,
++        socket_connect_timeout=CLIENT_TIMEOUT
++        if socket_timeout is None
++        else socket_timeout,
+         username=username,
+         password=password,
+         protocol=protocol,  # RESP3 required for push notifications
+diff --git a/tests/test_scenario/fault_injector_client.py b/tests/test_scenario/fault_injector_client.py
+index de76a7b512..536638df98 100644
+--- a/tests/test_scenario/fault_injector_client.py
++++ b/tests/test_scenario/fault_injector_client.py
+@@ -1,19 +1,16 @@
+ from abc import ABC, abstractmethod
+-from dataclasses import dataclass
+ import json
+ import logging
+ import time
+ import urllib.request
+ import urllib.error
+-from typing import Dict, Any, Optional, Tuple, Union
++from typing import Dict, Any, Optional, Union
+ from enum import Enum
+ 
+ import pytest
+ 
+-from redis.cluster import ClusterNode
+ from tests.maint_notifications.proxy_server_helpers import (
+     ProxyInterceptorHelper,
+-    RespTranslator,
+     SlotsRange,
+ )
+ 
+@@ -42,6 +39,7 @@ class ActionType(str, Enum):
+     EXECUTE_RLUTIL_COMMAND = "execute_rlutil_command"
+     EXECUTE_RLADMIN_COMMAND = "execute_rladmin_command"
+     SLOT_MIGRATE = "slot_migrate"
++    TOPOLOGY_CHANGE_STANDALONE = "topology_change_standalone"
+ 
+ 
+ class SlotMigrateEffects(str, Enum):
+@@ -51,6 +49,13 @@ class SlotMigrateEffects(str, Enum):
+     SLOT_SHUFFLE = "slot-shuffle"
+ 
+ 
++class TopologyChangeStandaloneEffects(str, Enum):
++    DATA_MOVEMENT_CONN_DROP = "data_movement_conn_drop"
++    DATA_MOVEMENT_NO_CONN_DROP = "data_movement_no_conn_drop"
++    CONN_DROP = "conn_drop"
++    DNS_RESOLUTION_CHANGE = "dns_resolution_change"
++
++
+ class RestartDmcParams:
+     def __init__(self, bdb_id: str):
+         self.bdb_id = bdb_id
+@@ -77,16 +82,6 @@ def to_dict(self) -> Dict[str, Any]:
+         }
+ 
+ 
+-@dataclass
+-class NodeInfo:
+-    node_id: str
+-    role: str
+-    internal_address: str
+-    external_address: str
+-    hostname: str
+-    port: int
+-
+-
+ class FaultInjectorClient(ABC):
+     @abstractmethod
+     def get_operation_result(
+@@ -119,55 +114,20 @@ def find_database_id_by_name(
+         pass
+ 
+     @abstractmethod
+-    def find_target_node_and_empty_node(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        force_cluster_info_refresh: bool = True,
+-    ) -> Tuple[NodeInfo, NodeInfo]:
+-        pass
+-
+-    @abstractmethod
+-    def find_endpoint_for_bind(
+-        self,
+-        endpoint_name: str,
+-        force_cluster_info_refresh: bool = True,
+-    ) -> str:
++    def get_moving_ttl(self) -> int:
+         pass
+ 
+     @abstractmethod
+-    def execute_failover(
++    def get_slot_migrate_triggers(
+         self,
+-        endpoint_config: Dict[str, Any],
+-        timeout: int = 60,
++        effect_name: SlotMigrateEffects,
+     ) -> Dict[str, Any]:
+         pass
+ 
+     @abstractmethod
+-    def execute_migrate(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        target_node: str,
+-        empty_node: str,
+-        skip_end_notification: bool = False,
+-    ) -> str:
+-        pass
+-
+-    @abstractmethod
+-    def execute_rebind(
++    def get_topology_change_standalone_triggers(
+         self,
+-        endpoint_config: Dict[str, Any],
+-        endpoint_id: str,
+-    ) -> str:
+-        pass
+-
+-    @abstractmethod
+-    def get_moving_ttl(self) -> int:
+-        pass
+-
+-    @abstractmethod
+-    def get_slot_migrate_triggers(
+-        self,
+-        effect_name: SlotMigrateEffects,
++        effect_name: TopologyChangeStandaloneEffects,
+     ) -> Dict[str, Any]:
+         pass
+ 
+@@ -175,7 +135,7 @@ def get_slot_migrate_triggers(
+     def trigger_effect(
+         self,
+         endpoint_config: Dict[str, Any],
+-        effect_name: SlotMigrateEffects,
++        effect_name: SlotMigrateEffects | TopologyChangeStandaloneEffects,
+         trigger_name: Optional[str] = None,
+         source_node: Optional[str] = None,
+         target_node: Optional[str] = None,
+@@ -215,10 +175,6 @@ def _make_request(
+                 raise ValueError(f"Validation Error: {error_body}")
+             raise
+ 
+-    def list_actions(self) -> Dict[str, Any]:
+-        """List all available actions"""
+-        return self._make_request("GET", "/action")
+-
+     def trigger_action(self, action_request: ActionRequest) -> Dict[str, Any]:
+         """Trigger a new action"""
+         request_data = action_request.to_dict()
+@@ -405,285 +361,6 @@ def find_database_id_by_name(
+ 
+         raise ValueError(f"Database {database_name} not found")
+ 
+-    def find_target_node_and_empty_node(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        force_cluster_info_refresh: bool = True,
+-    ) -> Tuple[NodeInfo, NodeInfo]:
+-        """Find the node with master shards and the node with no shards.
+-
+-        Returns:
+-            tuple: (target_node, empty_node) where target_node has master shards
+-                and empty_node has no shards
+-        """
+-        db_port = int(endpoint_config.get("port", 0))
+-
+-        if self._cluster_nodes_info is None or force_cluster_info_refresh:
+-            self.get_cluster_nodes_info()
+-
+-        if not self._cluster_nodes_info:
+-            raise ValueError("No cluster status output found")
+-
+-        # Parse the sections to find nodes with master shards and nodes with no shards
+-        lines = self._cluster_nodes_info.split("\n")
+-        shards_section_started = False
+-        nodes_section_started = False
+-
+-        # Get all node IDs from CLUSTER NODES section
+-        all_nodes = set()
+-        all_nodes_details = {}
+-        nodes_with_any_shards = set()  # Nodes with shards from ANY database
+-        nodes_with_target_db_shards = set()  # Nodes with shards from target database
+-        master_nodes = set()  # Master nodes for target database only
+-
+-        for line in lines:
+-            line = line.strip()
+-
+-            # Start of CLUSTER NODES section
+-            if line.startswith("CLUSTER NODES:"):
+-                nodes_section_started = True
+-                continue
+-            elif line.startswith("DATABASES:"):
+-                nodes_section_started = False
+-                continue
+-            elif nodes_section_started and line and not line.startswith("NODE:ID"):
+-                # Parse node line: node:1  master 10.0.101.206 ... (ignore the role)
+-                parts = line.split()
+-                if len(parts) >= 1:
+-                    node_id = parts[0].replace("*", "")  # Remove * prefix if present
+-                    node_role = parts[1]
+-                    node_internal_address = parts[2]
+-                    node_external_address = parts[3]
+-                    node_hostname = parts[4]
+-
+-                    node = NodeInfo(
+-                        node_id.split(":")[1],
+-                        node_role,
+-                        node_internal_address,
+-                        node_external_address,
+-                        node_hostname,
+-                        db_port,
+-                    )
+-                    all_nodes.add(node_id)
+-                    all_nodes_details[node_id.split(":")[1]] = node
+-
+-            # Start of SHARDS section - only care about shard roles here
+-            if line.startswith("SHARDS:"):
+-                shards_section_started = True
+-                continue
+-            elif shards_section_started and line.startswith("DB:ID"):
+-                continue
+-            elif shards_section_started and line and not line.startswith("ENDPOINTS:"):
+-                # Parse shard line: db:1  m-standard  redis:1  node:2  master  0-8191  1.4MB  OK
+-                parts = line.split()
+-                if len(parts) >= 5:
+-                    db_id = parts[0]  # db:1, db:2, etc.
+-                    node_id = parts[3]  # node:2
+-                    shard_role = parts[4]  # master/slave - this is what matters
+-
+-                    # Track ALL nodes with shards (for finding truly empty nodes)
+-                    nodes_with_any_shards.add(node_id)
+-
+-                    # Only track master nodes for the specific database we're testing
+-                    bdb_id = endpoint_config.get("bdb_id")
+-                    if db_id == f"db:{bdb_id}":
+-                        nodes_with_target_db_shards.add(node_id)
+-                        if shard_role == "master":
+-                            master_nodes.add(node_id)
+-            elif line.startswith("ENDPOINTS:") or not line:
+-                shards_section_started = False
+-
+-        # Find empty node (node with no shards from ANY database)
+-        nodes_with_no_shards_target_bdb = all_nodes - nodes_with_target_db_shards
+-
+-        logging.debug(f"All nodes: {all_nodes}")
+-        logging.debug(f"Nodes with shards from any database: {nodes_with_any_shards}")
+-        logging.debug(
+-            f"Nodes with target database shards: {nodes_with_target_db_shards}"
+-        )
+-        logging.debug(f"Master nodes (target database only): {master_nodes}")
+-        logging.debug(
+-            f"Nodes with no shards from target database: {nodes_with_no_shards_target_bdb}"
+-        )
+-
+-        if not nodes_with_no_shards_target_bdb:
+-            raise ValueError("All nodes have shards from target database")
+-
+-        if not master_nodes:
+-            raise ValueError("No nodes with master shards from target database found")
+-
+-        # Return the first available empty node and master node (numeric part only)
+-        empty_node = next(iter(nodes_with_no_shards_target_bdb)).split(":")[
+-            1
+-        ]  # node:1 -> 1
+-        target_node = next(iter(master_nodes)).split(":")[1]  # node:2 -> 2
+-
+-        return all_nodes_details[target_node], all_nodes_details[empty_node]
+-
+-    def find_endpoint_for_bind(
+-        self,
+-        endpoint_name: str,
+-        force_cluster_info_refresh: bool = True,
+-    ) -> str:
+-        """Find the endpoint ID from cluster status.
+-
+-        Returns:
+-            str: The endpoint ID (e.g., "1:1")
+-        """
+-        if self._cluster_nodes_info is None or force_cluster_info_refresh:
+-            self.get_cluster_nodes_info()
+-
+-        if not self._cluster_nodes_info:
+-            raise ValueError("No cluster status output found")
+-
+-        if not self._cluster_nodes_info:
+-            raise ValueError("No cluster status output found")
+-
+-        # Parse the ENDPOINTS section to find endpoint ID
+-        lines = self._cluster_nodes_info.split("\n")
+-        endpoints_section_started = False
+-
+-        for line in lines:
+-            line = line.strip()
+-
+-            # Start of ENDPOINTS section
+-            if line.startswith("ENDPOINTS:"):
+-                endpoints_section_started = True
+-                continue
+-            elif line.startswith("SHARDS:"):
+-                break
+-            elif endpoints_section_started and line and not line.startswith("DB:ID"):
+-                # Parse endpoint line: db:1  m-standard  endpoint:1:1  node:2  single  No
+-                parts = line.split()
+-                if len(parts) >= 3 and parts[1] == endpoint_name:
+-                    endpoint_full = parts[2]  # endpoint:1:1
+-                    if endpoint_full.startswith("endpoint:"):
+-                        endpoint_id = endpoint_full.replace("endpoint:", "")  # 1:1
+-                        return endpoint_id
+-
+-        raise ValueError(f"No endpoint ID for {endpoint_name} found in cluster status")
+-
+-    def execute_failover(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        timeout: int = 60,
+-    ) -> Dict[str, Any]:
+-        """Execute failover command and wait for completion."""
+-
+-        try:
+-            # Refresh cluster info before getting the shard - we want to be sure
+-            # that we have the current state
+-            shard = self._get_first_master_shard(
+-                endpoint_config,
+-                force_cluster_info_refresh=True,
+-            )
+-            bdb_id = endpoint_config.get("bdb_id")
+-            command = f"failover db db:{bdb_id} shard {shard}"
+-
+-            parameters = {
+-                "bdb_id": bdb_id,
+-                "rladmin_command": command,  # Just the command without "rladmin" prefix
+-            }
+-            logging.debug(f"Executing rladmin_command with parameter: {parameters}")
+-
+-            failover_action = ActionRequest(
+-                action_type=ActionType.EXECUTE_RLADMIN_COMMAND,
+-                parameters=parameters,
+-            )
+-            result = self.trigger_action(failover_action)
+-
+-            logging.debug(f"Failover command action result: {result}")
+-
+-            action_id = result.get("action_id")
+-            if not action_id:
+-                raise Exception(f"Failed to trigger failover action: {result}")
+-
+-            action_status_check_response = self.get_operation_result(
+-                action_id, timeout=timeout
+-            )
+-            logging.info(
+-                f"Completed failover execution: {action_status_check_response}"
+-            )
+-            return action_status_check_response
+-
+-        except Exception as e:
+-            pytest.fail(f"Failed to execute failover: {e}")
+-
+-    def execute_migrate(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        target_node: str,
+-        empty_node: str,
+-        skip_end_notification: bool = False,
+-    ) -> str:
+-        """Execute rladmin migrate command and wait for completion."""
+-        command = f"migrate node {target_node} all_shards target_node {empty_node}"
+-
+-        # Get bdb_id from endpoint configuration
+-        bdb_id = endpoint_config.get("bdb_id")
+-
+-        try:
+-            # Correct parameter format for fault injector
+-            parameters = {
+-                "bdb_id": bdb_id,
+-                "rladmin_command": command,  # Just the command without "rladmin" prefix
+-            }
+-
+-            logging.debug(f"Executing rladmin_command with parameter: {parameters}")
+-
+-            action = ActionRequest(
+-                action_type=ActionType.EXECUTE_RLADMIN_COMMAND, parameters=parameters
+-            )
+-            result = self.trigger_action(action)
+-
+-            logging.debug(f"Migrate command action result: {result}")
+-
+-            action_id = result.get("action_id")
+-
+-            if not action_id:
+-                raise Exception(f"Failed to trigger migrate action: {result}")
+-            return action_id
+-        except Exception as e:
+-            raise Exception(f"Failed to execute rladmin migrate: {e}")
+-
+-    def execute_rebind(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        endpoint_id: str,
+-    ) -> str:
+-        """Execute rladmin bind endpoint command and wait for completion."""
+-
+-        endpoint_policy = endpoint_config["raw_endpoints"][0]["proxy_policy"]
+-        logging.info(
+-            f"Executing rladmin bind endpoint {endpoint_id} policy {endpoint_policy}"
+-        )
+-        command = f"bind endpoint {endpoint_id} policy {endpoint_policy}"
+-
+-        bdb_id = endpoint_config.get("bdb_id")
+-
+-        try:
+-            parameters = {
+-                "rladmin_command": command,  # Just the command without "rladmin" prefix
+-                "bdb_id": bdb_id,
+-            }
+-
+-            logging.info(f"Executing rladmin_command with parameter: {parameters}")
+-            action = ActionRequest(
+-                action_type=ActionType.EXECUTE_RLADMIN_COMMAND, parameters=parameters
+-            )
+-            result = self.trigger_action(action)
+-            logging.info(
+-                f"Migrate command {command} with parameters {parameters} trigger result: {result}"
+-            )
+-
+-            action_id = result.get("action_id")
+-
+-            if not action_id:
+-                raise Exception(f"Failed to trigger bind endpoint action: {result}")
+-            return action_id
+-        except Exception as e:
+-            raise Exception(f"Failed to execute rladmin bind endpoint: {e}")
+-
+     def get_slot_migrate_triggers(
+         self,
+         effect_name: SlotMigrateEffects,
+@@ -693,10 +370,20 @@ def get_slot_migrate_triggers(
+             "GET", f"/slot-migrate?effect={effect_name.value}&cluster_index=0"
+         )
+ 
++    def get_topology_change_standalone_triggers(
++        self,
++        effect_name: TopologyChangeStandaloneEffects,
++    ) -> Dict[str, Any]:
++        """Get available triggers(trigger name + db example config) for a topology change for standalone client effect."""
++        return self._make_request(
++            "GET",
++            f"/topology-change-standalone?effect={effect_name.value}&cluster_index=0",
++        )
++
+     def trigger_effect(
+         self,
+         endpoint_config: Dict[str, Any],
+-        effect_name: SlotMigrateEffects,
++        effect_name: SlotMigrateEffects | TopologyChangeStandaloneEffects,
+         trigger_name: str,
+         source_node: Optional[str] = None,
+         target_node: Optional[str] = None,
+@@ -721,11 +408,17 @@ def trigger_effect(
+             if target_node:
+                 parameters["target_node"] = target_node
+ 
+-            logging.debug(f"Executing slot migrate with parameters: {parameters}")
++            action_type = (
++                ActionType.SLOT_MIGRATE
++                if isinstance(effect_name, SlotMigrateEffects)
++                else ActionType.TOPOLOGY_CHANGE_STANDALONE
++            )
+ 
+-            action = ActionRequest(
+-                action_type=ActionType.SLOT_MIGRATE, parameters=parameters
++            logging.debug(
++                f"Executing {action_type.value} with parameters: {parameters}"
+             )
++
++            action = ActionRequest(action_type=action_type, parameters=parameters)
+             result = self.trigger_action(action)
+ 
+             logging.debug(f"Trigger effect action result: {result}")
+@@ -741,44 +434,6 @@ def trigger_effect(
+     def get_moving_ttl(self) -> int:
+         return self.MOVING_TTL
+ 
+-    def _get_first_master_shard(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        force_cluster_info_refresh: bool = True,
+-    ) -> str:
+-        """Get the first master shard from the endpoint configuration."""
+-        bdb_id = endpoint_config.get("bdb_id")
+-
+-        if self._cluster_nodes_info is None or force_cluster_info_refresh:
+-            self.get_cluster_nodes_info()
+-
+-        if not self._cluster_nodes_info:
+-            raise ValueError("No cluster status output found")
+-
+-        # Parse the SHARDS section to find the shard id covering slot 0
+-        lines = self._cluster_nodes_info.split("\n")
+-        shards_section_started = False
+-
+-        for line in lines:
+-            line = line.strip()
+-
+-            # Start of SHARDS section
+-            if line.startswith("SHARDS:"):
+-                shards_section_started = True
+-                continue
+-            elif shards_section_started and line and not line.startswith("DB:ID"):
+-                # Parse shard line: db:3 m-standard redis:3 node:3 master 0-8191 1.79MB OK
+-                parts = line.split()
+-                if (
+-                    len(parts) >= 8
+-                    and parts[0] == f"db:{bdb_id}"
+-                    and parts[4] == "master"
+-                    and parts[5].startswith("0-")
+-                ):
+-                    return parts[2].replace("redis:", "")  # redis:3 --> 3
+-
+-        raise ValueError("No master shard found")
+-
+ 
+ class ProxyServerFaultInjector(FaultInjectorClient):
+     """Fault injector client for proxy server setup."""
+@@ -787,12 +442,6 @@ class ProxyServerFaultInjector(FaultInjectorClient):
+     NODE_PORT_2 = 15380
+     NODE_PORT_3 = 15381
+ 
+-    # Initial cluster node configuration for proxy-based tests
+-    PROXY_CLUSTER_NODES = [
+-        ClusterNode("127.0.0.1", NODE_PORT_1),
+-        ClusterNode("127.0.0.1", NODE_PORT_2),
+-    ]
+-
+     DEFAULT_CLUSTER_SLOTS = [
+         SlotsRange("127.0.0.1", NODE_PORT_1, 0, 8191),
+         SlotsRange("127.0.0.1", NODE_PORT_2, 8192, 16383),
+@@ -815,12 +464,6 @@ def __init__(self, oss_cluster: bool = False):
+             self.CLUSTER_SLOTS_INTERCEPTOR_NAME, self.DEFAULT_CLUSTER_SLOTS
+         )
+ 
+-        self.seq_id = 0
+-
+-    def _get_seq_id(self):
+-        self.seq_id += 1
+-        return self.seq_id
+-
+     def get_operation_result(
+         self,
+         action_id: str,
+@@ -865,178 +508,6 @@ def find_database_id_by_name(
+     ) -> Optional[int]:
+         return 1
+ 
+-    def find_target_node_and_empty_node(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        force_cluster_info_refresh: bool = True,
+-    ) -> Tuple[NodeInfo, NodeInfo]:
+-        target_node = NodeInfo(
+-            "1", "master", "0.0.0.0", "127.0.0.1", "localhost", self.NODE_PORT_1
+-        )
+-        empty_node = NodeInfo(
+-            "3", "master", "0.0.0.0", "127.0.0.1", "localhost", self.NODE_PORT_3
+-        )
+-        return target_node, empty_node
+-
+-    def find_endpoint_for_bind(
+-        self,
+-        endpoint_name: str,
+-        force_cluster_info_refresh: bool = True,
+-    ) -> str:
+-        return "1:1"
+-
+-    def execute_failover(
+-        self, endpoint_config: Dict[str, Any], timeout: int = 60
+-    ) -> Dict[str, Any]:
+-        """
+-        Simulates a failover operation and waits for completion.
+-        This method does not create or manage threads; if asynchronous execution is required,
+-        it should be called from a separate thread by the caller.
+-        This will always run for the same nodes - node 1 to node 3!
+-        Assumes that the initial state is the DEFAULT_CLUSTER_SLOTS - shard 1 on node 1 and shard 2 on node 2.
+-        In a real RE cluster, a replica would exist on another node, which is simulated here with node 3.
+-        """
+-
+-        # send smigrating
+-        if self.oss_cluster:
+-            start_maint_notif = RespTranslator.oss_maint_notification_to_resp(
+-                f"SMIGRATING {self._get_seq_id()} 0-8191"
+-            )
+-        else:
+-            # send failing over
+-            start_maint_notif = RespTranslator.re_cluster_maint_notification_to_resp(
+-                f"FAILING_OVER {self._get_seq_id()} 2 [1]"
+-            )
+-
+-        self.proxy_helper.send_notification(start_maint_notif)
+-
+-        # sleep to allow the client to receive the notification
+-        time.sleep(self.SLEEP_TIME_BETWEEN_START_END_NOTIFICATIONS)
+-
+-        if self.oss_cluster:
+-            # intercept cluster slots
+-            self.proxy_helper.set_cluster_slots(
+-                self.CLUSTER_SLOTS_INTERCEPTOR_NAME,
+-                [
+-                    SlotsRange("127.0.0.1", self.NODE_PORT_3, 0, 8191),
+-                    SlotsRange("127.0.0.1", self.NODE_PORT_2, 8192, 16383),
+-                ],
+-            )
+-            # send smigrated
+-            end_maint_notif = RespTranslator.oss_maint_notification_to_resp(
+-                f"SMIGRATED {self._get_seq_id()} 127.0.0.1:{self.NODE_PORT_3} 0-8191"
+-            )
+-        else:
+-            # send failed over
+-            end_maint_notif = RespTranslator.re_cluster_maint_notification_to_resp(
+-                f"FAILED_OVER {self._get_seq_id()} [1]"
+-            )
+-        self.proxy_helper.send_notification(end_maint_notif)
+-
+-        return {"status": "done"}
+-
+-    def execute_migrate(
+-        self,
+-        endpoint_config: Dict[str, Any],
+-        target_node: str,
+-        empty_node: str,
+-        skip_end_notification: bool = False,
+-    ) -> str:
+-        """
+-        Simulate migrate command execution.
+-        This method does not create or manage threads; it simulates the migration process synchronously.
+-        If asynchronous execution is desired, the caller should run this method in a separate thread.
+-        This will run always for the same nodes - node 1 to node 2!
+-        Assuming that the initial state is the DEFAULT_CLUSTER_SLOTS - shard 1 on node 1 and shard 2 on node 2.
+-
+-        """
+-
+-        if self.oss_cluster:
+-            # send smigrating
+-            start_maint_notif = RespTranslator.oss_maint_notification_to_resp(
+-                f"SMIGRATING {self._get_seq_id()} 0-200"
+-            )
+-        else:
+-            # send migrating
+-            start_maint_notif = RespTranslator.re_cluster_maint_notification_to_resp(
+-                f"MIGRATING {self._get_seq_id()} 2 [1]"
+-            )
+-
+-        self.proxy_helper.send_notification(start_maint_notif)
+-
+-        # sleep to allow the client to receive the notification
+-        time.sleep(self.SLEEP_TIME_BETWEEN_START_END_NOTIFICATIONS)
+-
+-        if self.oss_cluster:
+-            if not skip_end_notification:
+-                # intercept cluster slots
+-                self.proxy_helper.set_cluster_slots(
+-                    self.CLUSTER_SLOTS_INTERCEPTOR_NAME,
+-                    [
+-                        SlotsRange("127.0.0.1", self.NODE_PORT_2, 0, 200),
+-                        SlotsRange("127.0.0.1", self.NODE_PORT_1, 201, 8191),
+-                        SlotsRange("127.0.0.1", self.NODE_PORT_2, 8192, 16383),
+-                    ],
+-                )
+-                # send smigrated
+-                end_maint_notif = RespTranslator.oss_maint_notification_to_resp(
+-                    f"SMIGRATED {self._get_seq_id()} 127.0.0.1:{self.NODE_PORT_2} 0-200"
+-                )
+-                self.proxy_helper.send_notification(end_maint_notif)
+-        else:
+-            # send migrated
+-            end_maint_notif = RespTranslator.re_cluster_maint_notification_to_resp(
+-                f"MIGRATED {self._get_seq_id()} [1]"
+-            )
+-            self.proxy_helper.send_notification(end_maint_notif)
+-
+-        return "done"
+-
+-    def execute_rebind(self, endpoint_config: Dict[str, Any], endpoint_id: str) -> str:
+-        """
+-        Execute rladmin bind endpoint command and wait for completion.
+-        This method simulates the actual bind process. It does not create or manage threads;
+-        if you wish to run it in a separate thread, you must do so from the caller.
+-        This will run always for the same nodes - node 1 to node 3!
+-        Assuming that the initial state is the DEFAULT_CLUSTER_SLOTS - shard 1 on node 1
+-        and shard 2 on node 2.
+-
+-        """
+-        sleep_time = self.SLEEP_TIME_BETWEEN_START_END_NOTIFICATIONS
+-        if self.oss_cluster:
+-            # smigrating should be sent as part of the migrate flow
+-            pass
+-        else:
+-            # send moving
+-            sleep_time = self.MOVING_TTL
+-            maint_start_notif = RespTranslator.re_cluster_maint_notification_to_resp(
+-                f"MOVING {self._get_seq_id()} {sleep_time} 127.0.0.1:{self.NODE_PORT_3}"
+-            )
+-            self.proxy_helper.send_notification(maint_start_notif)
+-
+-        # sleep to allow the client to receive the notification
+-        time.sleep(sleep_time)
+-
+-        if self.oss_cluster:
+-            # intercept cluster slots
+-            self.proxy_helper.set_cluster_slots(
+-                self.CLUSTER_SLOTS_INTERCEPTOR_NAME,
+-                [
+-                    SlotsRange("127.0.0.1", self.NODE_PORT_3, 0, 8191),
+-                    SlotsRange("127.0.0.1", self.NODE_PORT_2, 8192, 16383),
+-                ],
+-            )
+-            # send smigrated
+-            smigrated_node_1 = RespTranslator.oss_maint_notification_to_resp(
+-                f"SMIGRATED {self._get_seq_id()} 127.0.0.1:{self.NODE_PORT_3} 0-8191"
+-            )
+-            self.proxy_helper.send_notification(smigrated_node_1)
+-        else:
+-            # TODO drop connections to node 1 to simulate that the node is removed
+-            pass
+-
+-        return "done"
+-
+     def get_moving_ttl(self) -> int:
+         return self.MOVING_TTL
+ 
+@@ -1046,10 +517,16 @@ def get_slot_migrate_triggers(
+     ) -> Dict[str, Any]:
+         raise NotImplementedError("Not implemented for proxy server")
+ 
++    def get_topology_change_standalone_triggers(
++        self,
++        effect_name: TopologyChangeStandaloneEffects,
++    ) -> Dict[str, Any]:
++        raise NotImplementedError("Not implemented for proxy server")
++
+     def trigger_effect(
+         self,
+         endpoint_config: Dict[str, Any],
+-        effect_name: SlotMigrateEffects,
++        effect_name: SlotMigrateEffects | TopologyChangeStandaloneEffects,
+         trigger_name: Optional[str] = None,
+         source_node: Optional[str] = None,
+         target_node: Optional[str] = None,
+diff --git a/tests/test_scenario/maint_notifications_helpers.py b/tests/test_scenario/maint_notifications_helpers.py
+index 93ad01b49f..a6d0992144 100644
+--- a/tests/test_scenario/maint_notifications_helpers.py
++++ b/tests/test_scenario/maint_notifications_helpers.py
+@@ -1,16 +1,17 @@
+ import binascii
+ import logging
+ import time
+-from typing import Any, Dict, Optional, Tuple, Union
++from typing import Any, Dict, Optional, Union
+ import pytest
+ from redis import RedisCluster
+ 
+ from redis.client import Redis
+ from redis.connection import Connection
++from redis.maint_notifications import MaintenanceState
+ from tests.test_scenario.fault_injector_client import (
+     FaultInjectorClient,
+-    NodeInfo,
+     SlotMigrateEffects,
++    TopologyChangeStandaloneEffects,
+ )
+ 
+ 
+@@ -48,6 +49,7 @@ def wait_push_notification(
+         timeout: float = 120,
+         fail_on_timeout: bool = True,
+         connection: Optional[Connection] = None,
++        expected_state: Optional[MaintenanceState] = None,
+     ):
+         """Wait for a push notification to be received."""
+         start_time = time.time()  # returns the time in seconds
+@@ -63,6 +65,16 @@ def wait_push_notification(
+         )
+ 
+         try:
++            if (
++                expected_state is not None
++                and test_conn.maintenance_state == expected_state
++            ):
++                logging.debug(
++                    f"Connection already in expected state {expected_state}, "
++                    f"returning immediately"
++                )
++                return
++
+             while time.time() - start_time < timeout:
+                 try:
+                     if test_conn.can_read(timeout=0.2):
+@@ -73,7 +85,11 @@ def wait_push_notification(
+                         )
+                         if test_conn.should_reconnect():
+                             logging.debug("Connection is marked for reconnect")
+-                        return
++                        if (
++                            expected_state is None
++                            or test_conn.maintenance_state == expected_state
++                        ):
++                            return
+                 except Exception as e:
+                     logging.error(f"Error reading push notification: {e}")
+                     break
+@@ -103,68 +119,6 @@ def find_database_id_by_name(
+             database_name, force_cluster_info_refresh
+         )
+ 
+-    @staticmethod
+-    def find_target_node_and_empty_node(
+-        fault_injector: FaultInjectorClient,
+-        endpoint_config: Dict[str, Any],
+-        force_cluster_info_refresh: bool = True,
+-    ) -> Tuple[NodeInfo, NodeInfo]:
+-        """Find the node with master shards and the node with no shards.
+-
+-        Returns:
+-            tuple: (target_node, empty_node) where target_node has master shards
+-                   and empty_node has no shards
+-        """
+-        return fault_injector.find_target_node_and_empty_node(
+-            endpoint_config, force_cluster_info_refresh
+-        )
+-
+-    @staticmethod
+-    def find_endpoint_for_bind(
+-        fault_injector: FaultInjectorClient,
+-        endpoint_name: str,
+-        force_cluster_info_refresh: bool = True,
+-    ) -> str:
+-        """Find the endpoint ID from cluster status.
+-
+-        Returns:
+-            str: The endpoint ID (e.g., "1:1")
+-        """
+-        return fault_injector.find_endpoint_for_bind(
+-            endpoint_name, force_cluster_info_refresh
+-        )
+-
+-    @staticmethod
+-    def execute_failover(
+-        fault_injector: FaultInjectorClient,
+-        endpoint_config: Dict[str, Any],
+-        timeout: int = 60,
+-    ) -> Dict[str, Any]:
+-        """Execute failover command and wait for completion."""
+-        return fault_injector.execute_failover(endpoint_config, timeout)
+-
+-    @staticmethod
+-    def execute_migrate(
+-        fault_injector: FaultInjectorClient,
+-        endpoint_config: Dict[str, Any],
+-        target_node: str,
+-        empty_node: str,
+-        skip_end_notification: bool = False,
+-    ) -> str:
+-        """Execute rladmin migrate command and wait for completion."""
+-        return fault_injector.execute_migrate(
+-            endpoint_config, target_node, empty_node, skip_end_notification
+-        )
+-
+-    @staticmethod
+-    def execute_rebind(
+-        fault_injector: FaultInjectorClient,
+-        endpoint_config: Dict[str, Any],
+-        endpoint_id: str,
+-    ) -> str:
+-        """Execute rladmin bind endpoint command and wait for completion."""
+-        return fault_injector.execute_rebind(endpoint_config, endpoint_id)
+-
+     @staticmethod
+     def get_slot_migrate_triggers(
+         fault_injector: FaultInjectorClient,
+@@ -173,11 +127,22 @@ def get_slot_migrate_triggers(
+         """Get available triggers(trigger name + db example config) for a slot migration effect."""
+         return fault_injector.get_slot_migrate_triggers(effect_name)
+ 
++    @staticmethod
++    def get_topology_change_standalone_triggers(
++        fault_injector: FaultInjectorClient,
++        effect_name: TopologyChangeStandaloneEffects,
++    ) -> Dict[str, Any]:
++        """
++        Get available triggers(trigger name + db example config) for a
++        topology change for standalone client effect.
++        """
++        return fault_injector.get_topology_change_standalone_triggers(effect_name)
++
+     @staticmethod
+     def trigger_effect(
+         fault_injector: FaultInjectorClient,
+         endpoint_config: Dict[str, Any],
+-        effect_name: SlotMigrateEffects,
++        effect_name: SlotMigrateEffects | TopologyChangeStandaloneEffects,
+         trigger_name: Optional[str] = None,
+         source_node: Optional[str] = None,
+         target_node: Optional[str] = None,
+diff --git a/tests/test_scenario/test_maint_notifications.py b/tests/test_scenario/test_maint_notifications.py
+index 3b30bd3ddb..f6dd2829c1 100644
+--- a/tests/test_scenario/test_maint_notifications.py
++++ b/tests/test_scenario/test_maint_notifications.py
+@@ -16,22 +16,23 @@
+ from redis.connection import ConnectionInterface
+ from redis.maint_notifications import (
+     EndpointType,
+-    MaintNotificationsConfig,
+     MaintenanceState,
+ )
+ from tests.test_scenario.conftest import (
++    _FAULT_INJECTOR_STANDALONE_CLIENT,
+     CLIENT_TIMEOUT,
+     RELAXED_TIMEOUT,
+     _FAULT_INJECTOR_CLIENT_OSS_API,
+     _get_client_maint_notifications,
+     get_cluster_client_maint_notifications,
++    get_standalone_client_maint_notifications,
+     use_mock_proxy,
+ )
+ from tests.test_scenario.fault_injector_client import (
+     FaultInjectorClient,
+-    NodeInfo,
+     ProxyServerFaultInjector,
+     SlotMigrateEffects,
++    TopologyChangeStandaloneEffects,
+ )
+ from tests.test_scenario.maint_notifications_helpers import (
+     ClientValidations,
+@@ -49,9 +50,8 @@
+ logging.getLogger("redis.maint_notifications").setLevel(logging.DEBUG)
+ logging.getLogger("redis.cluster").setLevel(logging.DEBUG)
+ 
+-BIND_TIMEOUT = 60
+-MIGRATE_TIMEOUT = 60
+-FAILOVER_TIMEOUT = 15
++
++STANDALONE_MAINT_TIMEOUT = 60
+ SMIGRATING_TIMEOUT = 20
+ SMIGRATED_TIMEOUT = 40
+ 
+@@ -68,11 +68,43 @@ class TestPushNotificationsBase:
+     operations.
+     """
+ 
++    def delete_prev_db(
++        self,
++        fault_injector_client: FaultInjectorClient,
++        db_name: str,
++    ):
++        try:
++            logging.info(f"Deleting database if exists: {db_name}")
++            existing_db_id = None
++            existing_db_id = ClusterOperations.find_database_id_by_name(
++                fault_injector_client, db_name
++            )
++
++            if existing_db_id:
++                fault_injector_client.delete_database(existing_db_id)
++                logging.info(f"Deleted database: {db_name}")
++            else:
++                logging.info(f"Database {db_name} does not exist.")
++        except Exception as e:
++            logging.error(f"Failed to delete database {db_name}: {e}")
++
++    def create_db(
++        self,
++        fault_injector_client: FaultInjectorClient,
++        bdb_config: Dict[str, Any],
++    ):
++        try:
++            logging.info(f"Creating database: \n{json.dumps(bdb_config, indent=2)}")
++            cluster_endpoint_config = fault_injector_client.create_database(bdb_config)
++            return cluster_endpoint_config
++        except Exception as e:
++            pytest.fail(f"Failed to create database: {e}")
++
+     def _trigger_effect(
+         self,
+         fault_injector_client: FaultInjectorClient,
+         endpoints_config: Dict[str, Any],
+-        effect_name: SlotMigrateEffects,
++        effect_name: SlotMigrateEffects | TopologyChangeStandaloneEffects,
+         trigger_name: Optional[str] = None,
+         target_node: Optional[str] = None,
+         empty_node: Optional[str] = None,
+@@ -95,77 +127,6 @@ def _trigger_effect(
+         )
+         logging.debug(f"Action execution result: {trigger_effect_result}")
+ 
+-    def _execute_failover(
+-        self,
+-        fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
+-    ):
+-        failover_result = ClusterOperations.execute_failover(
+-            fault_injector_client, endpoints_config
+-        )
+-
+-        logging.debug("Marking failover as executed")
+-        self._failover_executed = True
+-
+-        logging.debug(f"Failover result: {failover_result}")
+-
+-    def _execute_migration(
+-        self,
+-        fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
+-        target_node: str,
+-        empty_node: str,
+-        skip_end_notification: bool = False,
+-    ):
+-        migrate_action_id = ClusterOperations.execute_migrate(
+-            fault_injector=fault_injector_client,
+-            endpoint_config=endpoints_config,
+-            target_node=target_node,
+-            empty_node=empty_node,
+-            skip_end_notification=skip_end_notification,
+-        )
+-
+-        migrate_result = fault_injector_client.get_operation_result(
+-            migrate_action_id, timeout=MIGRATE_TIMEOUT
+-        )
+-        logging.debug(f"Migration result: {migrate_result}")
+-
+-    def _execute_bind(
+-        self,
+-        fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
+-        endpoint_id: str,
+-    ):
+-        bind_action_id = ClusterOperations.execute_rebind(
+-            fault_injector_client, endpoints_config, endpoint_id
+-        )
+-
+-        bind_result = fault_injector_client.get_operation_result(
+-            bind_action_id, timeout=BIND_TIMEOUT
+-        )
+-        logging.debug(f"Bind result: {bind_result}")
+-
+-    def _execute_migrate_bind_flow(
+-        self,
+-        fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
+-        target_node: str,
+-        empty_node: str,
+-        endpoint_id: str,
+-    ):
+-        self._execute_migration(
+-            fault_injector_client=fault_injector_client,
+-            endpoints_config=endpoints_config,
+-            target_node=target_node,
+-            empty_node=empty_node,
+-            skip_end_notification=True,
+-        )
+-        self._execute_bind(
+-            fault_injector_client=fault_injector_client,
+-            endpoints_config=endpoints_config,
+-            endpoint_id=endpoint_id,
+-        )
+-
+     def _get_all_connections_in_pool(self, client: Redis) -> List[ConnectionInterface]:
+         connections = []
+         with client.connection_pool._lock:
+@@ -191,6 +152,43 @@ def _validate_maintenance_state(
+                 matching_conns_count += 1
+         assert matching_conns_count == expected_matching_conns_count
+ 
++    def _is_endpoint_configured_correctly(
++        self,
++        conn,
++        configured_endpoint_type: EndpointType,
++        fault_injector_client: FaultInjectorClient,
++    ) -> bool:
++        if isinstance(fault_injector_client, ProxyServerFaultInjector):
++            return True  # skip endpoint type validation when using proxy server
++
++        if configured_endpoint_type == EndpointType.NONE:
++            if conn.host != conn.orig_host_address:
++                logging.debug(
++                    f"Endpoint check failed: configured NONE but "
++                    f"host={conn.host!r} != orig_host_address={conn.orig_host_address!r}"
++                )
++                return False
++            return True
++
++        # configured_endpoint_type != EndpointType.NONE
++        if conn.host == conn.orig_host_address:
++            logging.debug(
++                f"Endpoint check failed: expected non-NONE endpoint type but "
++                f"host={conn.host!r} == orig_host_address={conn.orig_host_address!r}"
++            )
++            return False
++        actual_endpoint_type = conn.maint_notifications_config.get_endpoint_type(
++            conn.orig_host_address, conn
++        )
++        if configured_endpoint_type != actual_endpoint_type:
++            logging.debug(
++                f"Endpoint check failed: "
++                f"configured_endpoint_type={configured_endpoint_type!r} != "
++                f"actual_endpoint_type={actual_endpoint_type!r} for host={conn.host!r}"
++            )
++            return False
++        return True
++
+     def _validate_moving_state(
+         self,
+         client: Redis,
+@@ -205,24 +203,8 @@ def _validate_moving_state(
+         with client.connection_pool._lock:
+             connections = self._get_all_connections_in_pool(client)
+             for conn in connections:
+-                endpoint_configured_correctly = bool(
+-                    (
+-                        configured_endpoint_type == EndpointType.NONE
+-                        and conn.host == conn.orig_host_address
+-                    )
+-                    or (
+-                        configured_endpoint_type != EndpointType.NONE
+-                        and conn.host != conn.orig_host_address
+-                        and (
+-                            configured_endpoint_type
+-                            == MaintNotificationsConfig().get_endpoint_type(
+-                                conn.host, conn
+-                            )
+-                        )
+-                    )
+-                    or isinstance(
+-                        fault_injector_client, ProxyServerFaultInjector
+-                    )  # we should not validate the endpoint type when using proxy server
++                endpoint_configured_correctly = self._is_endpoint_configured_correctly(
++                    conn, configured_endpoint_type, fault_injector_client
+                 )
+ 
+                 if (
+@@ -330,145 +312,251 @@ def _validate_default_notif_disabled_state(
+         assert matching_conns_count == expected_matching_conns_count
+ 
+ 
+-class TestStandaloneClientPushNotifications(TestPushNotificationsBase):
+-    @pytest.fixture(autouse=True)
+-    def setup_and_cleanup(
++def generate_params(
++    fault_injector_client: FaultInjectorClient,
++    effect_names: list[SlotMigrateEffects | TopologyChangeStandaloneEffects],
++    skip_combinations: list[tuple[SlotMigrateEffects, str]] = [],
++    endpoint_types: Optional[list[EndpointType]] = None,
++):
++    # params should produce list of tuples: (effect_name, trigger_name, bdb_config, bdb_name)
++    # when endpoint_types is provided, each tuple is expanded to include an endpoint_type,
++    # producing: (effect_name, trigger_name, bdb_config, bdb_name, endpoint_type)
++    params = []
++    try:
++        logging.info(f"Extracting params for test with effect_names: {effect_names}")
++        for effect_name in effect_names:
++            if isinstance(effect_name, SlotMigrateEffects):
++                triggers_data = ClusterOperations.get_slot_migrate_triggers(
++                    fault_injector_client, effect_name
++                )
++            else:
++                triggers_data = (
++                    ClusterOperations.get_topology_change_standalone_triggers(
++                        fault_injector_client, effect_name
++                    )
++                )
++
++            for trigger_info in triggers_data["triggers"]:
++                trigger = trigger_info["name"]
++                if (effect_name, trigger) in skip_combinations:
++                    continue
++                if trigger == "maintenance_mode":
++                    continue
++                trigger_requirements = trigger_info["requirements"]
++                for requirement in trigger_requirements:
++                    dbconfig = requirement["dbconfig"]
++                    if requirement.get("oss_cluster_api"):
++                        ip_type = requirement["oss_cluster_api"]["ip_type"]
++                        if ip_type == "internal":
++                            continue
++                    db_name_pattern = dbconfig.get("name").rsplit("-", 1)[0]
++                    dbconfig["name"] = (
++                        db_name_pattern  # this will ensure dbs will be deleted
++                    )
++
++                    if endpoint_types is not None:
++                        for endpoint_type in endpoint_types:
++                            params.append(
++                                (
++                                    effect_name,
++                                    trigger,
++                                    dbconfig,
++                                    db_name_pattern,
++                                    endpoint_type,
++                                )
++                            )
++                    else:
++                        params.append((effect_name, trigger, dbconfig, db_name_pattern))
++    except Exception as e:
++        logging.error(f"Failed to extract params for test: {e}")
++
++    return params
++
++
++class TestStanaloneClientPushNotificationsWithEffectTriggerBase(
++    TestPushNotificationsBase
++):
++    def setup_env(
+         self,
+-        client_maint_notifications: Redis,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
+-        endpoint_name: str,
++        db_config: Dict[str, Any],
++        endpoint_type: EndpointType | None = None,
+     ):
+-        # Initialize cleanup flags first to ensure they exist even if setup fails
+-        self._failover_executed = False
+-        self.endpoint_id = None
++        self.delete_prev_db(fault_injector_client, db_config["name"])
+ 
+-        try:
+-            target_node, empty_node = ClusterOperations.find_target_node_and_empty_node(
+-                fault_injector_client, endpoints_config
+-            )
+-            logging.info(f"Using target_node: {target_node}, empty_node: {empty_node}")
+-        except Exception as e:
+-            pytest.fail(f"Failed to find target and empty nodes: {e}")
++        db_endpoint_config = self.create_db(fault_injector_client, db_config)
+ 
+-        try:
+-            self.endpoint_id = ClusterOperations.find_endpoint_for_bind(
+-                fault_injector_client,
+-                endpoint_name,
+-                force_cluster_info_refresh=False,
+-            )
+-            logging.info(f"Using endpoint: {self.endpoint_id}")
+-        except Exception as e:
+-            pytest.fail(f"Failed to find endpoint for bind operation: {e}")
++        self._bdb_name = db_config["name"]
++        socket_timeout = DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT
+ 
+-        # Ensure setup completed successfully
+-        if not target_node or not empty_node:
+-            pytest.fail("Setup failed: target_node or empty_node not available")
+-        if not self.endpoint_id:
+-            pytest.fail("Setup failed: endpoint_id not available")
++        auth_ssl_client_certs_config_info = db_config.get(
++            "authentication_ssl_client_certs", None
++        )
+ 
+-        self.target_node: NodeInfo = target_node
+-        self.empty_node: NodeInfo = empty_node
++        auth_ssl_client_certs = (
++            True
++            if auth_ssl_client_certs_config_info
++            and auth_ssl_client_certs_config_info[0]["client_cert"] is not None
++            else False
++        )
++
++        standalone_client_maint_notifications = (
++            get_standalone_client_maint_notifications(
++                endpoints_config=db_endpoint_config,
++                disable_retries=True,
++                socket_timeout=socket_timeout,
++                enable_maintenance_notifications=True,
++                endpoint_type=endpoint_type,
++                auth_ssl_client_certs=auth_ssl_client_certs,
++            )
++        )
++        return standalone_client_maint_notifications, db_endpoint_config
++
++    @pytest.fixture(autouse=True)
++    def setup_and_cleanup(
++        self,
++    ):
++        self.maintenance_ops_threads = []
++        self._bdb_name = None
+ 
+         # Yield control to the test
+         yield
+ 
+         # Cleanup code - this will run even if the test fails
+         logging.info("Starting cleanup...")
+-        try:
+-            client_maint_notifications.close()
+-        except Exception as e:
+-            logging.error(f"Failed to close client: {e}")
+-
+-        # Only attempt cleanup if we have the necessary attributes and they were executed
+-        if (
+-            not isinstance(fault_injector_client, ProxyServerFaultInjector)
+-            and self._failover_executed
+-        ):
+-            try:
+-                self._execute_failover(fault_injector_client, endpoints_config)
+-                logging.info("Failover cleanup completed")
+-            except Exception as e:
+-                logging.error(f"Failed to revert failover: {e}")
++        if self._bdb_name:
++            self.delete_prev_db(_FAULT_INJECTOR_STANDALONE_CLIENT, self._bdb_name)
++
++        logging.info("Waiting for maintenance operations threads to finish...")
++        for thread in self.maintenance_ops_threads:
++            thread.join()
+ 
+         logging.info("Cleanup finished")
+ 
++
++class TestStandaloneClientPushNotificationsHandlingWithEffectTrigger(
++    TestStanaloneClientPushNotificationsWithEffectTriggerBase
++):
+     @pytest.mark.timeout(300)  # 5 minutes timeout for this test
+-    def test_receive_failing_over_and_failed_over_push_notification(
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_NO_CONN_DROP],
++        ),
++    )
++    def test_notification_handling_during_data_movements_no_conn_drop(
+         self,
+-        client_maint_notifications: Redis,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
+     ):
+         """
+-        Test the push notifications are received when executing cluster operations.
++        Test the push notifications are received when executing cluster operations
++        that don't lead to dropping connections.
+ 
+         """
++        logging.info(f"DB name: {db_name}")
++
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config
++        )
++
+         logging.info("Creating one connection in the pool.")
+         conn = client_maint_notifications.connection_pool.get_connection()
+ 
+-        logging.info("Executing failover command...")
+-        failover_thread = Thread(
+-            target=self._execute_failover,
+-            name="failover_thread",
+-            args=(fault_injector_client, endpoints_config),
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
++            args=(
++                fault_injector_client,
++                db_endpoint_config,
++                effect_name,
++                trigger,
++            ),
+         )
+-        failover_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+-        logging.info("Waiting for FAILING_OVER push notifications...")
++        logging.info("Waiting for opening push notifications...")
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=FAILOVER_TIMEOUT, connection=conn
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=conn,
+         )
+ 
+         logging.info("Validating connection maintenance state...")
+         assert conn.maintenance_state == MaintenanceState.MAINTENANCE
+         assert conn._sock.gettimeout() == RELAXED_TIMEOUT
+ 
+-        logging.info("Waiting for FAILED_OVER push notifications...")
++        logging.info("Waiting for closing push notifications...")
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=FAILOVER_TIMEOUT, connection=conn
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=conn,
+         )
+ 
+         logging.info("Validating connection default states is restored...")
+         assert conn.maintenance_state == MaintenanceState.NONE
+-        assert conn._sock.gettimeout() == CLIENT_TIMEOUT
++        assert conn._sock.gettimeout() == DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT
+ 
+         logging.info("Releasing connection back to the pool...")
+         client_maint_notifications.connection_pool.release(conn)
+ 
+-        failover_thread.join()
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
+ 
+     @pytest.mark.timeout(300)  # 5 minutes timeout for this test
+-    def test_receive_migrating_and_moving_push_notification(
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP],
++        ),
++    )
++    def test_notification_handling_during_data_movements_with_conn_drop(
+         self,
+-        client_maint_notifications: Redis,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
+     ):
+         """
+-        Test the push notifications are received when executing cluster operations.
++        Test the push notifications are received when executing cluster operations
++        that lead to dropping connections.
+ 
+         """
++        logging.info(f"DB name: {db_name}")
++
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config
++        )
++
+         # create one connection and release it back to the pool
+         conn = client_maint_notifications.connection_pool.get_connection()
+         client_maint_notifications.connection_pool.release(conn)
+ 
+-        logging.info("Executing rladmin migrate command...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         logging.info("Waiting for MIGRATING push notifications...")
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=MIGRATE_TIMEOUT
++            client_maint_notifications, timeout=STANDALONE_MAINT_TIMEOUT
+         )
+ 
+         logging.info("Validating connection migrating state...")
+@@ -479,29 +567,21 @@ def test_receive_migrating_and_moving_push_notification(
+ 
+         logging.info("Waiting for MIGRATED push notifications...")
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=MIGRATE_TIMEOUT
++            client_maint_notifications, timeout=STANDALONE_MAINT_TIMEOUT
+         )
+ 
+         logging.info("Validating connection states...")
+         conn = client_maint_notifications.connection_pool.get_connection()
+         assert conn.maintenance_state == MaintenanceState.NONE
+-        assert conn._sock.gettimeout() == CLIENT_TIMEOUT
++        assert conn._sock.gettimeout() == DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT
+         client_maint_notifications.connection_pool.release(conn)
+ 
+-        migrate_thread.join()
+-
+-        logging.info("Executing rladmin bind endpoint command...")
+-
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
+-        )
+-        bind_thread.start()
+-
+         logging.info("Waiting for MOVING push notifications...")
++        # There might be multiple migrations, so we wait until we receive a moving notification
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=BIND_TIMEOUT
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            expected_state=MaintenanceState.MOVING,
+         )
+ 
+         logging.info("Validating connection states...")
+@@ -510,84 +590,100 @@ def test_receive_migrating_and_moving_push_notification(
+         assert conn._sock.gettimeout() == RELAXED_TIMEOUT
+ 
+         logging.info("Waiting for moving ttl to expire")
+-        time.sleep(BIND_TIMEOUT)
++        time.sleep(DEFAULT_BIND_TTL)
+ 
+         logging.info("Validating connection states...")
+         assert conn.maintenance_state == MaintenanceState.NONE
+-        assert conn.socket_timeout == CLIENT_TIMEOUT
+-        assert conn._sock.gettimeout() == CLIENT_TIMEOUT
++        assert conn.socket_timeout == DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT
++        assert conn._sock.gettimeout() == DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT
++
+         client_maint_notifications.connection_pool.release(conn)
+-        bind_thread.join()
+ 
+-    @pytest.mark.timeout(300)  # 5 minutes timeout
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
++
++    @pytest.mark.timeout(300)  # 5 minutes timeout for this test
+     @pytest.mark.parametrize(
+-        "endpoint_type",
+-        [
+-            EndpointType.EXTERNAL_FQDN,
+-            EndpointType.EXTERNAL_IP,
+-            EndpointType.NONE,
+-        ],
++        "effect_name, trigger, db_config, db_name, endpoint_type",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP],
++            endpoint_types=[
++                EndpointType.EXTERNAL_FQDN,
++                EndpointType.EXTERNAL_IP,
++                EndpointType.NONE,
++            ],
++        ),
+     )
+-    def test_timeout_handling_during_migrating_and_moving(
++    def test_timeout_handling_during_data_movements_with_conn_drop(
+         self,
+-        endpoint_type: EndpointType,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++        endpoint_type: EndpointType,
+     ):
+         """
+-        Test the push notifications are received when executing cluster operations.
++        Test the push notifications are received when executing cluster operations
++        that lead to dropping connections.
+ 
+         """
++        logging.info(f"DB name: {db_name}")
+         logging.info(f"Testing timeout handling for endpoint type: {endpoint_type}")
+-        client = _get_client_maint_notifications(
+-            endpoints_config=endpoints_config, endpoint_type=endpoint_type
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config, endpoint_type=endpoint_type
+         )
+ 
+         # Create three connections in the pool
+         logging.info("Creating three connections in the pool.")
+         conns = []
+         for _ in range(3):
+-            conns.append(client.connection_pool.get_connection())
++            conns.append(client_maint_notifications.connection_pool.get_connection())
+         # Release the connections
+         for conn in conns:
+-            client.connection_pool.release(conn)
++            client_maint_notifications.connection_pool.release(conn)
+ 
+-        logging.info("Executing rladmin migrate command...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         logging.info("Waiting for MIGRATING push notifications...")
+         # this will consume the notification in one of the connections
+-        ClientValidations.wait_push_notification(client, timeout=MIGRATE_TIMEOUT)
++        ClientValidations.wait_push_notification(
++            client_maint_notifications, timeout=STANDALONE_MAINT_TIMEOUT
++        )
+ 
+-        self._validate_maintenance_state(client, expected_matching_conns_count=1)
+-        self._validate_default_state(client, expected_matching_conns_count=2)
++        self._validate_maintenance_state(
++            client_maint_notifications, expected_matching_conns_count=1
++        )
++        self._validate_default_state(
++            client_maint_notifications,
++            expected_matching_conns_count=2,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
++        )
+ 
+         logging.info("Waiting for MIGRATED push notifications...")
+-        ClientValidations.wait_push_notification(client, timeout=MIGRATE_TIMEOUT)
++        ClientValidations.wait_push_notification(
++            client_maint_notifications, timeout=STANDALONE_MAINT_TIMEOUT
++        )
+ 
+         logging.info("Validating connection states after MIGRATED ...")
+-        self._validate_default_state(client, expected_matching_conns_count=3)
+-
+-        migrate_thread.join()
+-
+-        logging.info("Executing rladmin bind endpoint command...")
+-
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
++        self._validate_default_state(
++            client_maint_notifications,
++            expected_matching_conns_count=3,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
+         )
+-        bind_thread.start()
+ 
+         logging.info("Waiting for MOVING push notifications...")
+         # this will consume the notification in one of the connections
+@@ -595,7 +691,11 @@ def test_timeout_handling_during_migrating_and_moving(
+         # the consumed connection will be disconnected during
+         # releasing it back to the pool and as a result we will have
+         # 3 disconnected connections in the pool
+-        ClientValidations.wait_push_notification(client, timeout=BIND_TIMEOUT)
++        ClientValidations.wait_push_notification(
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            expected_state=MaintenanceState.MOVING,
++        )
+ 
+         if endpoint_type == EndpointType.NONE:
+             logging.info(
+@@ -605,7 +705,7 @@ def test_timeout_handling_during_migrating_and_moving(
+ 
+         logging.info("Validating connections states...")
+         self._validate_moving_state(
+-            client,
++            client_maint_notifications,
+             endpoint_type,
+             expected_matching_connected_conns_count=0,
+             expected_matching_disconnected_conns_count=3,
+@@ -615,84 +715,103 @@ def test_timeout_handling_during_migrating_and_moving(
+         # either to the address provided in the moving notification or to the original address
+         # depending on the configured endpoint type
+         # with this call we test if we are able to connect to the new address
+-        conn = client.connection_pool.get_connection()
++        conn = client_maint_notifications.connection_pool.get_connection()
+         self._validate_moving_state(
+-            client,
++            client_maint_notifications,
+             endpoint_type,
+             expected_matching_connected_conns_count=1,
+             expected_matching_disconnected_conns_count=2,
+             fault_injector_client=fault_injector_client,
+         )
+-        client.connection_pool.release(conn)
++        client_maint_notifications.connection_pool.release(conn)
+ 
+         logging.info("Waiting for moving ttl to expire")
+-        time.sleep(BIND_TIMEOUT)
++        time.sleep(DEFAULT_BIND_TTL)
+ 
+         logging.info("Validating connection states...")
+-        self._validate_default_state(client, expected_matching_conns_count=3)
+-        bind_thread.join()
++        self._validate_default_state(
++            client_maint_notifications,
++            expected_matching_conns_count=3,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
++        )
+ 
+-    @pytest.mark.timeout(300)  # 5 minutes timeout
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
++
++    @pytest.mark.timeout(300)  # 5 minutes timeout for this test
+     @pytest.mark.parametrize(
+-        "endpoint_type",
+-        [
+-            EndpointType.EXTERNAL_FQDN,
+-            EndpointType.EXTERNAL_IP,
+-            EndpointType.NONE,
+-        ],
++        "effect_name, trigger, db_config, db_name, endpoint_type",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP],
++            endpoint_types=[
++                EndpointType.EXTERNAL_FQDN,
++                EndpointType.EXTERNAL_IP,
++                EndpointType.NONE,
++            ],
++        ),
+     )
+-    def test_connection_handling_during_moving(
++    def test_connection_handling_during_data_movements_with_conn_drop(
+         self,
+-        endpoint_type: EndpointType,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++        endpoint_type: EndpointType,
+     ):
+-        logging.info(f"Testing timeout handling for endpoint type: {endpoint_type}")
+-        client = _get_client_maint_notifications(
+-            endpoints_config=endpoints_config, endpoint_type=endpoint_type
++        """
++        Test the push notifications are received when executing cluster operations
++        that lead to dropping connections.
++        This test validates that the connection is reconnected to the new address
++        after the moving notification is received.
++        This test also validates that newly created connections will also be
++        reconnected to the new address.
++
++        """
++        logging.info(f"DB name: {db_name}")
++        logging.info(f"Testing with endpoint type: {endpoint_type}")
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config, endpoint_type=endpoint_type
+         )
+ 
+         logging.info("Creating one connection in the pool.")
+-        first_conn = client.connection_pool.get_connection()
++        first_conn = client_maint_notifications.connection_pool.get_connection()
+ 
+-        logging.info("Executing rladmin migrate command...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         logging.info("Waiting for MIGRATING push notifications...")
+         # this will consume the notification in the provided connection
+         ClientValidations.wait_push_notification(
+-            client, timeout=MIGRATE_TIMEOUT, connection=first_conn
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
+         )
+ 
+-        self._validate_maintenance_state(client, expected_matching_conns_count=1)
++        self._validate_maintenance_state(
++            client_maint_notifications, expected_matching_conns_count=1
++        )
+ 
+         logging.info("Waiting for MIGRATED push notification ...")
+         ClientValidations.wait_push_notification(
+-            client, timeout=MIGRATE_TIMEOUT, connection=first_conn
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
+         )
+ 
+-        client.connection_pool.release(first_conn)
+-
+-        migrate_thread.join()
+-
+-        logging.info("Executing rladmin bind endpoint command...")
+-
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
+-        )
+-        bind_thread.start()
++        client_maint_notifications.connection_pool.release(first_conn)
+ 
+         logging.info("Waiting for MOVING push notifications on random connection ...")
+         # this will consume the notification in one of the connections
+@@ -700,7 +819,11 @@ def test_connection_handling_during_moving(
+         # the consumed connection will be disconnected during
+         # releasing it back to the pool and as a result we will have
+         # 3 disconnected connections in the pool
+-        ClientValidations.wait_push_notification(client, timeout=BIND_TIMEOUT)
++        ClientValidations.wait_push_notification(
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            expected_state=MaintenanceState.MOVING,
++        )
+ 
+         if endpoint_type == EndpointType.NONE:
+             logging.info(
+@@ -708,13 +831,14 @@ def test_connection_handling_during_moving(
+             )
+             time.sleep(fault_injector_client.get_moving_ttl() / 2)
+ 
+-        # validate that new connections will also receive the moving notification
+         connections = []
+         for _ in range(3):
+-            connections.append(client.connection_pool.get_connection())
++            connections.append(
++                client_maint_notifications.connection_pool.get_connection()
++            )
+         for conn in connections:
+             logging.debug(f"Releasing connection {conn}. {conn.maintenance_state}")
+-            client.connection_pool.release(conn)
++            client_maint_notifications.connection_pool.release(conn)
+ 
+         logging.info("Validating connections states during MOVING ...")
+         # during get_connection() the existing connection will be reconnected
+@@ -723,7 +847,7 @@ def test_connection_handling_during_moving(
+         # with this call we test if we are able to connect to the new address
+         # new connection should also be marked as moving
+         self._validate_moving_state(
+-            client,
++            client_maint_notifications,
+             endpoint_type,
+             expected_matching_connected_conns_count=3,
+             expected_matching_disconnected_conns_count=0,
+@@ -734,49 +858,178 @@ def test_connection_handling_during_moving(
+         time.sleep(fault_injector_client.get_moving_ttl())
+ 
+         logging.info("Validating connection states after MOVING has expired ...")
+-        self._validate_default_state(client, expected_matching_conns_count=3)
+-        bind_thread.join()
++        self._validate_default_state(
++            client_maint_notifications,
++            expected_matching_conns_count=3,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
++        )
++
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
++
++    @pytest.mark.timeout(300)  # 5 minutes timeout for this test
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_NO_CONN_DROP],
++        ),
++    )
++    @pytest.mark.skipif(
++        use_mock_proxy(),
++        reason="Mock proxy doesn't support sending notifications to new connections.",
++    )
++    def test_new_connections_receive_notifications_no_conn_drop(
++        self,
++        fault_injector_client: FaultInjectorClient,
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
++    ):
++        """
++        Test the push notifications are received when executing cluster operations
++        that lead to dropping connections.
++
++        """
++        logging.info(f"DB name: {db_name}")
++
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config
++        )
++
++        logging.info("Creating one connection in the pool.")
++        first_conn = client_maint_notifications.connection_pool.get_connection()
++
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
++            args=(
++                fault_injector_client,
++                db_endpoint_config,
++                effect_name,
++                trigger,
++            ),
++        )
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
++
++        logging.info("Waiting for opening push notifications...")
++        # this will consume the notification in the provided connection
++        ClientValidations.wait_push_notification(
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
++        )
++        self._validate_maintenance_state(
++            client_maint_notifications, expected_matching_conns_count=1
++        )
++
++        # validate that new connections will also receive the opening notification
++        # it should be received as part of the client connection setup flow
++        logging.info(
++            "Creating second connection that should receive the opening notification as well."
++        )
++        second_connection = client_maint_notifications.connection_pool.get_connection()
++        self._validate_maintenance_state(
++            client_maint_notifications, expected_matching_conns_count=2
++        )
++
++        logging.info("Waiting for closing push notifications on both connections ...")
++        ClientValidations.wait_push_notification(
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
++        )
++        ClientValidations.wait_push_notification(
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=second_connection,
++        )
++
++        self._validate_default_state(
++            client_maint_notifications,
++            expected_matching_conns_count=2,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
++        )
++
++        client_maint_notifications.connection_pool.release(first_conn)
++        client_maint_notifications.connection_pool.release(second_connection)
++
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
+ 
+-    @pytest.mark.timeout(300)  # 5 minutes timeout
++    @pytest.mark.timeout(300)  # 5 minutes timeout for this test
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP],
++        ),
++    )
++    @pytest.mark.skipif(
++        use_mock_proxy(),
++        reason="Mock proxy doesn't support sending notifications to new connections.",
++    )
+     def test_old_connection_shutdown_during_moving(
+         self,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
+     ):
++        """
++        Test the push notifications are received when executing cluster operations
++        that lead to dropping connections.
++
++        """
++        logging.info(f"DB name: {db_name}")
++
+         # it is better to use ip for this test - enables validation that
+         # the connection is disconnected from the original address
+         # and connected to the new address
+         endpoint_type = EndpointType.EXTERNAL_IP
+         logging.info("Testing old connection shutdown during MOVING")
+-        client = _get_client_maint_notifications(
+-            endpoints_config=endpoints_config, endpoint_type=endpoint_type
++
++        client, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config, endpoint_type=endpoint_type
+         )
+ 
+         # create one connection and release it back to the pool
+         conn = client.connection_pool.get_connection()
+         client.connection_pool.release(conn)
+ 
+-        logging.info("Starting migration ...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         logging.info("Waiting for MIGRATING push notifications...")
+-        ClientValidations.wait_push_notification(client, timeout=MIGRATE_TIMEOUT)
++        ClientValidations.wait_push_notification(
++            client, timeout=STANDALONE_MAINT_TIMEOUT
++        )
+         self._validate_maintenance_state(client, expected_matching_conns_count=1)
+ 
+         logging.info("Waiting for MIGRATED push notification ...")
+-        ClientValidations.wait_push_notification(client, timeout=MIGRATE_TIMEOUT)
+-        self._validate_default_state(client, expected_matching_conns_count=1)
+-        migrate_thread.join()
++        ClientValidations.wait_push_notification(
++            client, timeout=STANDALONE_MAINT_TIMEOUT
++        )
++        self._validate_default_state(
++            client,
++            expected_matching_conns_count=1,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
++        )
+ 
+         moving_event = threading.Event()
+ 
+@@ -799,14 +1052,6 @@ def execute_commands(moving_event: threading.Event, errors: Queue):
+         # for it because it has already received and processed it
+         conn_to_check_moving = client.connection_pool.get_connection()
+ 
+-        logging.info("Starting rebind...")
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
+-        )
+-        bind_thread.start()
+-
+         errors = Queue()
+         threads_count = 10
+         futures = []
+@@ -825,7 +1070,10 @@ def execute_commands(moving_event: threading.Event, errors: Queue):
+             # this will consume the notification in one of the connections
+             # and will handle the states of the rest
+             ClientValidations.wait_push_notification(
+-                client, timeout=BIND_TIMEOUT, connection=conn_to_check_moving
++                client,
++                timeout=STANDALONE_MAINT_TIMEOUT,
++                connection=conn_to_check_moving,
++                expected_state=MaintenanceState.MOVING,
+             )
+             # set the event to stop the command execution threads
+             logging.info("Setting moving event...")
+@@ -862,79 +1110,106 @@ def execute_commands(moving_event: threading.Event, errors: Queue):
+         # validate no errors were raised in the command execution threads
+         assert errors.empty(), f"Errors occurred in threads: {errors.queue}"
+ 
+-        logging.info("Waiting for moving ttl to expire")
+-        bind_thread.join()
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
+ 
+     @pytest.mark.timeout(300)  # 5 minutes timeout
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP],
++        ),
++    )
+     @pytest.mark.skipif(
+         use_mock_proxy(),
+         reason="Mock proxy doesn't support sending notifications to new connections.",
+     )
+     def test_new_connections_receive_moving(
+         self,
+-        client_maint_notifications: Redis,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
+     ):
++        logging.info(f"DB name: {db_name}")
++
++        endpoint_type = EndpointType.EXTERNAL_IP
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config, endpoint_type=endpoint_type
++        )
++
+         logging.info("Creating one connection in the pool.")
+         first_conn = client_maint_notifications.connection_pool.get_connection()
+ 
+-        logging.info("Executing rladmin migrate command...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         logging.info("Waiting for MIGRATING push notifications...")
+         # this will consume the notification in the provided connection
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=MIGRATE_TIMEOUT, connection=first_conn
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
+         )
+ 
+         self._validate_maintenance_state(
+             client_maint_notifications, expected_matching_conns_count=1
+         )
+ 
+-        logging.info("Waiting for MIGRATED push notifications on both connections ...")
++        logging.info("Waiting for MIGRATED push notifications ...")
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=MIGRATE_TIMEOUT, connection=first_conn
+-        )
+-
+-        migrate_thread.join()
+-
+-        logging.info("Executing rladmin bind endpoint command...")
+-
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
+         )
+-        bind_thread.start()
+ 
+         logging.info("Waiting for MOVING push notifications on random connection ...")
+         ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=BIND_TIMEOUT, connection=first_conn
++            client_maint_notifications,
++            timeout=STANDALONE_MAINT_TIMEOUT,
++            connection=first_conn,
++            expected_state=MaintenanceState.MOVING,
+         )
+ 
++        assert first_conn._sock is not None, (
++            "Connection must be active after receiving MOVING notification"
++        )
+         old_address = first_conn._sock.getpeername()[0]
+         logging.info(f"The node address before bind: {old_address}")
+         logging.info(
+             "Creating new client to connect to the same node - new connections to this node should receive the moving notification..."
+         )
+ 
+-        endpoint_type = EndpointType.EXTERNAL_IP
++        auth_ssl_client_certs_config_info = db_config.get(
++            "authentication_ssl_client_certs", None
++        )
++        auth_ssl_client_certs = (
++            True
++            if auth_ssl_client_certs_config_info
++            and auth_ssl_client_certs_config_info[0]["client_cert"] is not None
++            else False
++        )
++
+         # create new client with new pool that should also receive the moving notification
+         new_client = _get_client_maint_notifications(
+-            endpoints_config=endpoints_config,
++            endpoints_config=db_endpoint_config,
+             endpoint_type=endpoint_type,
+             host_config=old_address,
++            socket_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
++            auth_ssl_client_certs=auth_ssl_client_certs,
+         )
+ 
+         # the moving notification will be consumed as
+@@ -954,111 +1229,59 @@ def test_new_connections_receive_moving(
+             fault_injector_client=fault_injector_client,
+         )
+ 
+-        logging.info("Waiting for moving thread to be completed ...")
+-        bind_thread.join()
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
+ 
+         new_client.connection_pool.release(new_client_conn)
+         new_client.close()
+ 
+         client_maint_notifications.connection_pool.release(first_conn)
+ 
+-    @pytest.mark.timeout(300)  # 5 minutes timeout
+-    @pytest.mark.skipif(
+-        use_mock_proxy(),
+-        reason="Mock proxy doesn't support sending notifications to new connections.",
++    @pytest.mark.timeout(300)
++    @pytest.mark.parametrize(
++        "effect_name, trigger, db_config, db_name",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP],
++        ),
+     )
+-    def test_new_connections_receive_migrating(
++    def test_disabled_handling_during_migrating_and_moving(
+         self,
+-        client_maint_notifications: Redis,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
+     ):
+-        logging.info("Creating one connection in the pool.")
+-        first_conn = client_maint_notifications.connection_pool.get_connection()
+-
+-        logging.info("Executing rladmin migrate command...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
+-            args=(
+-                fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
+-            ),
+-        )
+-        migrate_thread.start()
+-
+-        logging.info("Waiting for MIGRATING push notifications...")
+-        # this will consume the notification in the provided connection
+-        ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=MIGRATE_TIMEOUT, connection=first_conn
+-        )
+-
+-        self._validate_maintenance_state(
+-            client_maint_notifications, expected_matching_conns_count=1
+-        )
+-
+-        # validate that new connections will also receive the migrating notification
+-        # it should be received as part of the client connection setup flow
+-        logging.info(
+-            "Creating second connection that should receive the migrating notification as well."
+-        )
+-        second_connection = client_maint_notifications.connection_pool.get_connection()
+-        self._validate_maintenance_state(
+-            client_maint_notifications, expected_matching_conns_count=2
+-        )
+-
+-        logging.info("Waiting for MIGRATED push notifications on both connections ...")
+-        ClientValidations.wait_push_notification(
+-            client_maint_notifications, timeout=MIGRATE_TIMEOUT, connection=first_conn
+-        )
+-        ClientValidations.wait_push_notification(
+-            client_maint_notifications,
+-            timeout=MIGRATE_TIMEOUT,
+-            connection=second_connection,
+-        )
+-
+-        migrate_thread.join()
+-        logging.info("Executing rladmin bind endpoint command for cleanup...")
++        logging.info(f"DB name: {db_name}")
+ 
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
+-        )
+-        bind_thread.start()
+-        bind_thread.join()
+-        client_maint_notifications.connection_pool.release(first_conn)
+-        client_maint_notifications.connection_pool.release(second_connection)
++        self.delete_prev_db(fault_injector_client, db_config["name"])
++        db_endpoint_config = self.create_db(fault_injector_client, db_config)
++        self._bdb_name = db_config["name"]
+ 
+-    @pytest.mark.timeout(300)
+-    def test_disabled_handling_during_migrating_and_moving(
+-        self,
+-        fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
+-    ):
+         logging.info("Creating client with disabled notifications.")
+-        client = _get_client_maint_notifications(
+-            endpoints_config=endpoints_config,
++        client = get_standalone_client_maint_notifications(
++            endpoints_config=db_endpoint_config,
++            disable_retries=True,
+             enable_maintenance_notifications=False,
+         )
+ 
+         logging.info("Creating one connection in the pool.")
+         first_conn = client.connection_pool.get_connection()
+ 
+-        logging.info("Executing rladmin migrate command...")
+-        migrate_thread = Thread(
+-            target=self._execute_migration,
+-            name="migrate_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         logging.info("Waiting for MIGRATING push notifications...")
+         # this will consume the notification in the provided connection if it arrives
+@@ -1070,7 +1293,7 @@ def test_disabled_handling_during_migrating_and_moving(
+             client, expected_matching_conns_count=1
+         )
+ 
+-        # validate that new connections will also receive the moving notification
++        # validate that new connections will also not receive the migrating notification
+         logging.info(
+             "Creating second connection in the pool"
+             " and expect it not to receive the migrating as well."
+@@ -1099,17 +1322,6 @@ def test_disabled_handling_during_migrating_and_moving(
+         client.connection_pool.release(first_conn)
+         client.connection_pool.release(second_connection)
+ 
+-        migrate_thread.join()
+-
+-        logging.info("Executing rladmin bind endpoint command...")
+-
+-        bind_thread = Thread(
+-            target=self._execute_bind,
+-            name="bind_thread",
+-            args=(fault_injector_client, endpoints_config, self.endpoint_id),
+-        )
+-        bind_thread.start()
+-
+         logging.info("Waiting for MOVING push notifications on random connection ...")
+         # this will consume the notification if it arrives in one of the connections
+         # and will handle the states of the rest
+@@ -1122,7 +1334,7 @@ def test_disabled_handling_during_migrating_and_moving(
+             fail_on_timeout=False,
+         )
+ 
+-        # validate that new connections will also receive the moving notification
++        # validate that new connections will also not receive the moving notification
+         connections = []
+         for _ in range(3):
+             connections.append(client.connection_pool.get_connection())
+@@ -1141,21 +1353,39 @@ def test_disabled_handling_during_migrating_and_moving(
+         self._validate_default_notif_disabled_state(
+             client, expected_matching_conns_count=3
+         )
+-        bind_thread.join()
+ 
+-    @pytest.mark.timeout(300)
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
++
++
++class TestStandaloneClientCommandsExecutionWithPushNotificationsWithEffectTrigger(
++    TestStanaloneClientPushNotificationsWithEffectTriggerBase
++):
++    @pytest.mark.timeout(300)  # 5 minutes timeout for this test
+     @pytest.mark.parametrize(
+-        "endpoint_type",
+-        [
+-            EndpointType.EXTERNAL_FQDN,
+-            EndpointType.EXTERNAL_IP,
+-            EndpointType.NONE,
+-        ],
++        "effect_name, trigger, db_config, db_name, endpoint_type",
++        generate_params(
++            _FAULT_INJECTOR_STANDALONE_CLIENT,
++            [
++                TopologyChangeStandaloneEffects.DATA_MOVEMENT_NO_CONN_DROP,
++                TopologyChangeStandaloneEffects.DATA_MOVEMENT_CONN_DROP,
++                TopologyChangeStandaloneEffects.CONN_DROP,
++                TopologyChangeStandaloneEffects.DNS_RESOLUTION_CHANGE,
++            ],
++            endpoint_types=[
++                EndpointType.EXTERNAL_FQDN,
++                EndpointType.EXTERNAL_IP,
++                EndpointType.NONE,
++            ],
++        ),
+     )
+-    def test_command_execution_during_migrating_and_moving(
++    def test_command_execution_during_maintenance(
+         self,
+         fault_injector_client: FaultInjectorClient,
+-        endpoints_config: Dict[str, Any],
++        effect_name: TopologyChangeStandaloneEffects,
++        trigger: str,
++        db_config: dict[str, Any],
++        db_name: str,
+         endpoint_type: EndpointType,
+     ):
+         """
+@@ -1170,24 +1400,20 @@ def test_command_execution_during_migrating_and_moving(
+         if isinstance(fault_injector_client, ProxyServerFaultInjector):
+             execution_duration = 20
+         else:
+-            execution_duration = 180
+-
+-        socket_timeout = DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT
++            execution_duration = 60
+ 
+-        client = _get_client_maint_notifications(
+-            endpoints_config=endpoints_config,
+-            endpoint_type=endpoint_type,
+-            disable_retries=True,
+-            socket_timeout=socket_timeout,
+-            enable_maintenance_notifications=True,
++        logging.info(f"DB name: {db_name}")
++        logging.info(f"Testing timeout handling for endpoint type: {endpoint_type}")
++        client_maint_notifications, db_endpoint_config = self.setup_env(
++            fault_injector_client, db_config, endpoint_type=endpoint_type
+         )
+ 
+         def execute_commands(duration: int, errors: Queue):
+             start = time.time()
+             while time.time() - start < duration:
+                 try:
+-                    client.set("key", "value")
+-                    client.get("key")
++                    client_maint_notifications.set("key", "value")
++                    client_maint_notifications.get("key")
+                 except Exception as e:
+                     logging.error(
+                         f"Error in thread {threading.current_thread().name}: {e}"
+@@ -1213,107 +1439,39 @@ def execute_commands(duration: int, errors: Queue):
+         logging.info("Waiting for threads to start and have a few cycles executed ...")
+         time.sleep(3)
+ 
+-        migrate_and_bind_thread = Thread(
+-            target=self._execute_migrate_bind_flow,
+-            name="migrate_and_bind_thread",
++        logging.info("Executing FI command that triggers the desired effect...")
++        trigger_effect_thread = Thread(
++            target=self._trigger_effect,
++            name="trigger_effect_thread",
+             args=(
+                 fault_injector_client,
+-                endpoints_config,
+-                self.target_node.node_id,
+-                self.empty_node.node_id,
+-                self.endpoint_id,
++                db_endpoint_config,
++                effect_name,
++                trigger,
+             ),
+         )
+-        migrate_and_bind_thread.start()
++        self.maintenance_ops_threads.append(trigger_effect_thread)
++        trigger_effect_thread.start()
+ 
+         for thread in threads:
+             thread.join()
+ 
+-        migrate_and_bind_thread.join()
++        trigger_effect_thread.join()
++        self.maintenance_ops_threads.remove(trigger_effect_thread)
+ 
+         # validate connections settings
+         self._validate_default_state(
+-            client, expected_matching_conns_count=10, configured_timeout=socket_timeout
++            client_maint_notifications,
++            expected_matching_conns_count=10,
++            configured_timeout=DEFAULT_STANDALONE_CLIENT_SOCKET_TIMEOUT,
+         )
+ 
+         assert errors.empty(), f"Errors occurred in threads: {errors.queue}"
+ 
+ 
+-def generate_params(
+-    fault_injector_client: FaultInjectorClient,
+-    effect_names: list[SlotMigrateEffects],
+-    skip_combinations: list[tuple[SlotMigrateEffects, str]] = [],
+-):
+-    # params should produce list of tuples: (effect_name, trigger_name, bdb_config, bdb_name)
+-    params = []
+-    try:
+-        logging.info(f"Extracting params for test with effect_names: {effect_names}")
+-        for effect_name in effect_names:
+-            triggers_data = ClusterOperations.get_slot_migrate_triggers(
+-                fault_injector_client, effect_name
+-            )
+-
+-            for trigger_info in triggers_data["triggers"]:
+-                trigger = trigger_info["name"]
+-                if (effect_name, trigger) in skip_combinations:
+-                    continue
+-                if trigger == "maintenance_mode":
+-                    continue
+-                trigger_requirements = trigger_info["requirements"]
+-                for requirement in trigger_requirements:
+-                    dbconfig = requirement["dbconfig"]
+-                    ip_type = requirement["oss_cluster_api"]["ip_type"]
+-                    if ip_type == "internal":
+-                        continue
+-                    db_name_pattern = dbconfig.get("name").rsplit("-", 1)[0]
+-                    dbconfig["name"] = (
+-                        db_name_pattern  # this will ensure dbs will be deleted
+-                    )
+-
+-                    params.append((effect_name, trigger, dbconfig, db_name_pattern))
+-    except Exception as e:
+-        logging.error(f"Failed to extract params for test: {e}")
+-
+-    return params
+-
+-
+ class TestClusterClientPushNotificationsWithEffectTriggerBase(
+     TestPushNotificationsBase
+ ):
+-    def delete_prev_db(
+-        self,
+-        fault_injector_client_oss_api: FaultInjectorClient,
+-        db_name: str,
+-    ):
+-        try:
+-            logging.info(f"Deleting database if exists: {db_name}")
+-            existing_db_id = None
+-            existing_db_id = ClusterOperations.find_database_id_by_name(
+-                fault_injector_client_oss_api, db_name
+-            )
+-
+-            if existing_db_id:
+-                fault_injector_client_oss_api.delete_database(existing_db_id)
+-                logging.info(f"Deleted database: {db_name}")
+-            else:
+-                logging.info(f"Database {db_name} does not exist.")
+-        except Exception as e:
+-            logging.error(f"Failed to delete database {db_name}: {e}")
+-
+-    def create_db(
+-        self,
+-        fault_injector_client_oss_api: FaultInjectorClient,
+-        bdb_config: Dict[str, Any],
+-    ):
+-        try:
+-            logging.info(f"Creating database: \n{json.dumps(bdb_config, indent=2)}")
+-            cluster_endpoint_config = fault_injector_client_oss_api.create_database(
+-                bdb_config
+-            )
+-            return cluster_endpoint_config
+-        except Exception as e:
+-            pytest.fail(f"Failed to create database: {e}")
+-
+     def setup_env(
+         self,
+         fault_injector_client_oss_api: FaultInjectorClient,

@@ -1,0 +1,880 @@
+diff --git a/redis/_parsers/base.py b/redis/_parsers/base.py
+index f5707ca036..b4b21f63a7 100644
+--- a/redis/_parsers/base.py
++++ b/redis/_parsers/base.py
+@@ -1,7 +1,6 @@
+ import logging
+-import sys
+-from abc import ABC
+-from asyncio import IncompleteReadError, StreamReader, TimeoutError
++from abc import ABC, abstractmethod
++from asyncio import IncompleteReadError, StreamReader
+ from typing import Awaitable, Callable, List, Optional, Protocol, Union
+ 
+ from redis.maint_notifications import (
+@@ -14,12 +13,7 @@
+     OSSNodeMigratedNotification,
+     OSSNodeMigratingNotification,
+ )
+-from redis.utils import safe_str
+-
+-if sys.version_info.major >= 3 and sys.version_info.minor >= 11:
+-    from asyncio import timeout as async_timeout
+-else:
+-    from async_timeout import timeout as async_timeout
++from redis.utils import deprecated_function, safe_str
+ 
+ from ..exceptions import (
+     AskError,
+@@ -118,11 +112,13 @@ def parse_error(cls, response):
+             return exception_class(response, status_code=error_code)
+         return ResponseError(response)
+ 
++    @abstractmethod
+     def on_disconnect(self):
+-        raise NotImplementedError()
++        pass
+ 
++    @abstractmethod
+     def on_connect(self, connection):
+-        raise NotImplementedError()
++        pass
+ 
+ 
+ class _RESPBase(BaseParser):
+@@ -156,8 +152,12 @@ def on_disconnect(self):
+             self._buffer = None
+         self.encoder = None
+ 
+-    def can_read(self, timeout):
+-        return self._buffer and self._buffer.can_read(timeout)
++    def can_read(self, timeout: float = 0) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
++        if self._buffer is None:
++            return False
++        return self._buffer.can_read(timeout)
+ 
+ 
+ class AsyncBaseParser(BaseParser):
+@@ -169,8 +169,18 @@ def __init__(self, socket_read_size: int):
+         self._stream: Optional[StreamReader] = None
+         self._read_size = socket_read_size
+ 
++    @deprecated_function(
++        version="8.0.0", reason="Use can_read() instead", name="can_read_destructive"
++    )
++    @abstractmethod
+     async def can_read_destructive(self) -> bool:
+-        raise NotImplementedError()
++        pass
++
++    @abstractmethod
++    async def can_read(self) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
++        pass
+ 
+     async def read_response(
+         self, disable_decoding: bool = False
+@@ -515,16 +525,25 @@ def on_disconnect(self):
+         """Called when the stream disconnects"""
+         self._connected = False
+ 
++    @deprecated_function(
++        version="8.0.0",
++        reason="Use can_read() instead",
++        name="can_read_destructive",
++    )
+     async def can_read_destructive(self) -> bool:
++        return await self.can_read()
++
++    async def can_read(self) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         if not self._connected:
+             raise OSError("Buffer is closed.")
+         if self._buffer:
+             return True
+-        try:
+-            async with async_timeout(0):
+-                return self._stream.at_eof()
+-        except TimeoutError:
+-            return False
++        # asyncio.StreamReader has no public non-destructive API for checking
++        # buffered bytes. Preserve dirty-connection detection for the Python
++        # parser and fail loudly if the private buffer API changes.
++        return bool(self._stream._buffer) or self._stream.at_eof()
+ 
+     async def _read(self, length: int) -> bytes:
+         """
+diff --git a/redis/_parsers/hiredis.py b/redis/_parsers/hiredis.py
+index fb2ea7709c..48d469c452 100644
+--- a/redis/_parsers/hiredis.py
++++ b/redis/_parsers/hiredis.py
+@@ -1,17 +1,11 @@
+-import asyncio
++import select
+ import socket
+-import sys
+ from logging import getLogger
+ from typing import Callable, List, Optional, TypedDict, Union
+ 
+-if sys.version_info.major >= 3 and sys.version_info.minor >= 11:
+-    from asyncio import timeout as async_timeout
+-else:
+-    from async_timeout import timeout as async_timeout
+-
+-from ..exceptions import ConnectionError, InvalidResponse, RedisError
++from ..exceptions import ConnectionError, InvalidResponse, RedisError, TimeoutError
+ from ..typing import EncodableT
+-from ..utils import HIREDIS_AVAILABLE
++from ..utils import HIREDIS_AVAILABLE, deprecated_function
+ from .base import (
+     AsyncBaseParser,
+     AsyncPushNotificationsParser,
+@@ -31,6 +25,13 @@
+ NOT_ENOUGH_DATA = object()
+ 
+ 
++def _socket_can_read(sock, timeout: float) -> bool:
++    # SSL sockets can have decrypted bytes buffered above the OS socket layer.
++    if hasattr(sock, "pending") and sock.pending():
++        return True
++    return bool(select.select([sock], [], [], timeout)[0])
++
++
+ class _HiredisReaderArgs(TypedDict, total=False):
+     protocolError: Callable[[str], Exception]
+     replyError: Callable[[str], Exception]
+@@ -79,7 +80,6 @@ def on_connect(self, connection, **kwargs):
+         if connection.encoder.decode_responses:
+             kwargs["encoding"] = connection.encoder.encoding
+         self._reader = hiredis.Reader(**kwargs)
+-        self._next_response = NOT_ENOUGH_DATA
+ 
+         try:
+             self._hiredis_PushNotificationType = hiredis.PushNotification
+@@ -90,17 +90,16 @@ def on_connect(self, connection, **kwargs):
+     def on_disconnect(self):
+         self._sock = None
+         self._reader = None
+-        self._next_response = NOT_ENOUGH_DATA
+ 
+-    def can_read(self, timeout):
++    def can_read(self, timeout: float = 0) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         if not self._reader:
+             raise ConnectionError(SERVER_CLOSED_CONNECTION_ERROR)
+ 
+-        if self._next_response is NOT_ENOUGH_DATA:
+-            self._next_response = self._reader.gets()
+-            if self._next_response is NOT_ENOUGH_DATA:
+-                return self.read_from_socket(timeout=timeout, raise_on_timeout=False)
+-        return True
++        if self._reader.has_data():
++            return True
++        return _socket_can_read(self._sock, timeout)
+ 
+     def read_from_socket(self, timeout=SENTINEL, raise_on_timeout=True):
+         sock = self._sock
+@@ -125,8 +124,11 @@ def read_from_socket(self, timeout=SENTINEL, raise_on_timeout=True):
+             # there's no data to be read. otherwise raise the
+             # original exception.
+             allowed = NONBLOCKING_EXCEPTION_ERROR_NUMBERS.get(ex.__class__, -1)
+-            if not raise_on_timeout and ex.errno == allowed:
+-                return False
++            if ex.errno == allowed:
++                if not raise_on_timeout:
++                    return False
++                if timeout == 0:
++                    raise TimeoutError("Timeout reading from socket")
+             raise ConnectionError(f"Error while reading from socket: {ex.args}")
+         finally:
+             if custom_timeout:
+@@ -141,26 +143,6 @@ def read_response(
+         if not self._reader:
+             raise ConnectionError(SERVER_CLOSED_CONNECTION_ERROR)
+ 
+-        # _next_response might be cached from a can_read() call
+-        if self._next_response is not NOT_ENOUGH_DATA:
+-            response = self._next_response
+-            self._next_response = NOT_ENOUGH_DATA
+-            if self._hiredis_PushNotificationType is not None and isinstance(
+-                response, self._hiredis_PushNotificationType
+-            ):
+-                response = self.handle_push_response(response)
+-
+-                # if this is a push request return the push response
+-                if push_request:
+-                    return response
+-
+-                return self.read_response(
+-                    disable_decoding=disable_decoding,
+-                    push_request=push_request,
+-                    timeout=timeout,
+-                )
+-            return response
+-
+         if disable_decoding:
+             response = self._reader.gets(False)
+         else:
+@@ -186,6 +168,7 @@ def read_response(
+             return self.read_response(
+                 disable_decoding=disable_decoding,
+                 push_request=push_request,
++                timeout=timeout,
+             )
+ 
+         elif (
+@@ -243,16 +226,24 @@ def on_connect(self, connection):
+     def on_disconnect(self):
+         self._connected = False
+ 
+-    async def can_read_destructive(self):
++    @deprecated_function(
++        version="8.0.0", reason="Use can_read() instead", name="can_read_destructive"
++    )
++    async def can_read_destructive(self) -> bool:
++        return await self.can_read()
++
++    async def can_read(self) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         if not self._connected:
+             raise OSError("Buffer is closed.")
+-        if self._reader.gets() is not NOT_ENOUGH_DATA:
++        # EOF means the connection is closed and not safe to reuse.
++        if self._reader.has_data() or self._stream.at_eof():
+             return True
+-        try:
+-            async with async_timeout(0):
+-                return await self.read_from_socket()
+-        except asyncio.TimeoutError:
+-            return False
++        # asyncio.StreamReader has no public non-destructive API for checking
++        # buffered bytes. Preserve dirty-connection detection for hiredis; tests
++        # with a real StreamReader guard this private buffer API in CI.
++        return bool(self._stream._buffer)
+ 
+     async def read_from_socket(self):
+         buffer = await self._stream.read(self._read_size)
+diff --git a/redis/_parsers/socket.py b/redis/_parsers/socket.py
+index f10f257ddd..79f5217384 100644
+--- a/redis/_parsers/socket.py
++++ b/redis/_parsers/socket.py
+@@ -83,15 +83,18 @@ def _read_from_socket(
+             # there's no data to be read. otherwise raise the
+             # original exception.
+             allowed = NONBLOCKING_EXCEPTION_ERROR_NUMBERS.get(ex.__class__, -1)
+-            if not raise_on_timeout and ex.errno == allowed:
+-                return False
++            if ex.errno == allowed:
++                if not raise_on_timeout:
++                    return False
++                if timeout == 0:
++                    raise TimeoutError("Timeout reading from socket")
+             raise ConnectionError(f"Error while reading from socket: {ex.args}")
+         finally:
+             buf.seek(current_pos)
+             if custom_timeout:
+                 sock.settimeout(self.socket_timeout)
+ 
+-    def can_read(self, timeout: float) -> bool:
++    def can_read(self, timeout: float = 0) -> bool:
+         return bool(self.unread_bytes()) or self._read_from_socket(
+             timeout=timeout, raise_on_timeout=False
+         )
+diff --git a/redis/asyncio/connection.py b/redis/asyncio/connection.py
+index e126076236..af960568e3 100644
+--- a/redis/asyncio/connection.py
++++ b/redis/asyncio/connection.py
+@@ -34,7 +34,7 @@
+     ConnectionState,
+     get_pool_name,
+ )
+-from ..utils import SSL_AVAILABLE
++from ..utils import SSL_AVAILABLE, deprecated_function
+ 
+ if SSL_AVAILABLE:
+     import ssl
+@@ -712,10 +712,24 @@ async def send_command(self, *args: Any, **kwargs: Any) -> None:
+             self.pack_command(*args), check_health=kwargs.get("check_health", True)
+         )
+ 
+-    async def can_read_destructive(self):
+-        """Poll the socket to see if there's data that can be read."""
++    @deprecated_function(
++        version="8.0.0", reason="Use can_read() instead", name="can_read_destructive"
++    )
++    async def can_read_destructive(self) -> bool:
++        """Check the socket to see if there's data loaded in the buffer."""
++        try:
++            return await self._parser.can_read()
++        except OSError as e:
++            await self.disconnect(nowait=True)
++            host_error = self._host_error()
++            raise ConnectionError(f"Error while reading from {host_error}: {e.args}")
++
++    async def can_read(self) -> bool:
++        """Check the socket to see if there's data loaded in the buffer."""
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         try:
+-            return await self._parser.can_read_destructive()
++            return await self._parser.can_read()
+         except OSError as e:
+             await self.disconnect(nowait=True)
+             host_error = self._host_error()
+@@ -1571,12 +1585,12 @@ async def ensure_connection(self, connection: AbstractConnection):
+         # pool before all data has been read or the socket has been
+         # closed. either way, reconnect and verify everything is good.
+         try:
+-            if await connection.can_read_destructive():
++            if await connection.can_read():
+                 raise ConnectionError("Connection has data") from None
+         except (ConnectionError, TimeoutError, OSError):
+             await connection.disconnect()
+             await connection.connect()
+-            if await connection.can_read_destructive():
++            if await connection.can_read():
+                 raise ConnectionError("Connection not ready") from None
+ 
+     async def release(self, connection: AbstractConnection):
+diff --git a/redis/connection.py b/redis/connection.py
+index 366b3e313c..e7c3bdffaf 100644
+--- a/redis/connection.py
++++ b/redis/connection.py
+@@ -234,7 +234,9 @@ def send_command(self, *args, **kwargs):
+         pass
+ 
+     @abstractmethod
+-    def can_read(self, timeout=0):
++    def can_read(self, timeout: float = 0) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         pass
+ 
+     @abstractmethod
+@@ -1329,8 +1331,10 @@ def send_command(self, *args, **kwargs):
+             check_health=kwargs.get("check_health", True),
+         )
+ 
+-    def can_read(self, timeout=0):
++    def can_read(self, timeout: float = 0) -> bool:
+         """Poll the socket to see if there's data that can be read."""
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         sock = self._sock
+         if not sock:
+             self.connect()
+@@ -1711,7 +1715,14 @@ def send_command(self, *args, **kwargs):
+ 
+                 with self._pool_lock:
+                     while entry.connection_ref.can_read():
+-                        entry.connection_ref.read_response(push_request=True)
++                        try:
++                            entry.connection_ref.read_response(
++                                push_request=True,
++                                timeout=0,
++                                disconnect_on_error=False,
++                            )
++                        except TimeoutError:
++                            break
+ 
+                 # Re-check: if the entry was invalidated during the drain,
+                 # fall through to send the command over the network.
+@@ -1733,7 +1744,9 @@ def send_command(self, *args, **kwargs):
+         # read-only command that not yet cached.
+         self._conn.send_command(*args, **kwargs)
+ 
+-    def can_read(self, timeout=0):
++    def can_read(self, timeout: float = 0) -> bool:
++        # TODO: Rename this API; it detects pending data or dirty/closed
++        # connection state, not only whether application data can be read.
+         return self._conn.can_read(timeout)
+ 
+     def read_response(
+@@ -1935,7 +1948,12 @@ def _enable_tracking_callback(self, conn: ConnectionInterface) -> None:
+ 
+     def _process_pending_invalidations(self):
+         while self.can_read():
+-            self._conn.read_response(push_request=True)
++            try:
++                self._conn.read_response(
++                    push_request=True, timeout=0, disconnect_on_error=False
++                )
++            except TimeoutError:
++                break
+ 
+     def _on_invalidation_callback(self, data: List[Union[str, Optional[List[bytes]]]]):
+         with self._cache_lock:
+diff --git a/tests/test_asyncio/test_connection.py b/tests/test_asyncio/test_connection.py
+index b0cf612475..65b5caac0d 100644
+--- a/tests/test_asyncio/test_connection.py
++++ b/tests/test_asyncio/test_connection.py
+@@ -13,6 +13,7 @@
+     _AsyncRESP3Parser,
+     _AsyncRESPBase,
+ )
++from redis._parsers.hiredis import NOT_ENOUGH_DATA
+ from redis.asyncio import ConnectionPool, Redis
+ from redis.asyncio.connection import (
+     Connection,
+@@ -29,6 +30,49 @@
+ from .mocks import MockStream
+ 
+ 
++class DummyHiredisReader:
++    def __init__(self, response=NOT_ENOUGH_DATA, decoded_response=None, has_data=False):
++        self.responses = [response]
++        self.decoded_response = decoded_response
++        self.has_data_value = has_data
++
++    def has_data(self):
++        return self.has_data_value
++
++    def gets(self, *args):
++        if self.responses:
++            response = self.responses.pop(0)
++            if args == (False,) or self.decoded_response is None:
++                return response
++            return self.decoded_response
++        return NOT_ENOUGH_DATA
++
++
++class DummyAsyncStream:
++    def __init__(self, buffer=b"", eof=False):
++        self._buffer = bytearray(buffer)
++        self.eof = eof
++        self.read_called = False
++
++    def at_eof(self):
++        return self.eof and not self._buffer
++
++    async def read(self, _):
++        self.read_called = True
++        raise AssertionError("can_read should not read from the stream")
++
++
++def make_async_hiredis_parser(
++    stream, response=NOT_ENOUGH_DATA, decoded_response=None, has_data=False
++):
++    parser = _AsyncHiredisParser.__new__(_AsyncHiredisParser)
++    parser._connected = True
++    parser._reader = DummyHiredisReader(response, decoded_response, has_data)
++    parser._stream = stream
++    parser._hiredis_PushNotificationType = None
++    return parser
++
++
+ def test_connection_default_parser_matches_default_protocol():
+     conn = Connection()
+     expected_parser_class = (
+@@ -38,6 +82,90 @@ def test_connection_default_parser_matches_default_protocol():
+     assert conn.protocol == 3
+ 
+ 
++@pytest.mark.parametrize(
++    ("buffer", "eof", "expected"),
++    [
++        (b"", False, False),
++        (b"+OK\r\n", False, True),
++        (b"", True, True),
++    ],
++)
++async def test_async_hiredis_can_read_uses_buffer_without_reading(
++    buffer, eof, expected
++):
++    stream = DummyAsyncStream(buffer=buffer, eof=eof)
++    parser = make_async_hiredis_parser(stream)
++
++    assert await parser.can_read() is expected
++    assert stream.read_called is False
++
++
++async def test_async_hiredis_can_read_detects_reader_response():
++    stream = DummyAsyncStream()
++    parser = make_async_hiredis_parser(stream, response=b"OK", has_data=True)
++
++    assert await parser.can_read() is True
++    assert stream.read_called is False
++
++
++async def test_async_hiredis_can_read_detects_real_stream_reader_buffer():
++    payload = b"+OK\r\n"
++    stream = asyncio.StreamReader()
++    stream.feed_data(payload)
++    parser = make_async_hiredis_parser(stream)
++
++    assert await parser.can_read() is True
++    assert await stream.read(len(payload)) == payload
++
++
++async def test_async_hiredis_can_read_preserves_reader_response():
++    stream = DummyAsyncStream()
++    parser = make_async_hiredis_parser(stream, response=b"OK", has_data=True)
++
++    assert await parser.can_read() is True
++    assert await parser.read_response() == b"OK"
++    assert stream.read_called is False
++
++
++async def test_async_hiredis_can_read_does_not_decide_disable_decoding():
++    stream = DummyAsyncStream()
++    raw = b"\xe2\x98\x83"
++    parser = make_async_hiredis_parser(
++        stream,
++        response=raw,
++        decoded_response=raw.decode(),
++        has_data=True,
++    )
++
++    assert await parser.can_read() is True
++    assert await parser.read_response(disable_decoding=True) == raw
++
++
++async def test_async_hiredis_can_read_leaves_decoding_to_read_response():
++    stream = DummyAsyncStream()
++    raw = b"\xe2\x98\x83"
++    parser = make_async_hiredis_parser(
++        stream,
++        response=raw,
++        decoded_response=raw.decode(),
++        has_data=True,
++    )
++
++    assert await parser.can_read() is True
++    assert await parser.read_response() == raw.decode()
++
++
++@pytest.mark.parametrize("parser_class", [_AsyncRESP2Parser, _AsyncRESP3Parser])
++async def test_async_resp_can_read_detects_stream_buffer(parser_class):
++    stream = DummyAsyncStream(buffer=b"+OK\r\n")
++    parser = parser_class(socket_read_size=65536)
++    parser._connected = True
++    parser._stream = stream
++
++    assert await parser.can_read() is True
++    assert stream.read_called is False
++
++
+ @pytest.mark.parametrize(
+     ("protocol", "parser_class", "expected_parser_class"),
+     [
+diff --git a/tests/test_asyncio/test_connection_pool.py b/tests/test_asyncio/test_connection_pool.py
+index ce39c97dac..03c93a49f5 100644
+--- a/tests/test_asyncio/test_connection_pool.py
++++ b/tests/test_asyncio/test_connection_pool.py
+@@ -119,7 +119,7 @@ async def disconnect(self):
+     def is_connected(self):
+         return self._connected
+ 
+-    async def can_read_destructive(self, timeout: float = 0):
++    async def can_read(self) -> bool:
+         return False
+ 
+     def set_re_auth_token(self, token: TokenInterface):
+diff --git a/tests/test_connection.py b/tests/test_connection.py
+index 0891fc54f3..0fdaeb12fc 100644
+--- a/tests/test_connection.py
++++ b/tests/test_connection.py
+@@ -3,7 +3,7 @@
+ import socket
+ import threading
+ import types
+-from errno import ECONNREFUSED
++from errno import ECONNREFUSED, EWOULDBLOCK
+ from typing import Any
+ from unittest import mock
+ from unittest.mock import call, patch, MagicMock, Mock
+@@ -12,7 +12,8 @@
+ import redis
+ from redis import ConnectionPool, Redis
+ from redis._parsers import _HiredisParser, _RESP2Parser, _RESP3Parser
+-from redis._parsers.socket import SENTINEL
++from redis._parsers.hiredis import NOT_ENOUGH_DATA
++from redis._parsers.socket import SENTINEL, SocketBuffer
+ from redis.backoff import NoBackoff
+ from redis.cache import (
+     CacheConfig,
+@@ -49,6 +50,40 @@
+ from .mocks import MockSocket
+ 
+ 
++class DummyHiredisReader:
++    def __init__(self, response=NOT_ENOUGH_DATA, decoded_response=None, has_data=False):
++        self.responses = [response]
++        self.decoded_response = decoded_response
++        self.has_data_value = has_data
++
++    def has_data(self):
++        return self.has_data_value
++
++    def gets(self, *args):
++        if self.responses:
++            response = self.responses.pop(0)
++            if args == (False,) or self.decoded_response is None:
++                return response
++            return self.decoded_response
++        return NOT_ENOUGH_DATA
++
++
++class DummyPushNotification(list):
++    pass
++
++
++def make_hiredis_parser(
++    response=NOT_ENOUGH_DATA, decoded_response=None, has_data=False
++):
++    parser = _HiredisParser.__new__(_HiredisParser)
++    parser._reader = DummyHiredisReader(response, decoded_response, has_data)
++    parser._hiredis_PushNotificationType = None
++    parser._sock = mock.Mock()
++    parser._buffer = bytearray(65536)
++    parser._socket_timeout = None
++    return parser
++
++
+ @pytest.mark.skipif(HIREDIS_AVAILABLE, reason="PythonParser only")
+ @pytest.mark.onlynoncluster
+ def test_invalid_response(r):
+@@ -59,6 +94,106 @@ def test_invalid_response(r):
+             parser.read_response()
+ 
+ 
++def test_hiredis_can_read_detects_reader_data():
++    parser = make_hiredis_parser(response=b"OK", has_data=True)
++
++    assert parser.can_read(timeout=0) is True
++    assert parser.read_response() == b"OK"
++
++
++def test_hiredis_can_read_checks_socket_readiness_without_reading():
++    parser = make_hiredis_parser(has_data=False)
++
++    with patch("redis._parsers.hiredis._socket_can_read", return_value=True) as ready:
++        assert parser.can_read(timeout=0) is True
++
++    ready.assert_called_once_with(parser._sock, 0)
++
++
++def test_hiredis_can_read_does_not_decide_disable_decoding():
++    raw = b"\xe2\x98\x83"
++    parser = make_hiredis_parser(
++        response=raw,
++        decoded_response=raw.decode(),
++        has_data=True,
++    )
++
++    assert parser.can_read(timeout=0) is True
++    assert parser.read_response(disable_decoding=True) == raw
++
++
++def test_hiredis_can_read_leaves_decoding_to_read_response():
++    raw = b"\xe2\x98\x83"
++    parser = make_hiredis_parser(
++        response=raw,
++        decoded_response=raw.decode(),
++        has_data=True,
++    )
++
++    assert parser.can_read(timeout=0) is True
++    assert parser.read_response() == raw.decode()
++
++
++def test_hiredis_read_response_returns_initial_push_notification():
++    push_response = DummyPushNotification([b"message", b"channel", b"data"])
++    handled_response = object()
++    parser = make_hiredis_parser()
++    parser._hiredis_PushNotificationType = DummyPushNotification
++    parser._reader.responses = [push_response]
++    parser.pubsub_push_handler_func = Mock(return_value=handled_response)
++
++    assert parser.read_response(push_request=True) is handled_response
++    parser.pubsub_push_handler_func.assert_called_once_with(push_response)
++
++
++def test_hiredis_read_response_skips_initial_push_notification():
++    push_response = DummyPushNotification([b"message", b"channel", b"data"])
++    parser = make_hiredis_parser()
++    parser._hiredis_PushNotificationType = DummyPushNotification
++    parser._reader.responses = [push_response, b"OK"]
++    parser.pubsub_push_handler_func = Mock(return_value=push_response)
++
++    assert parser.read_response() == b"OK"
++    parser.pubsub_push_handler_func.assert_called_once_with(push_response)
++
++
++def test_hiredis_read_response_preserves_timeout_after_initial_push_notification():
++    push_response = DummyPushNotification([b"message", b"channel", b"data"])
++    parser = make_hiredis_parser()
++    parser._hiredis_PushNotificationType = DummyPushNotification
++    parser._reader.responses = [push_response, NOT_ENOUGH_DATA]
++    parser._sock.recv_into.side_effect = BlockingIOError(
++        EWOULDBLOCK, "Resource temporarily unavailable"
++    )
++    parser.pubsub_push_handler_func = Mock(return_value=push_response)
++
++    with pytest.raises(TimeoutError):
++        parser.read_response(timeout=0)
++
++    parser.pubsub_push_handler_func.assert_called_once_with(push_response)
++
++
++def test_hiredis_read_response_timeout_zero_maps_would_block_to_timeout():
++    parser = make_hiredis_parser()
++    parser._sock.recv_into.side_effect = BlockingIOError(
++        EWOULDBLOCK, "Resource temporarily unavailable"
++    )
++
++    with pytest.raises(TimeoutError):
++        parser.read_response(timeout=0)
++
++
++def test_socket_buffer_timeout_zero_maps_would_block_to_timeout():
++    sock = Mock()
++    sock.recv.side_effect = BlockingIOError(
++        EWOULDBLOCK, "Resource temporarily unavailable"
++    )
++    socket_buffer = SocketBuffer(sock, socket_read_size=65536, socket_timeout=None)
++
++    with pytest.raises(TimeoutError):
++        socket_buffer.readline(timeout=0)
++
++
+ @skip_if_server_version_lt("4.0.0")
+ @pytest.mark.redismod
+ def test_loading_external_modules(r):
+@@ -730,7 +865,9 @@ def test_triggers_invalidation_processing_on_another_connection(
+ 
+         assert proxy_connection.read_response() == b"bar"
+         assert another_conn.can_read.call_count == 2
+-        another_conn.read_response.assert_called_once()
++        another_conn.read_response.assert_called_once_with(
++            push_request=True, timeout=0, disconnect_on_error=False
++        )
+ 
+     @pytest.mark.skipif(
+         platform.python_implementation() == "PyPy",
+@@ -782,7 +919,9 @@ def test_sends_command_when_cache_entry_invalidated_during_drain(
+ 
+         # The drain should have happened on the other connection
+         assert another_conn.can_read.call_count == 2
+-        another_conn.read_response.assert_called_once()
++        another_conn.read_response.assert_called_once_with(
++            push_request=True, timeout=0, disconnect_on_error=False
++        )
+ 
+         # The command must have been sent over the wire (not returned early)
+         mock_connection.send_command.assert_called_once_with("GET", "foo", keys=["foo"])
+@@ -797,6 +936,69 @@ def test_sends_command_when_cache_entry_invalidated_during_drain(
+             )
+         )
+ 
++    @pytest.mark.skipif(
++        platform.python_implementation() == "PyPy",
++        reason="Pypy doesn't support side_effect",
++    )
++    def test_invalidation_processing_on_another_connection_breaks_on_timeout(
++        self, mock_cache, mock_connection
++    ):
++        mock_connection.retry = "mock"
++        mock_connection.host = "mock"
++        mock_connection.port = "mock"
++        mock_connection.db = 0
++        mock_connection.credential_provider = UsernamePasswordCredentialProvider()
++        mock_connection._event_dispatcher = Mock(spec=EventDispatcher)
++
++        another_conn = copy.deepcopy(mock_connection)
++        another_conn.can_read.return_value = True
++        another_conn.read_response.side_effect = TimeoutError("timeout")
++
++        cache_key = CacheKey(
++            command="GET", redis_keys=("foo",), redis_args=("GET", "foo")
++        )
++        cache_entry = CacheEntry(
++            cache_key=cache_key,
++            cache_value=b"bar",
++            status=CacheEntryStatus.VALID,
++            connection_ref=another_conn,
++        )
++
++        mock_cache.is_cachable.return_value = True
++        mock_cache.get.side_effect = [cache_entry, cache_entry, cache_entry]
++        mock_connection.can_read.return_value = False
++
++        proxy_connection = CacheProxyConnection(
++            mock_connection, mock_cache, threading.RLock()
++        )
++        proxy_connection.send_command(*["GET", "foo"], **{"keys": ["foo"]})
++
++        another_conn.read_response.assert_called_once_with(
++            push_request=True, timeout=0, disconnect_on_error=False
++        )
++        mock_connection.send_command.assert_not_called()
++
++    def test_process_pending_invalidations_breaks_on_timeout(self, mock_connection):
++        mock_connection.retry = "mock"
++        mock_connection.host = "mock"
++        mock_connection.port = "mock"
++        mock_connection.db = 0
++        mock_connection._event_dispatcher = EventDispatcher()
++        mock_connection.credential_provider = UsernamePasswordCredentialProvider()
++        mock_connection.can_read.return_value = True
++        mock_connection.read_response.side_effect = TimeoutError("timeout")
++
++        cache = DefaultCache(CacheConfig(max_size=10))
++        proxy_connection = CacheProxyConnection(
++            mock_connection, cache, threading.RLock()
++        )
++
++        proxy_connection._process_pending_invalidations()
++
++        mock_connection.read_response.assert_called_once_with(
++            push_request=True, timeout=0, disconnect_on_error=False
++        )
++
+     def test_read_response_propagates_timeout_parameter(self, mock_connection):
+         """Test that timeout parameter is propagated to underlying connection."""
+         mock_connection.retry = "mock"
+diff --git a/tests/test_connection_pool.py b/tests/test_connection_pool.py
+index ec0e454d62..5c58fbfdc5 100644
+--- a/tests/test_connection_pool.py
++++ b/tests/test_connection_pool.py
+@@ -61,7 +61,7 @@ def connect(self):
+     def disconnect(self):
+         self._sock = None
+ 
+-    def can_read(self):
++    def can_read(self, timeout: float = 0) -> bool:
+         return False
+ 
+     def should_reconnect(self):
+diff --git a/tests/test_max_connections_error.py b/tests/test_max_connections_error.py
+index d8d040a0c9..ec675c6fb4 100644
+--- a/tests/test_max_connections_error.py
++++ b/tests/test_max_connections_error.py
+@@ -44,7 +44,7 @@ def send_packed_command(self, command, check_health=True):
+     def send_command(self, *args, **kwargs):
+         pass
+ 
+-    def can_read(self, timeout=0):
++    def can_read(self, timeout: float = 0) -> bool:
+         return False
+ 
+     def read_response(self, disable_decoding=False, **kwargs):
+diff --git a/tests/test_observability/test_metrics_connection_attributes.py b/tests/test_observability/test_metrics_connection_attributes.py
+index ed2348bd6d..d0d965206b 100644
+--- a/tests/test_observability/test_metrics_connection_attributes.py
++++ b/tests/test_observability/test_metrics_connection_attributes.py
+@@ -67,7 +67,7 @@ def send_packed_command(self, command, check_health=True):
+     def send_command(self, *args, **kwargs):
+         pass
+ 
+-    def can_read(self, timeout=0):
++    def can_read(self, timeout: float = 0) -> bool:
+         return False
+ 
+     def read_response(

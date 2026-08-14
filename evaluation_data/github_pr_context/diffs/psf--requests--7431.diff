@@ -1,0 +1,66 @@
+diff --git a/src/requests/_types.py b/src/requests/_types.py
+index 963867b012..edce94dfc8 100644
+--- a/src/requests/_types.py
++++ b/src/requests/_types.py
+@@ -109,8 +109,7 @@ class _ValidatedRequest(PreparedRequest):
+         bytes | str | Iterable[bytes | str] | SupportsRead[bytes | str] | None
+     )
+ 
+-    HeadersType: TypeAlias = CaseInsensitiveDict[str] | Mapping[str, str | bytes]
+-    HeadersUpdateType: TypeAlias = Mapping[str, str | bytes | None]
++    HeadersType: TypeAlias = MutableMapping[str, str | bytes] | None
+ 
+     CookiesType: TypeAlias = RequestsCookieJar | Mapping[str, str]
+ 
+@@ -145,7 +144,7 @@ class _ValidatedRequest(PreparedRequest):
+     # TypedDicts for Unpack kwargs (PEP 692)
+ 
+     class BaseRequestKwargs(TypedDict, total=False):
+-        headers: Mapping[str, str | bytes] | None
++        headers: HeadersType
+         cookies: RequestsCookieJar | CookieJar | dict[str, str] | None
+         files: FilesType
+         auth: AuthType
+diff --git a/src/requests/models.py b/src/requests/models.py
+index 4142f2a4bb..e35d060e3b 100644
+--- a/src/requests/models.py
++++ b/src/requests/models.py
+@@ -83,6 +83,7 @@
+ )
+ 
+ if TYPE_CHECKING:
++    from collections.abc import MutableMapping
+     from http.cookiejar import CookieJar
+ 
+     from typing_extensions import Self
+@@ -310,7 +311,7 @@ class Request(RequestHooksMixin):
+ 
+     method: str | None
+     url: _t.UriType | None
+-    headers: CaseInsensitiveDict[str] | Mapping[str, str | bytes] | None
++    headers: MutableMapping[str, str | bytes]
+     files: _t.FilesType
+     data: _t.DataType
+     json: _t.JsonType
+@@ -322,7 +323,7 @@ def __init__(
+         self,
+         method: str | None = None,
+         url: _t.UriType | None = None,
+-        headers: Mapping[str, str | bytes] | None = None,
++        headers: _t.HeadersType = None,
+         files: _t.FilesType = None,
+         data: _t.DataType = None,
+         params: _t.ParamsType = None,
+diff --git a/src/requests/sessions.py b/src/requests/sessions.py
+index 8f13887d18..feaf34053a 100644
+--- a/src/requests/sessions.py
++++ b/src/requests/sessions.py
+@@ -560,7 +560,7 @@ def request(
+         url: _t.UriType,
+         params: _t.ParamsType = None,
+         data: _t.DataType = None,
+-        headers: Mapping[str, str | bytes] | None = None,
++        headers: _t.HeadersType = None,
+         cookies: RequestsCookieJar | CookieJar | dict[str, str] | None = None,
+         files: _t.FilesType = None,
+         auth: _t.AuthType = None,

@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, TypedDict
 
-from .context_manager import ContextManager
+from .context_manager import ContextBundle, ContextManager
 from .diff_parser import ParsedDiff
 from .memory import MemoryManager
 from .mcp import ReviewToolContext
@@ -638,6 +638,9 @@ class MultiAgentCoordinator(Reviewer):
             for item in activated_skills
         ]
         initial_tools = tools.catalog()
+        initial_inbox = self._bus(state).inbox(
+            agent.name, assignment.assignment_id
+        )
         system_factory = getattr(agent, "agent_system_prompt", None)
 
         def system_prompt(tool_catalog: List[dict]) -> str:
@@ -651,135 +654,252 @@ class MultiAgentCoordinator(Reviewer):
         initial_system = system_prompt(initial_tools)
         fixed_tokens = self.context_manager.contract_tokens(
             initial_system, assignment.to_dict(), skill_context, initial_tools
+        ) + self.context_manager.runtime_tokens(
+            feedback=list(feedback or []), inbox=initial_inbox,
+            memories=memories,
         ) + self.context_manager.estimate_tokens("DIFF_CONTEXT:\n")
-        bundle = self.context_manager.build(
+        bundles = self.context_manager.build_batches(
             state["diff"], assignment.to_dict(), memories,
             fixed_tokens=fixed_tokens,
         )
-        self._emit(
-            state, "context-manager", agent.name, "context_prepared",
-            bundle.metadata(), assignment.assignment_id,
-        )
+        all_findings: List[Finding] = []
+        all_observations: List[dict] = []
+        observations_by_finding: Dict[str, List[dict]] = {}
+        contexts: List[dict] = []
+        checkpoint_nodes: List[str] = []
+        total_steps = 0
+        total_tool_calls = 0
+        stop_reasons: List[str] = []
+        usage: Dict[str, int] = {}
 
-        def on_event(kind: str, detail: Dict[str, Any]) -> None:
+        for bundle in bundles:
             self._emit(
-                state, "agent-runtime", agent.name, kind, detail,
-                assignment.assignment_id,
+                state, "context-manager", agent.name, "context_prepared",
+                bundle.metadata(), assignment.assignment_id,
+            )
+            checkpoint_node = "loop:%s" % assignment.assignment_id
+            if bundle.batch_count > 1:
+                checkpoint_node += ":batch:%d" % bundle.batch_index
+            checkpoint_nodes.append(checkpoint_node)
+            completed_batch = self._completed_checkpoint(
+                state, checkpoint_node
             )
             if (
-                kind == "agent_loop_observation"
-                and detail.get("ok") is False
-                and self.store is not None
-                and state.get("task_id")
+                completed_batch
+                and int(completed_batch.get("batch_index", 0))
+                == bundle.batch_index
+                and int(completed_batch.get("batch_count", 0))
+                == bundle.batch_count
             ):
-                self.store.record_failure_case(
-                    state["task_id"], "tool_error",
+                findings = [
+                    self._finding_from_dict(item)
+                    for item in completed_batch.get("findings", [])
+                ]
+                observations = [
+                    dict(item)
+                    for item in completed_batch.get("observations", [])
+                ]
+                batch_usage = dict(completed_batch.get("usage") or {})
+                all_findings.extend(findings)
+                all_observations.extend(observations)
+                for finding in findings:
+                    observations_by_finding[finding_key(finding)] = observations
+                contexts.append(
+                    dict(completed_batch.get("context") or bundle.metadata())
+                )
+                total_steps += int(completed_batch.get("steps", 0))
+                total_tool_calls += len(observations)
+                stop_reasons.append(
+                    str(completed_batch.get("stop_reason", "final"))
+                )
+                for key, value in batch_usage.items():
+                    usage[key] = usage.get(key, 0) + int(value)
+                self._emit(
+                    state, "agent-runtime", agent.name,
+                    "agent_loop_batch_restored",
                     {
-                        "reviewer": agent.name,
-                        "tool": str(detail.get("tool", ""))[:120],
-                        "error": str(detail.get("error", ""))[:1000],
-                        "evolution_eligible": False,
+                        "node": checkpoint_node,
+                        "batch_index": bundle.batch_index,
+                        "batch_count": bundle.batch_count,
                     },
+                    assignment.assignment_id,
+                )
+                continue
+
+            def on_event(kind: str, detail: Dict[str, Any]) -> None:
+                event_detail = dict(detail)
+                event_detail.update({
+                    "batch_index": bundle.batch_index,
+                    "batch_count": bundle.batch_count,
+                })
+                self._emit(
+                    state, "agent-runtime", agent.name, kind, event_detail,
+                    assignment.assignment_id,
+                )
+                if (
+                    kind == "agent_loop_observation"
+                    and detail.get("ok") is False
+                    and self.store is not None
+                    and state.get("task_id")
+                ):
+                    self.store.record_failure_case(
+                        state["task_id"], "tool_error",
+                        {
+                            "reviewer": agent.name,
+                            "tool": str(detail.get("tool", ""))[:120],
+                            "error": str(detail.get("error", ""))[:1000],
+                            "evolution_eligible": False,
+                        },
+                    )
+
+            loop_state = {
+                "diff": bundle.text, "context": bundle.text,
+                "context_metadata": bundle.metadata(), "parsed": state["parsed"],
+                "assignment": assignment.to_dict(),
+                "feedback": list(feedback or []),
+                "inbox": initial_inbox,
+                "memories": memories, "available_tools": tools.catalog(),
+                "activated_skills": skill_context,
+                "batch_index": bundle.batch_index,
+                "batch_count": bundle.batch_count,
+            }
+            last_context = {"metadata": bundle.metadata()}
+            checkpoint = (
+                (state.get("checkpoints") or {}).get(checkpoint_node) or {}
+            )
+            resume_state = None
+            if checkpoint.get("status") == "running" and isinstance(
+                checkpoint.get("state"), dict
+            ):
+                resume_state = dict(checkpoint["state"])
+                self._emit(
+                    state, "agent-runtime", agent.name,
+                    "agent_loop_checkpoint_restored",
+                    {
+                        "node": checkpoint_node,
+                        "next_step": int(resume_state.get("next_step", 1)),
+                        "observations": len(
+                            resume_state.get("observations") or []
+                        ),
+                        "batch_index": bundle.batch_index,
+                        "batch_count": bundle.batch_count,
+                    },
+                    assignment.assignment_id,
                 )
 
-        loop_state = {
-            "diff": state["diff"], "context": bundle.text,
-            "context_metadata": bundle.metadata(), "parsed": state["parsed"],
-            "assignment": assignment.to_dict(), "feedback": list(feedback or []),
-            "inbox": self._bus(state).inbox(agent.name, assignment.assignment_id),
-            "memories": memories, "available_tools": tools.catalog(),
-            "activated_skills": skill_context,
-        }
-        last_context = {"metadata": bundle.metadata()}
-        checkpoint_node = "loop:%s" % assignment.assignment_id
-        checkpoint = (state.get("checkpoints") or {}).get(checkpoint_node) or {}
-        resume_state = None
-        if checkpoint.get("status") == "running" and isinstance(
-            checkpoint.get("state"), dict
-        ):
-            resume_state = dict(checkpoint["state"])
-            self._emit(
-                state, "agent-runtime", agent.name,
-                "agent_loop_checkpoint_restored",
+            def save_loop_checkpoint(value: Dict[str, Any]) -> None:
+                task_id = state.get("task_id", "")
+                if self.store is None or not task_id:
+                    return
+                saved = dict(value)
+                saved["agent"] = agent.name
+                saved["batch_index"] = bundle.batch_index
+                saved["batch_count"] = bundle.batch_count
+                attempt = max(1, int(saved.get("next_step", 1)) - 1)
+                self.store.save_checkpoint(
+                    task_id, checkpoint_node, saved,
+                    status="running", attempt=attempt,
+                )
+                with self._checkpoint_lock:
+                    state.setdefault("checkpoints", {})[checkpoint_node] = {
+                        "status": "running", "attempt": attempt,
+                        "state": saved, "error": None,
+                    }
+                self._emit(
+                    state, "agent-runtime", agent.name,
+                    "agent_loop_checkpoint_saved",
+                    {
+                        "node": checkpoint_node,
+                        "next_step": saved["next_step"],
+                        "observations": len(saved["observations"]),
+                        "batch_index": bundle.batch_index,
+                        "batch_count": bundle.batch_count,
+                    },
+                    assignment.assignment_id,
+                )
+
+            def managed_step(loop_iteration: Dict[str, Any]) -> Dict[str, Any]:
+                final_only = int(
+                    loop_iteration.get("loop_step", 1)
+                ) >= self.agent_loop.max_steps
+                active_tools = [] if final_only else tools.catalog()
+                active_system = system_prompt(active_tools)
+                managed = self.context_manager.compose(
+                    bundle, assignment.to_dict(),
+                    feedback=list(feedback or []),
+                    inbox=loop_iteration.get("inbox") or [], memories=memories,
+                    observations=loop_iteration.get("observations") or [],
+                    tools=active_tools, skills=skill_context,
+                    system_prompt=active_system,
+                )
+                metadata = managed.metadata()
+                last_context["metadata"] = metadata
+                self._emit(
+                    state, "context-manager", agent.name,
+                    "context_window_prepared", metadata,
+                    assignment.assignment_id,
+                )
+                prepared = dict(loop_iteration)
+                prepared["context"] = managed.text
+                prepared["managed_context"] = managed.text
+                prepared["context_metadata"] = metadata
+                prepared["available_tools"] = active_tools
+                prepared["activated_skills"] = skill_context
+                prepared["managed_system_prompt"] = managed.system_prompt
+                return getattr(agent, "agent_step")(prepared)
+
+            result = self.agent_loop.run(
+                managed_step, tools, loop_state, on_event,
+                resume_state=resume_state,
+                checkpoint_sink=save_loop_checkpoint,
+            )
+            findings = list(result.output or [])
+            if not all(isinstance(item, Finding) for item in findings):
+                raise TypeError(
+                    "agent loop final output must contain Finding objects"
+                )
+            observations = [dict(item) for item in result.observations]
+            self._save_completed_checkpoint(
+                state, checkpoint_node,
                 {
-                    "node": checkpoint_node,
-                    "next_step": int(resume_state.get("next_step", 1)),
-                    "observations": len(resume_state.get("observations") or []),
+                    "agent": agent.name,
+                    "batch_index": bundle.batch_index,
+                    "batch_count": bundle.batch_count,
+                    "findings": [item.to_dict() for item in findings],
+                    "observations": observations,
+                    "steps": result.steps,
+                    "stop_reason": result.stop_reason,
+                    "context": last_context["metadata"],
+                    "usage": dict(result.usage),
                 },
-                assignment.assignment_id,
+                attempt=max(1, result.steps),
             )
+            all_findings.extend(findings)
+            all_observations.extend(observations)
+            for finding in findings:
+                observations_by_finding[finding_key(finding)] = observations
+            contexts.append(last_context["metadata"])
+            total_steps += result.steps
+            total_tool_calls += len(observations)
+            stop_reasons.append(result.stop_reason)
+            for key, value in dict(result.usage).items():
+                usage[key] = usage.get(key, 0) + int(value)
 
-        def save_loop_checkpoint(value: Dict[str, Any]) -> None:
-            task_id = state.get("task_id", "")
-            if self.store is None or not task_id:
-                return
-            saved = dict(value)
-            saved["agent"] = agent.name
-            attempt = max(1, int(saved.get("next_step", 1)) - 1)
-            self.store.save_checkpoint(
-                task_id, checkpoint_node, saved,
-                status="running", attempt=attempt,
-            )
-            with self._checkpoint_lock:
-                state.setdefault("checkpoints", {})[checkpoint_node] = {
-                    "status": "running", "attempt": attempt,
-                    "state": saved, "error": None,
-                }
-            self._emit(
-                state, "agent-runtime", agent.name,
-                "agent_loop_checkpoint_saved",
-                {
-                    "node": checkpoint_node,
-                    "next_step": saved["next_step"],
-                    "observations": len(saved["observations"]),
-                },
-                assignment.assignment_id,
-            )
-
-        def managed_step(loop_iteration: Dict[str, Any]) -> Dict[str, Any]:
-            final_only = int(loop_iteration.get("loop_step", 1)) >= self.agent_loop.max_steps
-            active_tools = [] if final_only else tools.catalog()
-            active_system = system_prompt(active_tools)
-            managed = self.context_manager.compose(
-                bundle, assignment.to_dict(), feedback=list(feedback or []),
-                inbox=loop_iteration.get("inbox") or [], memories=memories,
-                observations=loop_iteration.get("observations") or [],
-                tools=active_tools, skills=skill_context,
-                system_prompt=active_system,
-            )
-            metadata = managed.metadata()
-            last_context["metadata"] = metadata
-            self._emit(
-                state, "context-manager", agent.name, "context_window_prepared",
-                metadata, assignment.assignment_id,
-            )
-            prepared = dict(loop_iteration)
-            prepared["context"] = managed.text
-            prepared["managed_context"] = managed.text
-            prepared["context_metadata"] = metadata
-            prepared["available_tools"] = active_tools
-            prepared["activated_skills"] = skill_context
-            prepared["managed_system_prompt"] = managed.system_prompt
-            return getattr(agent, "agent_step")(prepared)
-
-        result = self.agent_loop.run(
-            managed_step, tools, loop_state, on_event,
-            resume_state=resume_state,
-            checkpoint_sink=save_loop_checkpoint,
-        )
-        findings = list(result.output or [])
-        if not all(isinstance(item, Finding) for item in findings):
-            raise TypeError("agent loop final output must contain Finding objects")
-        return findings, {
-            "loop_steps": result.steps, "loop_stop_reason": result.stop_reason,
-            "context": last_context["metadata"], "memories_recalled": len(memories),
+        return all_findings, {
+            "loop_steps": total_steps,
+            "loop_stop_reason": ",".join(stop_reasons),
+            "context": contexts[-1], "contexts": contexts,
+            "context_batches": len(bundles),
+            "memories_recalled": len(memories),
             "tools_available": len(tools.names()),
-            "tool_calls": len(result.observations),
+            "tool_calls": total_tool_calls,
             "activated_skills": [
                 "%s@%s" % (item.name, item.version) for item in activated_skills
             ],
-            "observations": [dict(item) for item in result.observations],
-            "usage": dict(result.usage),
+            "observations": all_observations,
+            "observations_by_finding": observations_by_finding,
+            "checkpoint_nodes": checkpoint_nodes,
+            "usage": usage,
         }
 
     def _invoke_agent(
@@ -907,7 +1027,10 @@ class MultiAgentCoordinator(Reviewer):
                 },
                 attempt=attempts,
             )
-            self._delete_checkpoint(state, "loop:%s" % assignment.assignment_id)
+            for node in execution.get("checkpoint_nodes") or [
+                "loop:%s" % assignment.assignment_id
+            ]:
+                self._delete_checkpoint(state, node)
             return result
         replacement = self.router.replan(
             assignment, self._replacement_candidates(agent), error
@@ -948,7 +1071,10 @@ class MultiAgentCoordinator(Reviewer):
                 },
                 attempt=result["attempts"],
             )
-            self._delete_checkpoint(state, "loop:%s" % assignment.assignment_id)
+            for node in replacement_execution.get("checkpoint_nodes") or [
+                "loop:%s" % assignment.assignment_id
+            ]:
+                self._delete_checkpoint(state, node)
         return result
 
     def _specialist_node(self, state: CollaborationState) -> Dict[str, Any]:
@@ -970,13 +1096,18 @@ class MultiAgentCoordinator(Reviewer):
         assignment_map = dict(state["assignments_by_agent"])
         for outcome in outcomes:
             assignment_map[outcome["agent"]] = outcome["assignment"]
+            execution = outcome.get("execution") or {}
+            observations_by_finding = execution.get(
+                "observations_by_finding"
+            ) or {}
             for finding in outcome["findings"]:
                 key = finding_key(finding)
                 sources.setdefault(key, []).append(outcome["agent"])
                 finding_observations.setdefault(key, [
                     dict(item) for item in (
-                        outcome.get("execution") or {}
-                    ).get("observations", [])
+                        observations_by_finding.get(key)
+                        or execution.get("observations", [])
+                    )
                 ])
                 findings.append(finding)
         if outcomes and all(item["status"] == "failed" for item in outcomes):
@@ -1295,34 +1426,20 @@ class MultiAgentCoordinator(Reviewer):
                         "reproductions": restored_evidence,
                     })
                 return result
-        plan = state.get("plan")
-        risk_domains = sorted({
-            domain
-            for assignment in (plan.assignments if plan else [])
-            for domain in assignment.risk_domains
-        })
-        evidence_clues = " ".join(
-            "%s %s %s %s" % (
-                finding.path,
-                finding.rule_id,
-                finding.title,
-                finding.evidence,
+        candidate_diff = "CANDIDATE_CHANGED_LINES:\n" + "".join(
+            "+++ b/{0}\n@@ +{1} @@\n+{2}\n".format(
+                finding.path, finding.line, finding.evidence.lstrip("+")
             )
             for finding in candidates
             if state["reproductions"][finding_key(finding)].grounded
-        )[:4000]
-        judge_bundle = self.context_manager.build(
-            state["diff"],
-            {
-                "agent": self.judge.name,
-                "objective": "Validate grounded candidate evidence. " + evidence_clues,
-                "files": sorted({finding.path for finding in candidates}),
-                "risk_domains": risk_domains,
-                "focus_lines": [
-                    {"path": finding.path, "line": finding.line}
-                    for finding in candidates
-                ],
-            },
+        )
+        judge_bundle = ContextBundle(
+            candidate_diff,
+            self.context_manager.estimate_tokens(candidate_diff)
+            < self.context_manager.estimate_tokens(state["diff"]),
+            self.context_manager.estimate_tokens(state["diff"]),
+            self.context_manager.estimate_tokens(candidate_diff),
+            strategy="candidate-evidence-view",
         )
         self._emit(
             state,
@@ -1622,8 +1739,20 @@ class MultiAgentCoordinator(Reviewer):
                         item.get("execution") or {}
                     ).get("loop_stop_reason", "one-shot"),
                     "context_compressed": bool(
-                        ((item.get("execution") or {}).get("context") or {}).get("compressed")
+                        any(
+                            context.get("compressed")
+                            for context in (
+                                (item.get("execution") or {}).get("contexts")
+                                or [
+                                    (item.get("execution") or {}).get("context")
+                                    or {}
+                                ]
+                            )
+                        )
                     ),
+                    "context_batches": (
+                        item.get("execution") or {}
+                    ).get("context_batches", 1),
                     "memories_recalled": (
                         item.get("execution") or {}
                     ).get("memories_recalled", 0),
@@ -1644,9 +1773,19 @@ class MultiAgentCoordinator(Reviewer):
                 for skill in (execution.get("activated_skills") or [])
             }),
             "context_compressions": sum(
-                bool((execution.get("context") or {}).get("compressed"))
+                sum(
+                    bool(context.get("compressed"))
+                    for context in (
+                        execution.get("contexts")
+                        or [execution.get("context") or {}]
+                    )
+                )
                 for execution in executions
             ) + int(bool(judge_context.get("compressed"))),
+            "context_batches": sum(
+                int(execution.get("context_batches", 1))
+                for execution in executions
+            ),
             "judge_context": judge_context,
             "usage": usage,
             "recovery": {

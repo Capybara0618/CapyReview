@@ -1,0 +1,2629 @@
+diff --git a/.github/CONTRIBUTING.md b/.github/CONTRIBUTING.md
+index e1a953dc97..2cbd58004b 100644
+--- a/.github/CONTRIBUTING.md
++++ b/.github/CONTRIBUTING.md
+@@ -211,9 +211,10 @@ this is where our previously generated `client.pem` comes in:
+ ```
+ import httpx
+ 
+-proxies = {"all": "http://127.0.0.1:8080/"}
++ssl_context = httpx.SSLContext()
++ssl_context.load_verify_locations("/path/to/client.pem")
+ 
+-with httpx.Client(proxies=proxies, verify="/path/to/client.pem") as client:
++with httpx.Client(proxy="http://127.0.0.1:8080/", ssl_context=ssl_context) as client:
+     response = client.get("https://example.org")
+     print(response.status_code)  # should print 200
+ ```
+diff --git a/.github/workflows/test-suite.yml b/.github/workflows/test-suite.yml
+index ad7309d776..ce3df5db81 100644
+--- a/.github/workflows/test-suite.yml
++++ b/.github/workflows/test-suite.yml
+@@ -5,7 +5,7 @@ on:
+   push:
+     branches: ["master"]
+   pull_request:
+-    branches: ["master", 'version*']
++    branches: ["master", "version-*"]
+ 
+ jobs:
+   tests:
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f3aba3cc03..1ec91e3b75 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
+ 
+ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+ 
++## Version 0.28.0
++
++Version 0.28.0 introduces an `httpx.SSLContext()` class and `ssl_context` parameter.
++
++* Added `httpx.SSLContext` class and `ssl_context` parameter. (#3022, #3335)
++* The `verify` and `cert` arguments have been deprecated and will now raise warnings. (#3022, #3335)
++* The deprecated `proxies` argument has now been removed.
++* The deprecated `app` argument has now been removed.
++* The `URL.raw` property has now been removed.
++
+ ## 0.27.2 (27th August, 2024)
+ 
+ ### Fixed
+diff --git a/docs/advanced/ssl.md b/docs/advanced/ssl.md
+index d96bbe1979..57553515ab 100644
+--- a/docs/advanced/ssl.md
++++ b/docs/advanced/ssl.md
+@@ -1,100 +1,199 @@
+ When making a request over HTTPS, HTTPX needs to verify the identity of the requested host. To do this, it uses a bundle of SSL certificates (a.k.a. CA bundle) delivered by a trusted certificate authority (CA).
+ 
+-## Changing the verification defaults
++### Enabling and disabling verification
+ 
+-By default, HTTPX uses the CA bundle provided by [Certifi](https://pypi.org/project/certifi/). This is what you want in most cases, even though some advanced situations may require you to use a different set of certificates.
++By default httpx will verify HTTPS connections, and raise an error for invalid SSL cases...
+ 
+-If you'd like to use a custom CA bundle, you can use the `verify` parameter.
++```pycon
++>>> httpx.get("https://expired.badssl.com/")
++httpx.ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:997)
++```
+ 
+-```python
+-import httpx
++Verification is configured through [the SSL Context API](https://docs.python.org/3/library/ssl.html#ssl-contexts).
+ 
+-r = httpx.get("https://example.org", verify="path/to/client.pem")
++```pycon
++>>> context = httpx.SSLContext()
++>>> context
++<SSLContext(verify=True)>
++>>> httpx.get("https://www.example.com", ssl_context=context)
++httpx.ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:997)
+ ```
+ 
+-Alternatively, you can pass a standard library `ssl.SSLContext`.
++You can use this to disable verification completely and allow insecure requests...
+ 
+ ```pycon
+->>> import ssl
+->>> import httpx
+->>> context = ssl.create_default_context()
+->>> context.load_verify_locations(cafile="/tmp/client.pem")
+->>> httpx.get('https://example.org', verify=context)
++>>> context = httpx.SSLContext(verify=False)
++>>> context
++<SSLContext(verify=False)>
++>>> httpx.get("https://expired.badssl.com/", ssl_context=context)
+ <Response [200 OK]>
+ ```
+ 
+-We also include a helper function for creating properly configured `SSLContext` instances.
++### Configuring client instances
++
++If you're using a `Client()` instance you should pass any SSL context when instantiating the client.
+ 
+ ```pycon
+->>> context = httpx.create_ssl_context()
++>>> context = httpx.SSLContext()
++>>> client = httpx.Client(ssl_context=context)
+ ```
+ 
+-The `create_ssl_context` function accepts the same set of SSL configuration arguments
+-(`trust_env`, `verify`, `cert` and `http2` arguments)
+-as `httpx.Client` or `httpx.AsyncClient`
++The `client.get(...)` method and other request methods on a `Client` instance *do not* support changing the SSL settings on a per-request basis.
++
++If you need different SSL settings in different cases you should use more than one client instance, with different settings on each. Each client will then be using an isolated connection pool with a specific fixed SSL configuration on all connections within that pool.
++
++### Configuring certificate stores
++
++By default, HTTPX uses the CA bundle provided by [Certifi](https://pypi.org/project/certifi/).
++
++You can load additional certificate verification using the [`.load_verify_locations()`](https://docs.python.org/3/library/ssl.html#ssl.SSLContext.load_verify_locations) API:
+ 
+ ```pycon
+->>> import httpx
+->>> context = httpx.create_ssl_context(verify="/tmp/client.pem")
+->>> httpx.get('https://example.org', verify=context)
++>>> context = httpx.SSLContext()
++>>> context.load_verify_locations(cafile="path/to/certs.pem")
++>>> client = httpx.Client(ssl_context=context)
++>>> client.get("https://www.example.com")
+ <Response [200 OK]>
+ ```
+ 
+-Or you can also disable the SSL verification entirely, which is _not_ recommended.
++Or by providing an certificate directory:
+ 
+-```python
+-import httpx
++```pycon
++>>> context = httpx.SSLContext()
++>>> context.load_verify_locations(capath="path/to/certs")
++>>> client = httpx.Client(ssl_context=context)
++>>> client.get("https://www.example.com")
++<Response [200 OK]>
++```
++
++### Client side certificates
++
++You can also specify a local cert to use as a client-side certificate, using the [`.load_cert_chain()`](https://docs.python.org/3/library/ssl.html#ssl.SSLContext.load_cert_chain) API:
+ 
+-r = httpx.get("https://example.org", verify=False)
++```pycon
++>>> context = httpx.SSLContext()
++>>> context.load_cert_chain(certfile="path/to/client.pem")
++>>> httpx.get("https://example.org", ssl_context=ssl_context)
++<Response [200 OK]>
+ ```
+ 
+-## SSL configuration on client instances
++Or including a keyfile...
+ 
+-If you're using a `Client()` instance, then you should pass any SSL settings when instantiating the client.
++```pycon
++>>> context = httpx.SSLContext()
++>>> context.load_cert_chain(
++        certfile="path/to/client.pem",
++        keyfile="path/to/client.key"
++    )
++>>> httpx.get("https://example.org", ssl_context=context)
++<Response [200 OK]>
++```
+ 
+-```python
+-client = httpx.Client(verify=False)
++Or including a keyfile and password...
++
++```pycon
++>>> context = httpx.SSLContext(cert=cert)
++>>> context = httpx.SSLContext()
++>>> context.load_cert_chain(
++        certfile="path/to/client.pem",
++        keyfile="path/to/client.key"
++        password="password"
++    )
++>>> httpx.get("https://example.org", ssl_context=context)
++<Response [200 OK]>
+ ```
+ 
+-The `client.get(...)` method and other request methods *do not* support changing the SSL settings on a per-request basis. If you need different SSL settings in different cases you should use more that one client instance, with different settings on each. Each client will then be using an isolated connection pool with a specific fixed SSL configuration on all connections within that pool.
++### Using alternate SSL contexts
+ 
+-## Client Side Certificates
++You can also use an alternate `ssl.SSLContext` instances.
+ 
+-You can also specify a local cert to use as a client-side certificate, either a path to an SSL certificate file, or two-tuple of (certificate file, key file), or a three-tuple of (certificate file, key file, password)
++For example, [using the `truststore` package](https://truststore.readthedocs.io/)...
+ 
+ ```python
+-cert = "path/to/client.pem"
+-client = httpx.Client(cert=cert)
+-response = client.get("https://example.org")
++import ssl
++import truststore
++import httpx
++
++ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
++client = httpx.Client(ssl_context=ssl_context)
+ ```
+ 
+-Alternatively...
++Or working [directly with Python's standard library](https://docs.python.org/3/library/ssl.html)...
+ 
+ ```python
+-cert = ("path/to/client.pem", "path/to/client.key")
+-client = httpx.Client(cert=cert)
+-response = client.get("https://example.org")
++import ssl
++import httpx
++
++ssl_context = ssl.create_default_context()
++client = httpx.Client(ssl_context=ssl_context)
+ ```
+ 
+-Or...
++### Working with `SSL_CERT_FILE` and `SSL_CERT_DIR`
++
++Unlike `requests`, the `httpx` package does not automatically pull in [the environment variables `SSL_CERT_FILE` or `SSL_CERT_DIR`](https://www.openssl.org/docs/manmaster/man3/SSL_CTX_set_default_verify_paths.html). If you want to use these they need to be enabled explicitly.
++
++For example...
+ 
+ ```python
+-cert = ("path/to/client.pem", "path/to/client.key", "password")
+-client = httpx.Client(cert=cert)
+-response = client.get("https://example.org")
++context = httpx.SSLContext()
++
++# Use `SSL_CERT_FILE` or `SSL_CERT_DIR` if configured.
++if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
++    context.load_verify_locations(
++        cafile=os.environ.get("SSL_CERT_FILE"),
++        capath=os.environ.get("SSL_CERT_DIR"),
++    )
+ ```
+ 
+-## Making HTTPS requests to a local server
++## `SSLKEYLOGFILE`
++
++Valid values: a filename
++
++If this environment variable is set, TLS keys will be appended to the specified file, creating it if it doesn't exist, whenever key material is generated or received. The keylog file is designed for debugging purposes only.
++
++Support for `SSLKEYLOGFILE` requires Python 3.8 and OpenSSL 1.1.1 or newer.
++
++Example:
++
++```python
++# test_script.py
++import httpx
++
++with httpx.Client() as client:
++    r = client.get("https://google.com")
++```
++
++```console
++SSLKEYLOGFILE=test.log python test_script.py
++cat test.log
++# TLS secrets log file, generated by OpenSSL / Python
++SERVER_HANDSHAKE_TRAFFIC_SECRET XXXX
++EXPORTER_SECRET XXXX
++SERVER_TRAFFIC_SECRET_0 XXXX
++CLIENT_HANDSHAKE_TRAFFIC_SECRET XXXX
++CLIENT_TRAFFIC_SECRET_0 XXXX
++SERVER_HANDSHAKE_TRAFFIC_SECRET XXXX
++EXPORTER_SECRET XXXX
++SERVER_TRAFFIC_SECRET_0 XXXX
++CLIENT_HANDSHAKE_TRAFFIC_SECRET XXXX
++CLIENT_TRAFFIC_SECRET_0 XXXX
++```
++
++### Making HTTPS requests to a local server
+ 
+ When making requests to local servers, such as a development server running on `localhost`, you will typically be using unencrypted HTTP connections.
+ 
+ If you do need to make HTTPS connections to a local server, for example to test an HTTPS-only service, you will need to create and use your own certificates. Here's one way to do it:
+ 
+ 1. Use [trustme](https://github.com/python-trio/trustme) to generate a pair of server key/cert files, and a client cert file.
+-1. Pass the server key/cert files when starting your local server. (This depends on the particular web server you're using. For example, [Uvicorn](https://www.uvicorn.org) provides the `--ssl-keyfile` and `--ssl-certfile` options.)
+-1. Tell HTTPX to use the certificates stored in `client.pem`:
++2. Pass the server key/cert files when starting your local server. (This depends on the particular web server you're using. For example, [Uvicorn](https://www.uvicorn.org) provides the `--ssl-keyfile` and `--ssl-certfile` options.)
++3. Tell HTTPX to use the certificates stored in `client.pem`:
+ 
+-```python
+-client = httpx.Client(verify="/tmp/client.pem")
+-response = client.get("https://localhost:8000")
++```pycon
++>>> import httpx
++>>> context = httpx.SSLContext()
++>>> context.load_verify_locations(cafile="/tmp/client.pem")
++>>> r = httpx.get("https://localhost:8000", ssl_context=context)
++>>> r
++Response <200 OK>
+ ```
+diff --git a/docs/compatibility.md b/docs/compatibility.md
+index 0d9476642b..52e9389a79 100644
+--- a/docs/compatibility.md
++++ b/docs/compatibility.md
+@@ -171,12 +171,10 @@ Also note that `requests.Session.request(...)` allows a `proxies=...` parameter,
+ 
+ ## SSL configuration
+ 
+-When using a `Client` instance, the `trust_env`, `verify`, and `cert` arguments should always be passed on client instantiation, rather than passed to the request method.
++When using a `Client` instance, the ssl configurations should always be passed on client instantiation, rather than passed to the request method.
+ 
+ If you need more than one different SSL configuration, you should use different client instances for each SSL configuration.
+ 
+-Requests supports `REQUESTS_CA_BUNDLE` which points to either a file or a directory. HTTPX supports the `SSL_CERT_FILE` (for a file) and `SSL_CERT_DIR` (for a directory) OpenSSL variables instead.
+-
+ ## Request body on HTTP methods
+ 
+ The HTTP `GET`, `DELETE`, `HEAD`, and `OPTIONS` methods are specified as not supporting a request body. To stay in line with this, the `.get`, `.delete`, `.head` and `.options` functions do not support `content`, `files`, `data`, or `json` arguments.
+diff --git a/docs/environment_variables.md b/docs/environment_variables.md
+index 28fdc5e8af..4f7a9f5284 100644
+--- a/docs/environment_variables.md
++++ b/docs/environment_variables.md
+@@ -8,66 +8,6 @@ Environment variables are used by default. To ignore environment variables, `tru
+ 
+ Here is a list of environment variables that HTTPX recognizes and what function they serve:
+ 
+-## `SSLKEYLOGFILE`
+-
+-Valid values: a filename
+-
+-If this environment variable is set, TLS keys will be appended to the specified file, creating it if it doesn't exist, whenever key material is generated or received. The keylog file is designed for debugging purposes only.
+-
+-Support for `SSLKEYLOGFILE` requires Python 3.8 and OpenSSL 1.1.1 or newer.
+-
+-Example:
+-
+-```python
+-# test_script.py
+-import httpx
+-
+-with httpx.AsyncClient() as client:
+-    r = client.get("https://google.com")
+-```
+-
+-```console
+-SSLKEYLOGFILE=test.log python test_script.py
+-cat test.log
+-# TLS secrets log file, generated by OpenSSL / Python
+-SERVER_HANDSHAKE_TRAFFIC_SECRET XXXX
+-EXPORTER_SECRET XXXX
+-SERVER_TRAFFIC_SECRET_0 XXXX
+-CLIENT_HANDSHAKE_TRAFFIC_SECRET XXXX
+-CLIENT_TRAFFIC_SECRET_0 XXXX
+-SERVER_HANDSHAKE_TRAFFIC_SECRET XXXX
+-EXPORTER_SECRET XXXX
+-SERVER_TRAFFIC_SECRET_0 XXXX
+-CLIENT_HANDSHAKE_TRAFFIC_SECRET XXXX
+-CLIENT_TRAFFIC_SECRET_0 XXXX
+-```
+-
+-## `SSL_CERT_FILE`
+-
+-Valid values: a filename
+-
+-If this environment variable is set then HTTPX will load
+-CA certificate from the specified file instead of the default
+-location.
+-
+-Example:
+-
+-```console
+-SSL_CERT_FILE=/path/to/ca-certs/ca-bundle.crt python -c "import httpx; httpx.get('https://example.com')"
+-```
+-
+-## `SSL_CERT_DIR`
+-
+-Valid values: a directory following an [OpenSSL specific layout](https://www.openssl.org/docs/manmaster/man3/SSL_CTX_load_verify_locations.html).
+-
+-If this environment variable is set and the directory follows an [OpenSSL specific layout](https://www.openssl.org/docs/manmaster/man3/SSL_CTX_load_verify_locations.html) (ie. you ran `c_rehash`) then HTTPX will load CA certificates from this directory instead of the default location.
+-
+-Example:
+-
+-```console
+-SSL_CERT_DIR=/path/to/ca-certs/ python -c "import httpx; httpx.get('https://example.com')"
+-```
+-
+ ## Proxies
+ 
+ The environment variables documented below are used as a convention by various HTTP tooling, including:
+diff --git a/docs/logging.md b/docs/logging.md
+index 53ae74990d..90c21e2563 100644
+--- a/docs/logging.md
++++ b/docs/logging.md
+@@ -20,25 +20,25 @@ httpx.get("https://www.example.com")
+ Will send debug level output to the console, or wherever `stdout` is directed too...
+ 
+ ```
+-DEBUG [2023-03-16 14:36:20] httpx - load_ssl_context verify=True cert=None trust_env=True http2=False
+-DEBUG [2023-03-16 14:36:20] httpx - load_verify_locations cafile='/Users/tomchristie/GitHub/encode/httpx/venv/lib/python3.10/site-packages/certifi/cacert.pem'
+-DEBUG [2023-03-16 14:36:20] httpcore - connection.connect_tcp.started host='www.example.com' port=443 local_address=None timeout=5.0
+-DEBUG [2023-03-16 14:36:20] httpcore - connection.connect_tcp.complete return_value=<httpcore.backends.sync.SyncStream object at 0x1068fd270>
+-DEBUG [2023-03-16 14:36:20] httpcore - connection.start_tls.started ssl_context=<ssl.SSLContext object at 0x10689aa40> server_hostname='www.example.com' timeout=5.0
+-DEBUG [2023-03-16 14:36:20] httpcore - connection.start_tls.complete return_value=<httpcore.backends.sync.SyncStream object at 0x1068fd240>
+-DEBUG [2023-03-16 14:36:20] httpcore - http11.send_request_headers.started request=<Request [b'GET']>
+-DEBUG [2023-03-16 14:36:20] httpcore - http11.send_request_headers.complete
+-DEBUG [2023-03-16 14:36:20] httpcore - http11.send_request_body.started request=<Request [b'GET']>
+-DEBUG [2023-03-16 14:36:20] httpcore - http11.send_request_body.complete
+-DEBUG [2023-03-16 14:36:20] httpcore - http11.receive_response_headers.started request=<Request [b'GET']>
+-DEBUG [2023-03-16 14:36:21] httpcore - http11.receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Content-Encoding', b'gzip'), (b'Accept-Ranges', b'bytes'), (b'Age', b'507675'), (b'Cache-Control', b'max-age=604800'), (b'Content-Type', b'text/html; charset=UTF-8'), (b'Date', b'Thu, 16 Mar 2023 14:36:21 GMT'), (b'Etag', b'"3147526947+ident"'), (b'Expires', b'Thu, 23 Mar 2023 14:36:21 GMT'), (b'Last-Modified', b'Thu, 17 Oct 2019 07:18:26 GMT'), (b'Server', b'ECS (nyb/1D2E)'), (b'Vary', b'Accept-Encoding'), (b'X-Cache', b'HIT'), (b'Content-Length', b'648')])
+-INFO [2023-03-16 14:36:21] httpx - HTTP Request: GET https://www.example.com "HTTP/1.1 200 OK"
+-DEBUG [2023-03-16 14:36:21] httpcore - http11.receive_response_body.started request=<Request [b'GET']>
+-DEBUG [2023-03-16 14:36:21] httpcore - http11.receive_response_body.complete
+-DEBUG [2023-03-16 14:36:21] httpcore - http11.response_closed.started
+-DEBUG [2023-03-16 14:36:21] httpcore - http11.response_closed.complete
+-DEBUG [2023-03-16 14:36:21] httpcore - connection.close.started
+-DEBUG [2023-03-16 14:36:21] httpcore - connection.close.complete
++DEBUG [2024-09-28 17:27:40] httpx - load_ssl_context verify=True cert=None
++DEBUG [2024-09-28 17:27:40] httpx - load_verify_locations cafile='/Users/karenpetrosyan/oss/karhttpx/.venv/lib/python3.9/site-packages/certifi/cacert.pem'
++DEBUG [2024-09-28 17:27:40] httpcore.connection - connect_tcp.started host='www.example.com' port=443 local_address=None timeout=5.0 socket_options=None
++DEBUG [2024-09-28 17:27:41] httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x101f1e8e0>
++DEBUG [2024-09-28 17:27:41] httpcore.connection - start_tls.started ssl_context=SSLContext(verify=True) server_hostname='www.example.com' timeout=5.0
++DEBUG [2024-09-28 17:27:41] httpcore.connection - start_tls.complete return_value=<httpcore._backends.sync.SyncStream object at 0x1020f49a0>
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - send_request_headers.complete
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - send_request_body.started request=<Request [b'GET']>
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - send_request_body.complete
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'Content-Encoding', b'gzip'), (b'Accept-Ranges', b'bytes'), (b'Age', b'407727'), (b'Cache-Control', b'max-age=604800'), (b'Content-Type', b'text/html; charset=UTF-8'), (b'Date', b'Sat, 28 Sep 2024 13:27:42 GMT'), (b'Etag', b'"3147526947+gzip"'), (b'Expires', b'Sat, 05 Oct 2024 13:27:42 GMT'), (b'Last-Modified', b'Thu, 17 Oct 2019 07:18:26 GMT'), (b'Server', b'ECAcc (dcd/7D43)'), (b'Vary', b'Accept-Encoding'), (b'X-Cache', b'HIT'), (b'Content-Length', b'648')])
++INFO [2024-09-28 17:27:41] httpx - HTTP Request: GET https://www.example.com "HTTP/1.1 200 OK"
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - receive_response_body.complete
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - response_closed.started
++DEBUG [2024-09-28 17:27:41] httpcore.http11 - response_closed.complete
++DEBUG [2024-09-28 17:27:41] httpcore.connection - close.started
++DEBUG [2024-09-28 17:27:41] httpcore.connection - close.complete
+ ```
+ 
+ Logging output includes information from both the high-level `httpx` logger, and the network-level `httpcore` logger, which can be configured separately.
+diff --git a/httpx/__init__.py b/httpx/__init__.py
+index e9addde071..dc90b90850 100644
+--- a/httpx/__init__.py
++++ b/httpx/__init__.py
+@@ -81,6 +81,7 @@ def main() -> None:  # type: ignore
+     "RequestNotRead",
+     "Response",
+     "ResponseNotRead",
++    "SSLContext",
+     "stream",
+     "StreamClosed",
+     "StreamConsumed",
+diff --git a/httpx/__version__.py b/httpx/__version__.py
+index 5eaaddbac9..0a684ac3a9 100644
+--- a/httpx/__version__.py
++++ b/httpx/__version__.py
+@@ -1,3 +1,3 @@
+ __title__ = "httpx"
+ __description__ = "A next generation HTTP client, for Python 3."
+-__version__ = "0.27.2"
++__version__ = "0.28.0"
+diff --git a/httpx/_api.py b/httpx/_api.py
+index 4e98b60694..2d352556f9 100644
+--- a/httpx/_api.py
++++ b/httpx/_api.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import ssl
+ import typing
+ from contextlib import contextmanager
+ 
+@@ -8,17 +9,14 @@
+ from ._models import Response
+ from ._types import (
+     AuthTypes,
+-    CertTypes,
+     CookieTypes,
+     HeaderTypes,
+-    ProxiesTypes,
+     ProxyTypes,
+     QueryParamTypes,
+     RequestContent,
+     RequestData,
+     RequestFiles,
+     TimeoutTypes,
+-    VerifyTypes,
+ )
+ from ._urls import URL
+ 
+@@ -48,12 +46,13 @@ def request(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     follow_redirects: bool = False,
+-    verify: VerifyTypes = True,
+-    cert: CertTypes | None = None,
++    ssl_context: ssl.SSLContext | None = None,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends an HTTP request.
+@@ -80,18 +79,11 @@ def request(
+     * **auth** - *(optional)* An authentication class to use when sending the
+     request.
+     * **proxy** - *(optional)* A proxy URL where all the traffic should be routed.
+-    * **proxies** - *(optional)* A dictionary mapping proxy keys to proxy URLs.
+     * **timeout** - *(optional)* The timeout configuration to use when sending
+     the request.
+     * **follow_redirects** - *(optional)* Enables or disables HTTP redirects.
+-    * **verify** - *(optional)* SSL certificates (a.k.a CA bundle) used to
+-    verify the identity of requested hosts. Either `True` (default CA bundle),
+-    a path to an SSL certificate file, an `ssl.SSLContext`, or `False`
+-    (which will disable verification).
+-    * **cert** - *(optional)* An SSL certificate used by the requested host
+-    to authenticate the client. Either a path to an SSL certificate file, or
+-    two-tuple of (certificate file, key file), or a three-tuple of (certificate
+-    file, key file, password).
++    * **ssl_context** - *(optional)* An SSL certificate used by the requested host
++    to authenticate the client.
+     * **trust_env** - *(optional)* Enables or disables usage of environment
+     variables for configuration.
+ 
+@@ -109,11 +101,11 @@ def request(
+     with Client(
+         cookies=cookies,
+         proxy=proxy,
+-        proxies=proxies,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     ) as client:
+         return client.request(
+             method=method,
+@@ -143,12 +135,13 @@ def stream(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     follow_redirects: bool = False,
+-    verify: VerifyTypes = True,
+-    cert: CertTypes | None = None,
++    ssl_context: ssl.SSLContext | None = None,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> typing.Iterator[Response]:
+     """
+     Alternative to `httpx.request()` that streams the response body
+@@ -163,11 +156,11 @@ def stream(
+     with Client(
+         cookies=cookies,
+         proxy=proxy,
+-        proxies=proxies,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     ) as client:
+         with client.stream(
+             method=method,
+@@ -192,12 +185,13 @@ def get(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    ssl_context: ssl.SSLContext | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends a `GET` request.
+@@ -215,12 +209,12 @@ def get(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+ 
+ 
+@@ -232,12 +226,13 @@ def options(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    ssl_context: ssl.SSLContext | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends an `OPTIONS` request.
+@@ -255,12 +250,12 @@ def options(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+ 
+ 
+@@ -272,12 +267,13 @@ def head(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    ssl_context: ssl.SSLContext | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends a `HEAD` request.
+@@ -295,12 +291,12 @@ def head(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+ 
+ 
+@@ -316,12 +312,13 @@ def post(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    ssl_context: ssl.SSLContext | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends a `POST` request.
+@@ -340,12 +337,12 @@ def post(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+ 
+ 
+@@ -361,12 +358,13 @@ def put(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    ssl_context: ssl.SSLContext | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends a `PUT` request.
+@@ -385,12 +383,12 @@ def put(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+ 
+ 
+@@ -406,12 +404,13 @@ def patch(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    ssl_context: ssl.SSLContext | None = None,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends a `PATCH` request.
+@@ -430,12 +429,12 @@ def patch(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+ 
+ 
+@@ -447,12 +446,13 @@ def delete(
+     cookies: CookieTypes | None = None,
+     auth: AuthTypes | None = None,
+     proxy: ProxyTypes | None = None,
+-    proxies: ProxiesTypes | None = None,
+     follow_redirects: bool = False,
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
+     timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
++    ssl_context: ssl.SSLContext | None = None,
+     trust_env: bool = True,
++    # Deprecated in favor of `ssl_context`...
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+ ) -> Response:
+     """
+     Sends a `DELETE` request.
+@@ -470,10 +470,10 @@ def delete(
+         cookies=cookies,
+         auth=auth,
+         proxy=proxy,
+-        proxies=proxies,
+         follow_redirects=follow_redirects,
+-        cert=cert,
+-        verify=verify,
++        ssl_context=ssl_context,
+         timeout=timeout,
+         trust_env=trust_env,
++        verify=verify,
++        cert=cert,
+     )
+diff --git a/httpx/_client.py b/httpx/_client.py
+index 26610f6e87..4700ea7165 100644
+--- a/httpx/_client.py
++++ b/httpx/_client.py
+@@ -3,6 +3,8 @@
+ import datetime
+ import enum
+ import logging
++import ssl
++import time
+ import typing
+ import warnings
+ from contextlib import asynccontextmanager, contextmanager
+@@ -27,17 +29,13 @@
+ )
+ from ._models import Cookies, Headers, Request, Response
+ from ._status_codes import codes
+-from ._transports.asgi import ASGITransport
+ from ._transports.base import AsyncBaseTransport, BaseTransport
+ from ._transports.default import AsyncHTTPTransport, HTTPTransport
+-from ._transports.wsgi import WSGITransport
+ from ._types import (
+     AsyncByteStream,
+     AuthTypes,
+-    CertTypes,
+     CookieTypes,
+     HeaderTypes,
+-    ProxiesTypes,
+     ProxyTypes,
+     QueryParamTypes,
+     RequestContent,
+@@ -46,11 +44,9 @@
+     RequestFiles,
+     SyncByteStream,
+     TimeoutTypes,
+-    VerifyTypes,
+ )
+ from ._urls import URL, QueryParams
+ from ._utils import (
+-    Timer,
+     URLPattern,
+     get_environment_proxies,
+     is_https_redirect,
+@@ -117,19 +113,19 @@ class BoundSyncStream(SyncByteStream):
+     """
+ 
+     def __init__(
+-        self, stream: SyncByteStream, response: Response, timer: Timer
++        self, stream: SyncByteStream, response: Response, start: float
+     ) -> None:
+         self._stream = stream
+         self._response = response
+-        self._timer = timer
++        self._start = start
+ 
+     def __iter__(self) -> typing.Iterator[bytes]:
+         for chunk in self._stream:
+             yield chunk
+ 
+     def close(self) -> None:
+-        seconds = self._timer.sync_elapsed()
+-        self._response.elapsed = datetime.timedelta(seconds=seconds)
++        elapsed = time.perf_counter() - self._start
++        self._response.elapsed = datetime.timedelta(seconds=elapsed)
+         self._stream.close()
+ 
+ 
+@@ -140,19 +136,19 @@ class BoundAsyncStream(AsyncByteStream):
+     """
+ 
+     def __init__(
+-        self, stream: AsyncByteStream, response: Response, timer: Timer
++        self, stream: AsyncByteStream, response: Response, start: float
+     ) -> None:
+         self._stream = stream
+         self._response = response
+-        self._timer = timer
++        self._start = start
+ 
+     async def __aiter__(self) -> typing.AsyncIterator[bytes]:
+         async for chunk in self._stream:
+             yield chunk
+ 
+     async def aclose(self) -> None:
+-        seconds = await self._timer.async_elapsed()
+-        self._response.elapsed = datetime.timedelta(seconds=seconds)
++        elapsed = time.perf_counter() - self._start
++        self._response.elapsed = datetime.timedelta(seconds=elapsed)
+         await self._stream.aclose()
+ 
+ 
+@@ -211,23 +207,17 @@ def _enforce_trailing_slash(self, url: URL) -> URL:
+         return url.copy_with(raw_path=url.raw_path + b"/")
+ 
+     def _get_proxy_map(
+-        self, proxies: ProxiesTypes | None, allow_env_proxies: bool
++        self, proxy: ProxyTypes | None, allow_env_proxies: bool
+     ) -> dict[str, Proxy | None]:
+-        if proxies is None:
++        if proxy is None:
+             if allow_env_proxies:
+                 return {
+                     key: None if url is None else Proxy(url=url)
+                     for key, url in get_environment_proxies().items()
+                 }
+             return {}
+-        if isinstance(proxies, dict):
+-            new_proxies = {}
+-            for key, value in proxies.items():
+-                proxy = Proxy(url=value) if isinstance(value, (str, URL)) else value
+-                new_proxies[str(key)] = proxy
+-            return new_proxies
+         else:
+-            proxy = Proxy(url=proxies) if isinstance(proxies, (str, URL)) else proxies
++            proxy = Proxy(url=proxy) if isinstance(proxy, (str, URL)) else proxy
+             return {"all://": proxy}
+ 
+     @property
+@@ -594,14 +584,8 @@ class Client(BaseClient):
+     sending requests.
+     * **cookies** - *(optional)* Dictionary of Cookie items to include when
+     sending requests.
+-    * **verify** - *(optional)* SSL certificates (a.k.a CA bundle) used to
+-    verify the identity of requested hosts. Either `True` (default CA bundle),
+-    a path to an SSL certificate file, an `ssl.SSLContext`, or `False`
+-    (which will disable verification).
+-    * **cert** - *(optional)* An SSL certificate used by the requested host
+-    to authenticate the client. Either a path to an SSL certificate file, or
+-    two-tuple of (certificate file, key file), or a three-tuple of (certificate
+-    file, key file, password).
++    * **ssl_context** - *(optional)* An SSL certificate used by the requested host
++    to authenticate the client.
+     * **http2** - *(optional)* A boolean indicating if HTTP/2 support should be
+     enabled. Defaults to `False`.
+     * **proxy** - *(optional)* A proxy URL where all the traffic should be routed.
+@@ -616,8 +600,6 @@ class Client(BaseClient):
+     request URLs.
+     * **transport** - *(optional)* A transport class to use for sending requests
+     over the network.
+-    * **app** - *(optional)* An WSGI application to send requests to,
+-    rather than sending actual network requests.
+     * **trust_env** - *(optional)* Enables or disables usage of environment
+     variables for configuration.
+     * **default_encoding** - *(optional)* The default encoding to use for decoding
+@@ -632,12 +614,10 @@ def __init__(
+         params: QueryParamTypes | None = None,
+         headers: HeaderTypes | None = None,
+         cookies: CookieTypes | None = None,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         proxy: ProxyTypes | None = None,
+-        proxies: ProxiesTypes | None = None,
+         mounts: None | (typing.Mapping[str, BaseTransport | None]) = None,
+         timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+         follow_redirects: bool = False,
+@@ -646,9 +626,11 @@ def __init__(
+         event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None,
+         base_url: URL | str = "",
+         transport: BaseTransport | None = None,
+-        app: typing.Callable[..., typing.Any] | None = None,
+         trust_env: bool = True,
+         default_encoding: str | typing.Callable[[bytes], str] = "utf-8",
++        # Deprecated in favor of `ssl_context`...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> None:
+         super().__init__(
+             auth=auth,
+@@ -673,46 +655,32 @@ def __init__(
+                     "Make sure to install httpx using `pip install httpx[http2]`."
+                 ) from None
+ 
+-        if proxies:
+-            message = (
+-                "The 'proxies' argument is now deprecated."
+-                " Use 'proxy' or 'mounts' instead."
+-            )
+-            warnings.warn(message, DeprecationWarning)
+-            if proxy:
+-                raise RuntimeError("Use either `proxy` or 'proxies', not both.")
+-
+-        if app:
+-            message = (
+-                "The 'app' shortcut is now deprecated."
+-                " Use the explicit style 'transport=WSGITransport(app=...)' instead."
+-            )
+-            warnings.warn(message, DeprecationWarning)
+-
+-        allow_env_proxies = trust_env and app is None and transport is None
+-        proxy_map = self._get_proxy_map(proxies or proxy, allow_env_proxies)
++        allow_env_proxies = trust_env and transport is None
++        proxy_map = self._get_proxy_map(proxy, allow_env_proxies)
+ 
+         self._transport = self._init_transport(
+-            verify=verify,
+-            cert=cert,
++            ssl_context=ssl_context,
+             http1=http1,
+             http2=http2,
+             limits=limits,
+             transport=transport,
+-            app=app,
+             trust_env=trust_env,
++            # Deprecated in favor of ssl_context...
++            verify=verify,
++            cert=cert,
+         )
+         self._mounts: dict[URLPattern, BaseTransport | None] = {
+             URLPattern(key): None
+             if proxy is None
+             else self._init_proxy_transport(
+                 proxy,
+-                verify=verify,
+-                cert=cert,
++                ssl_context=ssl_context,
+                 http1=http1,
+                 http2=http2,
+                 limits=limits,
+-                trust_env=trust_env,
++                # Deprecated in favor of ssl_context...
++                verify=verify,
++                cert=cert,
+             )
+             for key, proxy in proxy_map.items()
+         }
+@@ -725,48 +693,48 @@ def __init__(
+ 
+     def _init_transport(
+         self,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         limits: Limits = DEFAULT_LIMITS,
+         transport: BaseTransport | None = None,
+-        app: typing.Callable[..., typing.Any] | None = None,
+         trust_env: bool = True,
++        # Deprecated in favor of `ssl_context`...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> BaseTransport:
+         if transport is not None:
+             return transport
+ 
+-        if app is not None:
+-            return WSGITransport(app=app)
+-
+         return HTTPTransport(
+-            verify=verify,
+-            cert=cert,
++            ssl_context=ssl_context,
+             http1=http1,
+             http2=http2,
+             limits=limits,
+-            trust_env=trust_env,
++            verify=verify,
++            cert=cert,
+         )
+ 
+     def _init_proxy_transport(
+         self,
+         proxy: Proxy,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         limits: Limits = DEFAULT_LIMITS,
+         trust_env: bool = True,
++        # Deprecated in favor of `ssl_context`...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> BaseTransport:
+         return HTTPTransport(
+-            verify=verify,
+-            cert=cert,
++            ssl_context=ssl_context,
+             http1=http1,
+             http2=http2,
+             limits=limits,
+-            trust_env=trust_env,
+             proxy=proxy,
++            verify=verify,
++            cert=cert,
+         )
+ 
+     def _transport_for_url(self, url: URL) -> BaseTransport:
+@@ -819,7 +787,7 @@ def request(
+                 "the expected behaviour on cookie persistence is ambiguous. Set "
+                 "cookies directly on the client instance instead."
+             )
+-            warnings.warn(message, DeprecationWarning)
++            warnings.warn(message, DeprecationWarning, stacklevel=2)
+ 
+         request = self.build_request(
+             method=method,
+@@ -1015,8 +983,7 @@ def _send_single_request(self, request: Request) -> Response:
+         Sends a single request, without handling any redirections.
+         """
+         transport = self._transport_for_url(request.url)
+-        timer = Timer()
+-        timer.sync_start()
++        start = time.perf_counter()
+ 
+         if not isinstance(request.stream, SyncByteStream):
+             raise RuntimeError(
+@@ -1030,7 +997,7 @@ def _send_single_request(self, request: Request) -> Response:
+ 
+         response.request = request
+         response.stream = BoundSyncStream(
+-            response.stream, response=response, timer=timer
++            response.stream, response=response, start=start
+         )
+         self.cookies.extract_cookies(response)
+         response.default_encoding = self._default_encoding
+@@ -1341,19 +1308,11 @@ class AsyncClient(BaseClient):
+     sending requests.
+     * **cookies** - *(optional)* Dictionary of Cookie items to include when
+     sending requests.
+-    * **verify** - *(optional)* SSL certificates (a.k.a CA bundle) used to
+-    verify the identity of requested hosts. Either `True` (default CA bundle),
+-    a path to an SSL certificate file, an `ssl.SSLContext`, or `False`
+-    (which will disable verification).
+-    * **cert** - *(optional)* An SSL certificate used by the requested host
+-    to authenticate the client. Either a path to an SSL certificate file, or
+-    two-tuple of (certificate file, key file), or a three-tuple of (certificate
+-    file, key file, password).
++    * **ssl_context** - *(optional)* An SSL certificate used by the requested host
++    to authenticate the client.
+     * **http2** - *(optional)* A boolean indicating if HTTP/2 support should be
+     enabled. Defaults to `False`.
+     * **proxy** - *(optional)* A proxy URL where all the traffic should be routed.
+-    * **proxies** - *(optional)* A dictionary mapping HTTP protocols to proxy
+-    URLs.
+     * **timeout** - *(optional)* The timeout configuration to use when sending
+     requests.
+     * **limits** - *(optional)* The limits configuration to use.
+@@ -1363,8 +1322,6 @@ class AsyncClient(BaseClient):
+     request URLs.
+     * **transport** - *(optional)* A transport class to use for sending requests
+     over the network.
+-    * **app** - *(optional)* An ASGI application to send requests to,
+-    rather than sending actual network requests.
+     * **trust_env** - *(optional)* Enables or disables usage of environment
+     variables for configuration.
+     * **default_encoding** - *(optional)* The default encoding to use for decoding
+@@ -1379,12 +1336,10 @@ def __init__(
+         params: QueryParamTypes | None = None,
+         headers: HeaderTypes | None = None,
+         cookies: CookieTypes | None = None,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         proxy: ProxyTypes | None = None,
+-        proxies: ProxiesTypes | None = None,
+         mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None,
+         timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+         follow_redirects: bool = False,
+@@ -1393,9 +1348,11 @@ def __init__(
+         event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None,
+         base_url: URL | str = "",
+         transport: AsyncBaseTransport | None = None,
+-        app: typing.Callable[..., typing.Any] | None = None,
+         trust_env: bool = True,
+         default_encoding: str | typing.Callable[[bytes], str] = "utf-8",
++        # Deprecated in favor of `ssl_context`...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> None:
+         super().__init__(
+             auth=auth,
+@@ -1420,34 +1377,18 @@ def __init__(
+                     "Make sure to install httpx using `pip install httpx[http2]`."
+                 ) from None
+ 
+-        if proxies:
+-            message = (
+-                "The 'proxies' argument is now deprecated."
+-                " Use 'proxy' or 'mounts' instead."
+-            )
+-            warnings.warn(message, DeprecationWarning)
+-            if proxy:
+-                raise RuntimeError("Use either `proxy` or 'proxies', not both.")
+-
+-        if app:
+-            message = (
+-                "The 'app' shortcut is now deprecated."
+-                " Use the explicit style 'transport=ASGITransport(app=...)' instead."
+-            )
+-            warnings.warn(message, DeprecationWarning)
+-
+-        allow_env_proxies = trust_env and app is None and transport is None
+-        proxy_map = self._get_proxy_map(proxies or proxy, allow_env_proxies)
++        allow_env_proxies = trust_env and transport is None
++        proxy_map = self._get_proxy_map(proxy, allow_env_proxies)
+ 
+         self._transport = self._init_transport(
+-            verify=verify,
+-            cert=cert,
++            ssl_context=ssl_context,
+             http1=http1,
+             http2=http2,
+             limits=limits,
+             transport=transport,
+-            app=app,
+-            trust_env=trust_env,
++            # Deprecated in favor of ssl_context
++            verify=verify,
++            cert=cert,
+         )
+ 
+         self._mounts: dict[URLPattern, AsyncBaseTransport | None] = {
+@@ -1455,12 +1396,13 @@ def __init__(
+             if proxy is None
+             else self._init_proxy_transport(
+                 proxy,
+-                verify=verify,
+-                cert=cert,
++                ssl_context=ssl_context,
+                 http1=http1,
+                 http2=http2,
+                 limits=limits,
+-                trust_env=trust_env,
++                # Deprecated in favor of `ssl_context`...
++                verify=verify,
++                cert=cert,
+             )
+             for key, proxy in proxy_map.items()
+         }
+@@ -1472,48 +1414,46 @@ def __init__(
+ 
+     def _init_transport(
+         self,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         limits: Limits = DEFAULT_LIMITS,
+         transport: AsyncBaseTransport | None = None,
+-        app: typing.Callable[..., typing.Any] | None = None,
+-        trust_env: bool = True,
++        # Deprecated in favor of `ssl_context`...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> AsyncBaseTransport:
+         if transport is not None:
+             return transport
+ 
+-        if app is not None:
+-            return ASGITransport(app=app)
+-
+         return AsyncHTTPTransport(
+-            verify=verify,
+-            cert=cert,
++            ssl_context=ssl_context,
+             http1=http1,
+             http2=http2,
+             limits=limits,
+-            trust_env=trust_env,
++            verify=verify,
++            cert=cert,
+         )
+ 
+     def _init_proxy_transport(
+         self,
+         proxy: Proxy,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         limits: Limits = DEFAULT_LIMITS,
+-        trust_env: bool = True,
++        # Deprecated in favor of `ssl_context`...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> AsyncBaseTransport:
+         return AsyncHTTPTransport(
+-            verify=verify,
+-            cert=cert,
++            ssl_context=ssl_context,
+             http1=http1,
+             http2=http2,
+             limits=limits,
+-            trust_env=trust_env,
+             proxy=proxy,
++            verify=verify,
++            cert=cert,
+         )
+ 
+     def _transport_for_url(self, url: URL) -> AsyncBaseTransport:
+@@ -1567,7 +1507,7 @@ async def request(
+                 "the expected behaviour on cookie persistence is ambiguous. Set "
+                 "cookies directly on the client instance instead."
+             )
+-            warnings.warn(message, DeprecationWarning)
++            warnings.warn(message, DeprecationWarning, stacklevel=2)
+ 
+         request = self.build_request(
+             method=method,
+@@ -1764,8 +1704,7 @@ async def _send_single_request(self, request: Request) -> Response:
+         Sends a single request, without handling any redirections.
+         """
+         transport = self._transport_for_url(request.url)
+-        timer = Timer()
+-        await timer.async_start()
++        start = time.perf_counter()
+ 
+         if not isinstance(request.stream, AsyncByteStream):
+             raise RuntimeError(
+@@ -1778,7 +1717,7 @@ async def _send_single_request(self, request: Request) -> Response:
+         assert isinstance(response.stream, AsyncByteStream)
+         response.request = request
+         response.stream = BoundAsyncStream(
+-            response.stream, response=response, timer=timer
++            response.stream, response=response, start=start
+         )
+         self.cookies.extract_cookies(response)
+         response.default_encoding = self._default_encoding
+diff --git a/httpx/_compat.py b/httpx/_compat.py
+deleted file mode 100644
+index 7d86dced46..0000000000
+--- a/httpx/_compat.py
++++ /dev/null
+@@ -1,63 +0,0 @@
+-"""
+-The _compat module is used for code which requires branching between different
+-Python environments. It is excluded from the code coverage checks.
+-"""
+-
+-import re
+-import ssl
+-import sys
+-from types import ModuleType
+-from typing import Optional
+-
+-# Brotli support is optional
+-# The C bindings in `brotli` are recommended for CPython.
+-# The CFFI bindings in `brotlicffi` are recommended for PyPy and everything else.
+-try:
+-    import brotlicffi as brotli
+-except ImportError:  # pragma: no cover
+-    try:
+-        import brotli
+-    except ImportError:
+-        brotli = None
+-
+-# Zstandard support is optional
+-zstd: Optional[ModuleType] = None
+-try:
+-    import zstandard as zstd
+-except (AttributeError, ImportError, ValueError):  # Defensive:
+-    zstd = None
+-else:
+-    # The package 'zstandard' added the 'eof' property starting
+-    # in v0.18.0 which we require to ensure a complete and
+-    # valid zstd stream was fed into the ZstdDecoder.
+-    # See: https://github.com/urllib3/urllib3/pull/2624
+-    _zstd_version = tuple(
+-        map(int, re.search(r"^([0-9]+)\.([0-9]+)", zstd.__version__).groups())  # type: ignore[union-attr]
+-    )
+-    if _zstd_version < (0, 18):  # Defensive:
+-        zstd = None
+-
+-
+-if sys.version_info >= (3, 10) or ssl.OPENSSL_VERSION_INFO >= (1, 1, 0, 7):
+-
+-    def set_minimum_tls_version_1_2(context: ssl.SSLContext) -> None:
+-        # The OP_NO_SSL* and OP_NO_TLS* become deprecated in favor of
+-        # 'SSLContext.minimum_version' from Python 3.7 onwards, however
+-        # this attribute is not available unless the ssl module is compiled
+-        # with OpenSSL 1.1.0g or newer.
+-        # https://docs.python.org/3.10/library/ssl.html#ssl.SSLContext.minimum_version
+-        # https://docs.python.org/3.7/library/ssl.html#ssl.SSLContext.minimum_version
+-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+-
+-else:
+-
+-    def set_minimum_tls_version_1_2(context: ssl.SSLContext) -> None:
+-        # If 'minimum_version' isn't available, we configure these options with
+-        # the older deprecated variants.
+-        context.options |= ssl.OP_NO_SSLv2
+-        context.options |= ssl.OP_NO_SSLv3
+-        context.options |= ssl.OP_NO_TLSv1
+-        context.options |= ssl.OP_NO_TLSv1_1
+-
+-
+-__all__ = ["brotli", "set_minimum_tls_version_1_2"]
+diff --git a/httpx/_config.py b/httpx/_config.py
+index 1b12911faf..2c9634a666 100644
+--- a/httpx/_config.py
++++ b/httpx/_config.py
+@@ -1,42 +1,18 @@
+ from __future__ import annotations
+ 
+-import logging
+ import os
+ import ssl
++import sys
+ import typing
+-from pathlib import Path
++import warnings
+ 
+ import certifi
+ 
+-from ._compat import set_minimum_tls_version_1_2
+ from ._models import Headers
+-from ._types import CertTypes, HeaderTypes, TimeoutTypes, VerifyTypes
++from ._types import HeaderTypes, TimeoutTypes
+ from ._urls import URL
+-from ._utils import get_ca_bundle_from_env
+ 
+-__all__ = ["Limits", "Proxy", "Timeout", "create_ssl_context"]
+-
+-DEFAULT_CIPHERS = ":".join(
+-    [
+-        "ECDHE+AESGCM",
+-        "ECDHE+CHACHA20",
+-        "DHE+AESGCM",
+-        "DHE+CHACHA20",
+-        "ECDH+AESGCM",
+-        "DH+AESGCM",
+-        "ECDH+AES",
+-        "DH+AES",
+-        "RSA+AESGCM",
+-        "RSA+AES",
+-        "!aNULL",
+-        "!eNULL",
+-        "!MD5",
+-        "!DSS",
+-    ]
+-)
+-
+-
+-logger = logging.getLogger("httpx")
++__all__ = ["Limits", "Proxy", "SSLContext", "Timeout", "create_ssl_context"]
+ 
+ 
+ class UnsetType:
+@@ -47,150 +23,102 @@ class UnsetType:
+ 
+ 
+ def create_ssl_context(
+-    cert: CertTypes | None = None,
+-    verify: VerifyTypes = True,
++    verify: typing.Any = None,
++    cert: typing.Any = None,
+     trust_env: bool = True,
+     http2: bool = False,
+-) -> ssl.SSLContext:
+-    return SSLConfig(
+-        cert=cert, verify=verify, trust_env=trust_env, http2=http2
+-    ).ssl_context
++) -> ssl.SSLContext:  # pragma: nocover
++    # The `create_ssl_context` helper function is now deprecated
++    # in favour of `httpx.SSLContext()`.
++    if isinstance(verify, bool):
++        ssl_context: ssl.SSLContext = SSLContext(verify=verify)
++        warnings.warn(
++            "The verify=<bool> parameter is deprecated since 0.28.0. "
++            "Use `ssl_context=httpx.SSLContext(verify=<bool>)`."
++        )
++    elif isinstance(verify, str):
++        warnings.warn(
++            "The verify=<str> parameter is deprecated since 0.28.0. "
++            "Use `ssl_context=httpx.SSLContext()` and `.load_verify_locations()`."
++        )
++        ssl_context = SSLContext()
++        if os.path.isfile(verify):
++            ssl_context.load_verify_locations(cafile=verify)
++        elif os.path.isdir(verify):
++            ssl_context.load_verify_locations(capath=verify)
++    elif isinstance(verify, ssl.SSLContext):
++        warnings.warn(
++            "The verify=<ssl context> parameter is deprecated since 0.28.0. "
++            "Use `ssl_context = httpx.SSLContext()`."
++        )
++        ssl_context = verify
++    else:
++        warnings.warn(
++            "`create_ssl_context()` is deprecated since 0.28.0."
++            "Use `ssl_context = httpx.SSLContext()`."
++        )
++        ssl_context = SSLContext()
+ 
++    if cert is not None:
++        warnings.warn(
++            "The `cert=<...>` parameter is deprecated since 0.28.0. "
++            "Use `ssl_context = httpx.SSLContext()` and `.load_cert_chain()`."
++        )
++        if isinstance(cert, str):
++            ssl_context.load_cert_chain(cert)
++        else:
++            ssl_context.load_cert_chain(*cert)
+ 
+-class SSLConfig:
+-    """
+-    SSL Configuration.
+-    """
++    return ssl_context
+ 
+-    DEFAULT_CA_BUNDLE_PATH = Path(certifi.where())
+ 
++class SSLContext(ssl.SSLContext):
+     def __init__(
+         self,
+-        *,
+-        cert: CertTypes | None = None,
+-        verify: VerifyTypes = True,
+-        trust_env: bool = True,
+-        http2: bool = False,
++        verify: bool = True,
+     ) -> None:
+-        self.cert = cert
+-        self.verify = verify
+-        self.trust_env = trust_env
+-        self.http2 = http2
+-        self.ssl_context = self.load_ssl_context()
+-
+-    def load_ssl_context(self) -> ssl.SSLContext:
+-        logger.debug(
+-            "load_ssl_context verify=%r cert=%r trust_env=%r http2=%r",
+-            self.verify,
+-            self.cert,
+-            self.trust_env,
+-            self.http2,
+-        )
++        # ssl.SSLContext sets OP_NO_SSLv2, OP_NO_SSLv3, OP_NO_COMPRESSION,
++        # OP_CIPHER_SERVER_PREFERENCE, OP_SINGLE_DH_USE and OP_SINGLE_ECDH_USE
++        # by default. (from `ssl.create_default_context`)
++        super().__init__()
++        self._verify = verify
++
++        # Our SSL setup here is similar to the stdlib `ssl.create_default_context()`
++        # implementation, except with `certifi` used for certificate verification.
++        if not verify:
++            self.check_hostname = False
++            self.verify_mode = ssl.CERT_NONE
++            return
++
++        self.verify_mode = ssl.CERT_REQUIRED
++        self.check_hostname = True
++
++        # Use stricter verify flags where possible.
++        if hasattr(ssl, "VERIFY_X509_PARTIAL_CHAIN"):  # pragma: nocover
++            self.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
++        if hasattr(ssl, "VERIFY_X509_STRICT"):  # pragma: nocover
++            self.verify_flags |= ssl.VERIFY_X509_STRICT
++
++        # Default to `certifi` for certificiate verification.
++        self.load_verify_locations(cafile=certifi.where())
++
++        # OpenSSL keylog file support.
++        if hasattr(self, "keylog_filename"):
++            keylogfile = os.environ.get("SSLKEYLOGFILE")
++            if keylogfile and not sys.flags.ignore_environment:
++                self.keylog_filename = keylogfile
+ 
+-        if self.verify:
+-            return self.load_ssl_context_verify()
+-        return self.load_ssl_context_no_verify()
+-
+-    def load_ssl_context_no_verify(self) -> ssl.SSLContext:
+-        """
+-        Return an SSL context for unverified connections.
+-        """
+-        context = self._create_default_ssl_context()
+-        context.check_hostname = False
+-        context.verify_mode = ssl.CERT_NONE
+-        self._load_client_certs(context)
+-        return context
+-
+-    def load_ssl_context_verify(self) -> ssl.SSLContext:
+-        """
+-        Return an SSL context for verified connections.
+-        """
+-        if self.trust_env and self.verify is True:
+-            ca_bundle = get_ca_bundle_from_env()
+-            if ca_bundle is not None:
+-                self.verify = ca_bundle
+-
+-        if isinstance(self.verify, ssl.SSLContext):
+-            # Allow passing in our own SSLContext object that's pre-configured.
+-            context = self.verify
+-            self._load_client_certs(context)
+-            return context
+-        elif isinstance(self.verify, bool):
+-            ca_bundle_path = self.DEFAULT_CA_BUNDLE_PATH
+-        elif Path(self.verify).exists():
+-            ca_bundle_path = Path(self.verify)
+-        else:
+-            raise IOError(
+-                "Could not find a suitable TLS CA certificate bundle, "
+-                "invalid path: {}".format(self.verify)
+-            )
+-
+-        context = self._create_default_ssl_context()
+-        context.verify_mode = ssl.CERT_REQUIRED
+-        context.check_hostname = True
+-
+-        # Signal to server support for PHA in TLS 1.3. Raises an
+-        # AttributeError if only read-only access is implemented.
+-        try:
+-            context.post_handshake_auth = True
+-        except AttributeError:  # pragma: no cover
+-            pass
+-
+-        # Disable using 'commonName' for SSLContext.check_hostname
+-        # when the 'subjectAltName' extension isn't available.
+-        try:
+-            context.hostname_checks_common_name = False
+-        except AttributeError:  # pragma: no cover
+-            pass
+-
+-        if ca_bundle_path.is_file():
+-            cafile = str(ca_bundle_path)
+-            logger.debug("load_verify_locations cafile=%r", cafile)
+-            context.load_verify_locations(cafile=cafile)
+-        elif ca_bundle_path.is_dir():
+-            capath = str(ca_bundle_path)
+-            logger.debug("load_verify_locations capath=%r", capath)
+-            context.load_verify_locations(capath=capath)
+-
+-        self._load_client_certs(context)
+-
+-        return context
+-
+-    def _create_default_ssl_context(self) -> ssl.SSLContext:
+-        """
+-        Creates the default SSLContext object that's used for both verified
+-        and unverified connections.
+-        """
+-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+-        set_minimum_tls_version_1_2(context)
+-        context.options |= ssl.OP_NO_COMPRESSION
+-        context.set_ciphers(DEFAULT_CIPHERS)
+-
+-        if ssl.HAS_ALPN:
+-            alpn_idents = ["http/1.1", "h2"] if self.http2 else ["http/1.1"]
+-            context.set_alpn_protocols(alpn_idents)
+-
+-        keylogfile = os.environ.get("SSLKEYLOGFILE")
+-        if keylogfile and self.trust_env:
+-            context.keylog_filename = keylogfile
+-
+-        return context
+-
+-    def _load_client_certs(self, ssl_context: ssl.SSLContext) -> None:
+-        """
+-        Loads client certificates into our SSLContext object
+-        """
+-        if self.cert is not None:
+-            if isinstance(self.cert, str):
+-                ssl_context.load_cert_chain(certfile=self.cert)
+-            elif isinstance(self.cert, tuple) and len(self.cert) == 2:
+-                ssl_context.load_cert_chain(certfile=self.cert[0], keyfile=self.cert[1])
+-            elif isinstance(self.cert, tuple) and len(self.cert) == 3:
+-                ssl_context.load_cert_chain(
+-                    certfile=self.cert[0],
+-                    keyfile=self.cert[1],
+-                    password=self.cert[2],
+-                )
++    def __repr__(self) -> str:
++        class_name = self.__class__.__name__
++        return f"<{class_name}(verify={self._verify!r})>"
++
++    def __new__(
++        cls,
++        protocol: ssl._SSLMethod = ssl.PROTOCOL_TLS_CLIENT,
++        *args: typing.Any,
++        **kwargs: typing.Any,
++    ) -> "SSLContext":
++        return super().__new__(cls, protocol, *args, **kwargs)
+ 
+ 
+ class Timeout:
+diff --git a/httpx/_content.py b/httpx/_content.py
+index 786699f38f..6e8ad98d08 100644
+--- a/httpx/_content.py
++++ b/httpx/_content.py
+@@ -201,7 +201,7 @@ def encode_request(
+         # `data=<bytes...>` usages. We deal with that case here, treating it
+         # as if `content=<...>` had been supplied instead.
+         message = "Use 'content=<...>' to upload raw bytes/text content."
+-        warnings.warn(message, DeprecationWarning)
++        warnings.warn(message, DeprecationWarning, stacklevel=2)
+         return encode_content(data)
+ 
+     if content is not None:
+diff --git a/httpx/_decoders.py b/httpx/_decoders.py
+index 62f2c0b911..180898c53f 100644
+--- a/httpx/_decoders.py
++++ b/httpx/_decoders.py
+@@ -11,9 +11,27 @@
+ import typing
+ import zlib
+ 
+-from ._compat import brotli, zstd
+ from ._exceptions import DecodingError
+ 
++# Brotli support is optional
++try:
++    # The C bindings in `brotli` are recommended for CPython.
++    import brotli
++except ImportError:  # pragma: no cover
++    try:
++        # The CFFI bindings in `brotlicffi` are recommended for PyPy
++        # and other environments.
++        import brotlicffi as brotli
++    except ImportError:
++        brotli = None
++
++
++# Zstandard support is optional
++try:
++    import zstandard
++except ImportError:  # pragma: no cover
++    zstandard = None  # type: ignore
++
+ 
+ class ContentDecoder:
+     def decode(self, data: bytes) -> bytes:
+@@ -150,24 +168,24 @@ class ZStandardDecoder(ContentDecoder):
+ 
+     # inspired by the ZstdDecoder implementation in urllib3
+     def __init__(self) -> None:
+-        if zstd is None:  # pragma: no cover
++        if zstandard is None:  # pragma: no cover
+             raise ImportError(
+                 "Using 'ZStandardDecoder', ..."
+                 "Make sure to install httpx using `pip install httpx[zstd]`."
+             ) from None
+ 
+-        self.decompressor = zstd.ZstdDecompressor().decompressobj()
++        self.decompressor = zstandard.ZstdDecompressor().decompressobj()
+ 
+     def decode(self, data: bytes) -> bytes:
+-        assert zstd is not None
++        assert zstandard is not None
+         output = io.BytesIO()
+         try:
+             output.write(self.decompressor.decompress(data))
+             while self.decompressor.eof and self.decompressor.unused_data:
+                 unused_data = self.decompressor.unused_data
+-                self.decompressor = zstd.ZstdDecompressor().decompressobj()
++                self.decompressor = zstandard.ZstdDecompressor().decompressobj()
+                 output.write(self.decompressor.decompress(unused_data))
+-        except zstd.ZstdError as exc:
++        except zstandard.ZstdError as exc:
+             raise DecodingError(str(exc)) from exc
+         return output.getvalue()
+ 
+@@ -367,5 +385,5 @@ def flush(self) -> list[str]:
+ 
+ if brotli is None:
+     SUPPORTED_DECODERS.pop("br")  # pragma: no cover
+-if zstd is None:
++if zstandard is None:
+     SUPPORTED_DECODERS.pop("zstd")  # pragma: no cover
+diff --git a/httpx/_main.py b/httpx/_main.py
+index 72657f8ca3..41c50f7413 100644
+--- a/httpx/_main.py
++++ b/httpx/_main.py
+@@ -16,6 +16,7 @@
+ import rich.table
+ 
+ from ._client import Client
++from ._config import SSLContext
+ from ._exceptions import RequestError
+ from ._models import Response
+ from ._status_codes import codes
+@@ -473,12 +474,10 @@ def main(
+     if not method:
+         method = "POST" if content or data or files or json else "GET"
+ 
++    ssl_context = SSLContext(verify=verify)
+     try:
+         with Client(
+-            proxy=proxy,
+-            timeout=timeout,
+-            verify=verify,
+-            http2=http2,
++            proxy=proxy, timeout=timeout, http2=http2, ssl_context=ssl_context
+         ) as client:
+             with client.stream(
+                 method,
+diff --git a/httpx/_transports/asgi.py b/httpx/_transports/asgi.py
+index 8578d4aeff..2bc4efae0e 100644
+--- a/httpx/_transports/asgi.py
++++ b/httpx/_transports/asgi.py
+@@ -2,8 +2,6 @@
+ 
+ import typing
+ 
+-import sniffio
+-
+ from .._models import Request, Response
+ from .._types import AsyncByteStream
+ from .base import AsyncBaseTransport
+@@ -28,15 +26,30 @@
+ __all__ = ["ASGITransport"]
+ 
+ 
++def is_running_trio() -> bool:
++    try:
++        # sniffio is a dependency of trio.
++
++        # See https://github.com/python-trio/trio/issues/2802
++        import sniffio
++
++        if sniffio.current_async_library() == "trio":
++            return True
++    except ImportError:  # pragma: nocover
++        pass
++
++    return False
++
++
+ def create_event() -> Event:
+-    if sniffio.current_async_library() == "trio":
++    if is_running_trio():
+         import trio
+ 
+         return trio.Event()
+-    else:
+-        import asyncio
+ 
+-        return asyncio.Event()
++    import asyncio
++
++    return asyncio.Event()
+ 
+ 
+ class ASGIResponseStream(AsyncByteStream):
+diff --git a/httpx/_transports/default.py b/httpx/_transports/default.py
+index 33db416dd1..a1978c5ae9 100644
+--- a/httpx/_transports/default.py
++++ b/httpx/_transports/default.py
+@@ -27,12 +27,13 @@
+ from __future__ import annotations
+ 
+ import contextlib
++import ssl
+ import typing
+ from types import TracebackType
+ 
+ import httpcore
+ 
+-from .._config import DEFAULT_LIMITS, Limits, Proxy, create_ssl_context
++from .._config import DEFAULT_LIMITS, Limits, Proxy, SSLContext, create_ssl_context
+ from .._exceptions import (
+     ConnectError,
+     ConnectTimeout,
+@@ -50,7 +51,7 @@
+     WriteTimeout,
+ )
+ from .._models import Request, Response
+-from .._types import AsyncByteStream, CertTypes, ProxyTypes, SyncByteStream, VerifyTypes
++from .._types import AsyncByteStream, ProxyTypes, SyncByteStream
+ from .._urls import URL
+ from .base import AsyncBaseTransport, BaseTransport
+ 
+@@ -124,20 +125,25 @@ def close(self) -> None:
+ class HTTPTransport(BaseTransport):
+     def __init__(
+         self,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         limits: Limits = DEFAULT_LIMITS,
+-        trust_env: bool = True,
+         proxy: ProxyTypes | None = None,
+         uds: str | None = None,
+         local_address: str | None = None,
+         retries: int = 0,
+         socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
++        # Deprecated...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> None:
+-        ssl_context = create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+         proxy = Proxy(url=proxy) if isinstance(proxy, (str, URL)) else proxy
++        if verify is not None or cert is not None:  # pragma: nocover
++            # Deprecated...
++            ssl_context = create_ssl_context(verify, cert)
++        else:
++            ssl_context = ssl_context or SSLContext()
+ 
+         if proxy is None:
+             self._pool = httpcore.ConnectionPool(
+@@ -265,20 +271,25 @@ async def aclose(self) -> None:
+ class AsyncHTTPTransport(AsyncBaseTransport):
+     def __init__(
+         self,
+-        verify: VerifyTypes = True,
+-        cert: CertTypes | None = None,
++        ssl_context: ssl.SSLContext | None = None,
+         http1: bool = True,
+         http2: bool = False,
+         limits: Limits = DEFAULT_LIMITS,
+-        trust_env: bool = True,
+         proxy: ProxyTypes | None = None,
+         uds: str | None = None,
+         local_address: str | None = None,
+         retries: int = 0,
+         socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
++        # Deprecated...
++        verify: typing.Any = None,
++        cert: typing.Any = None,
+     ) -> None:
+-        ssl_context = create_ssl_context(verify=verify, cert=cert, trust_env=trust_env)
+         proxy = Proxy(url=proxy) if isinstance(proxy, (str, URL)) else proxy
++        if verify is not None or cert is not None:  # pragma: nocover
++            # Deprecated...
++            ssl_context = create_ssl_context(verify, cert)
++        else:
++            ssl_context = ssl_context or SSLContext()
+ 
+         if proxy is None:
+             self._pool = httpcore.AsyncConnectionPool(
+diff --git a/httpx/_types.py b/httpx/_types.py
+index 661af262e7..edd00da1bc 100644
+--- a/httpx/_types.py
++++ b/httpx/_types.py
+@@ -2,7 +2,6 @@
+ Type definitions for type checking purposes.
+ """
+ 
+-import ssl
+ from http.cookiejar import CookieJar
+ from typing import (
+     IO,
+@@ -17,7 +16,6 @@
+     List,
+     Mapping,
+     MutableMapping,
+-    NamedTuple,
+     Optional,
+     Sequence,
+     Tuple,
+@@ -33,16 +31,6 @@
+ 
+ PrimitiveData = Optional[Union[str, int, float, bool]]
+ 
+-RawURL = NamedTuple(
+-    "RawURL",
+-    [
+-        ("raw_scheme", bytes),
+-        ("raw_host", bytes),
+-        ("port", Optional[int]),
+-        ("raw_path", bytes),
+-    ],
+-)
+-
+ URLTypes = Union["URL", str]
+ 
+ QueryParamTypes = Union[
+@@ -64,22 +52,12 @@
+ 
+ CookieTypes = Union["Cookies", CookieJar, Dict[str, str], List[Tuple[str, str]]]
+ 
+-CertTypes = Union[
+-    # certfile
+-    str,
+-    # (certfile, keyfile)
+-    Tuple[str, Optional[str]],
+-    # (certfile, keyfile, password)
+-    Tuple[str, Optional[str], Optional[str]],
+-]
+-VerifyTypes = Union[str, bool, ssl.SSLContext]
+ TimeoutTypes = Union[
+     Optional[float],
+     Tuple[Optional[float], Optional[float], Optional[float], Optional[float]],
+     "Timeout",
+ ]
+ ProxyTypes = Union["URL", str, "Proxy"]
+-ProxiesTypes = Union[ProxyTypes, Dict[Union["URL", str], Union[None, ProxyTypes]]]
+ 
+ AuthTypes = Union[
+     Tuple[Union[str, bytes], Union[str, bytes]],
+diff --git a/httpx/_urls.py b/httpx/_urls.py
+index ec4ea6b399..a8752f013f 100644
+--- a/httpx/_urls.py
++++ b/httpx/_urls.py
+@@ -5,7 +5,7 @@
+ 
+ import idna
+ 
+-from ._types import QueryParamTypes, RawURL
++from ._types import QueryParamTypes
+ from ._urlparse import urlencode, urlparse
+ from ._utils import primitive_value_to_str
+ 
+@@ -304,22 +304,6 @@ def fragment(self) -> str:
+         """
+         return unquote(self._uri_reference.fragment or "")
+ 
+-    @property
+-    def raw(self) -> RawURL:
+-        """
+-        Provides the (scheme, host, port, target) for the outgoing request.
+-
+-        In older versions of `httpx` this was used in the low-level transport API.
+-        We no longer use `RawURL`, and this property will be deprecated
+-        in a future release.
+-        """
+-        return RawURL(
+-            self.raw_scheme,
+-            self.raw_host,
+-            self.port,
+-            self.raw_path,
+-        )
+-
+     @property
+     def is_absolute_url(self) -> bool:
+         """
+diff --git a/httpx/_utils.py b/httpx/_utils.py
+index 46a4d63b1d..fcf4b64cb8 100644
+--- a/httpx/_utils.py
++++ b/httpx/_utils.py
+@@ -6,13 +6,9 @@
+ import mimetypes
+ import os
+ import re
+-import time
+ import typing
+-from pathlib import Path
+ from urllib.request import getproxies
+ 
+-import sniffio
+-
+ from ._types import PrimitiveData
+ 
+ if typing.TYPE_CHECKING:  # pragma: no cover
+@@ -93,18 +89,6 @@ def replacer(match: typing.Match[str]) -> str:
+     return f'{name}="{value}"'.encode()
+ 
+ 
+-def get_ca_bundle_from_env() -> str | None:
+-    if "SSL_CERT_FILE" in os.environ:
+-        ssl_file = Path(os.environ["SSL_CERT_FILE"])
+-        if ssl_file.is_file():
+-            return str(ssl_file)
+-    if "SSL_CERT_DIR" in os.environ:
+-        ssl_path = Path(os.environ["SSL_CERT_DIR"])
+-        if ssl_path.is_dir():
+-            return str(ssl_path)
+-    return None
+-
+-
+ def parse_header_links(value: str) -> list[dict[str, str]]:
+     """
+     Returns a list of parsed link headers, for more info see:
+@@ -290,33 +274,6 @@ def peek_filelike_length(stream: typing.Any) -> int | None:
+     return length
+ 
+ 
+-class Timer:
+-    async def _get_time(self) -> float:
+-        library = sniffio.current_async_library()
+-        if library == "trio":
+-            import trio
+-
+-            return trio.current_time()
+-        else:
+-            import asyncio
+-
+-            return asyncio.get_event_loop().time()
+-
+-    def sync_start(self) -> None:
+-        self.started = time.perf_counter()
+-
+-    async def async_start(self) -> None:
+-        self.started = await self._get_time()
+-
+-    def sync_elapsed(self) -> float:
+-        now = time.perf_counter()
+-        return now - self.started
+-
+-    async def async_elapsed(self) -> float:
+-        now = await self._get_time()
+-        return now - self.started
+-
+-
+ class URLPattern:
+     """
+     A utility class currently used for making lookups against proxy keys...
+diff --git a/pyproject.toml b/pyproject.toml
+index c4c188052e..9e67191135 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -32,7 +32,6 @@ dependencies = [
+     "httpcore==1.*",
+     "anyio",
+     "idna",
+-    "sniffio",
+ ]
+ dynamic = ["readme", "version"]
+ 
+@@ -129,5 +128,5 @@ markers = [
+ ]
+ 
+ [tool.coverage.run]
+-omit = ["venv/*", "httpx/_compat.py"]
++omit = ["venv/*"]
+ include = ["httpx/*", "tests/*"]
+diff --git a/tests/client/test_proxies.py b/tests/client/test_proxies.py
+index 7bba1ab2c3..90a92f56bb 100644
+--- a/tests/client/test_proxies.py
++++ b/tests/client/test_proxies.py
+@@ -13,57 +13,6 @@ def url_to_origin(url: str) -> httpcore.URL:
+     return httpcore.URL(scheme=u.raw_scheme, host=u.raw_host, port=u.port, target="/")
+ 
+ 
+-@pytest.mark.parametrize(
+-    ["proxies", "expected_proxies"],
+-    [
+-        ("http://127.0.0.1", [("all://", "http://127.0.0.1")]),
+-        ({"all://": "http://127.0.0.1"}, [("all://", "http://127.0.0.1")]),
+-        (
+-            {"http://": "http://127.0.0.1", "https://": "https://127.0.0.1"},
+-            [("http://", "http://127.0.0.1"), ("https://", "https://127.0.0.1")],
+-        ),
+-        (httpx.Proxy("http://127.0.0.1"), [("all://", "http://127.0.0.1")]),
+-        (
+-            {
+-                "https://": httpx.Proxy("https://127.0.0.1"),
+-                "all://": "http://127.0.0.1",
+-            },
+-            [("all://", "http://127.0.0.1"), ("https://", "https://127.0.0.1")],
+-        ),
+-    ],
+-)
+-def test_proxies_parameter(proxies, expected_proxies):
+-    with pytest.warns(DeprecationWarning):
+-        client = httpx.Client(proxies=proxies)
+-    client_patterns = [p.pattern for p in client._mounts.keys()]
+-    client_proxies = list(client._mounts.values())
+-
+-    for proxy_key, url in expected_proxies:
+-        assert proxy_key in client_patterns
+-        proxy = client_proxies[client_patterns.index(proxy_key)]
+-        assert isinstance(proxy, httpx.HTTPTransport)
+-        assert isinstance(proxy._pool, httpcore.HTTPProxy)
+-        assert proxy._pool._proxy_url == url_to_origin(url)
+-
+-    assert len(expected_proxies) == len(client._mounts)
+-
+-
+-def test_socks_proxy_deprecated():
+-    url = httpx.URL("http://www.example.com")
+-
+-    with pytest.warns(DeprecationWarning):
+-        client = httpx.Client(proxies="socks5://localhost/")
+-    transport = client._transport_for_url(url)
+-    assert isinstance(transport, httpx.HTTPTransport)
+-    assert isinstance(transport._pool, httpcore.SOCKSProxy)
+-
+-    with pytest.warns(DeprecationWarning):
+-        async_client = httpx.AsyncClient(proxies="socks5://localhost/")
+-    async_transport = async_client._transport_for_url(url)
+-    assert isinstance(async_transport, httpx.AsyncHTTPTransport)
+-    assert isinstance(async_transport._pool, httpcore.AsyncSOCKSProxy)
+-
+-
+ def test_socks_proxy():
+     url = httpx.URL("http://www.example.com")
+ 
+@@ -84,7 +33,6 @@ def test_socks_proxy():
+ @pytest.mark.parametrize(
+     ["url", "proxies", "expected"],
+     [
+-        ("http://example.com", None, None),
+         ("http://example.com", {}, None),
+         ("http://example.com", {"https://": PROXY_URL}, None),
+         ("http://example.com", {"http://example.net": PROXY_URL}, None),
+@@ -104,7 +52,6 @@ def test_socks_proxy():
+         # ...
+         ("http://example.com:443", {"http://example.com": PROXY_URL}, PROXY_URL),
+         ("http://example.com", {"all://": PROXY_URL}, PROXY_URL),
+-        ("http://example.com", {"all://": PROXY_URL, "http://example.com": None}, None),
+         ("http://example.com", {"http://": PROXY_URL}, PROXY_URL),
+         ("http://example.com", {"all://example.com": PROXY_URL}, PROXY_URL),
+         ("http://example.com", {"http://example.com": PROXY_URL}, PROXY_URL),
+@@ -138,11 +85,8 @@ def test_socks_proxy():
+     ],
+ )
+ def test_transport_for_request(url, proxies, expected):
+-    if proxies:
+-        with pytest.warns(DeprecationWarning):
+-            client = httpx.Client(proxies=proxies)
+-    else:
+-        client = httpx.Client(proxies=proxies)
++    mounts = {key: httpx.HTTPTransport(proxy=value) for key, value in proxies.items()}
++    client = httpx.Client(mounts=mounts)
+ 
+     transport = client._transport_for_url(httpx.URL(url))
+ 
+@@ -158,8 +102,8 @@ def test_transport_for_request(url, proxies, expected):
+ @pytest.mark.network
+ async def test_async_proxy_close():
+     try:
+-        with pytest.warns(DeprecationWarning):
+-            client = httpx.AsyncClient(proxies={"https://": PROXY_URL})
++        transport = httpx.AsyncHTTPTransport(proxy=PROXY_URL)
++        client = httpx.AsyncClient(mounts={"https://": transport})
+         await client.get("http://example.com")
+     finally:
+         await client.aclose()
+@@ -168,18 +112,13 @@ async def test_async_proxy_close():
+ @pytest.mark.network
+ def test_sync_proxy_close():
+     try:
+-        with pytest.warns(DeprecationWarning):
+-            client = httpx.Client(proxies={"https://": PROXY_URL})
++        transport = httpx.HTTPTransport(proxy=PROXY_URL)
++        client = httpx.Client(mounts={"https://": transport})
+         client.get("http://example.com")
+     finally:
+         client.close()
+ 
+ 
+-def test_unsupported_proxy_scheme_deprecated():
+-    with pytest.warns(DeprecationWarning), pytest.raises(ValueError):
+-        httpx.Client(proxies="ftp://127.0.0.1")
+-
+-
+ def test_unsupported_proxy_scheme():
+     with pytest.raises(ValueError):
+         httpx.Client(proxy="ftp://127.0.0.1")
+@@ -308,26 +247,13 @@ def test_proxies_environ(monkeypatch, client_class, url, env, expected):
+     ],
+ )
+ def test_for_deprecated_proxy_params(proxies, is_valid):
+-    with pytest.warns(DeprecationWarning):
+-        if not is_valid:
+-            with pytest.raises(ValueError):
+-                httpx.Client(proxies=proxies)
+-        else:
+-            httpx.Client(proxies=proxies)
++    mounts = {key: httpx.HTTPTransport(proxy=value) for key, value in proxies.items()}
+ 
+-
+-def test_proxy_and_proxies_together():
+-    with pytest.warns(DeprecationWarning), pytest.raises(
+-        RuntimeError,
+-    ):
+-        httpx.Client(proxies={"all://": "http://127.0.0.1"}, proxy="http://127.0.0.1")
+-
+-    with pytest.warns(DeprecationWarning), pytest.raises(
+-        RuntimeError,
+-    ):
+-        httpx.AsyncClient(
+-            proxies={"all://": "http://127.0.0.1"}, proxy="http://127.0.0.1"
+-        )
++    if not is_valid:
++        with pytest.raises(ValueError):
++            httpx.Client(mounts=mounts)
++    else:
++        httpx.Client(mounts=mounts)
+ 
+ 
+ def test_proxy_with_mounts():
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 5c4a6ae577..858bca1397 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -187,12 +187,6 @@ def cert_authority():
+     return trustme.CA()
+ 
+ 
+-@pytest.fixture(scope="session")
+-def ca_cert_pem_file(cert_authority):
+-    with cert_authority.cert_pem.tempfile() as tmp:
+-        yield tmp
+-
+-
+ @pytest.fixture(scope="session")
+ def localhost_cert(cert_authority):
+     return cert_authority.issue_cert("localhost")
+@@ -291,17 +285,3 @@ def server() -> typing.Iterator[TestServer]:
+     config = Config(app=app, lifespan="off", loop="asyncio")
+     server = TestServer(config=config)
+     yield from serve_in_thread(server)
+-
+-
+-@pytest.fixture(scope="session")
+-def https_server(cert_pem_file, cert_private_key_file):
+-    config = Config(
+-        app=app,
+-        lifespan="off",
+-        ssl_certfile=cert_pem_file,
+-        ssl_keyfile=cert_private_key_file,
+-        port=8001,
+-        loop="asyncio",
+-    )
+-    server = TestServer(config=config)
+-    yield from serve_in_thread(server)
+diff --git a/tests/models/test_url.py b/tests/models/test_url.py
+index 523a89bf65..fa79acaf42 100644
+--- a/tests/models/test_url.py
++++ b/tests/models/test_url.py
+@@ -865,19 +865,3 @@ def test_ipv6_url_copy_with_host(url_str, new_host):
+     assert url.host == "::ffff:192.168.0.1"
+     assert url.netloc == b"[::ffff:192.168.0.1]:1234"
+     assert str(url) == "http://[::ffff:192.168.0.1]:1234"
+-
+-
+-# Test for deprecated API
+-
+-
+-def test_url_raw_compatibility():
+-    """
+-    Test case for the (to-be-deprecated) `url.raw` accessor.
+-    """
+-    url = httpx.URL("https://www.example.com/path")
+-    scheme, host, port, raw_path = url.raw
+-
+-    assert scheme == b"https"
+-    assert host == b"www.example.com"
+-    assert port is None
+-    assert raw_path == b"/path"
+diff --git a/tests/test_asgi.py b/tests/test_asgi.py
+index 8b817891e4..ffbc91bc00 100644
+--- a/tests/test_asgi.py
++++ b/tests/test_asgi.py
+@@ -222,13 +222,3 @@ async def test_asgi_exc_no_raise():
+         response = await client.get("http://www.example.org/")
+ 
+         assert response.status_code == 500
+-
+-
+-@pytest.mark.anyio
+-async def test_deprecated_shortcut():
+-    """
+-    The `app=...` shortcut is now deprecated.
+-    Use the explicit transport style instead.
+-    """
+-    with pytest.warns(DeprecationWarning):
+-        httpx.AsyncClient(app=hello_world)
+diff --git a/tests/test_config.py b/tests/test_config.py
+index 6f6ee4f575..9f86f83936 100644
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -1,5 +1,5 @@
+-import os
+ import ssl
++import typing
+ from pathlib import Path
+ 
+ import certifi
+@@ -9,48 +9,40 @@
+ 
+ 
+ def test_load_ssl_config():
+-    context = httpx.create_ssl_context()
++    context = httpx.SSLContext()
+     assert context.verify_mode == ssl.VerifyMode.CERT_REQUIRED
+     assert context.check_hostname is True
+ 
+ 
+-def test_load_ssl_config_verify_non_existing_path():
++def test_load_ssl_config_verify_non_existing_file():
+     with pytest.raises(IOError):
+-        httpx.create_ssl_context(verify="/path/to/nowhere")
++        context = httpx.SSLContext()
++        context.load_verify_locations(cafile="/path/to/nowhere")
+ 
+ 
+-def test_load_ssl_config_verify_existing_file():
+-    context = httpx.create_ssl_context(verify=certifi.where())
+-    assert context.verify_mode == ssl.VerifyMode.CERT_REQUIRED
+-    assert context.check_hostname is True
++def test_load_ssl_with_keylog(monkeypatch: typing.Any) -> None:
++    monkeypatch.setenv("SSLKEYLOGFILE", "test")
++    context = httpx.SSLContext()
++    assert context.keylog_filename == "test"
+ 
+ 
+-@pytest.mark.parametrize("config", ("SSL_CERT_FILE", "SSL_CERT_DIR"))
+-def test_load_ssl_config_verify_env_file(
+-    https_server, ca_cert_pem_file, config, cert_authority
+-):
+-    os.environ[config] = (
+-        ca_cert_pem_file
+-        if config.endswith("_FILE")
+-        else str(Path(ca_cert_pem_file).parent)
+-    )
+-    context = httpx.create_ssl_context(trust_env=True)
+-    cert_authority.configure_trust(context)
+-
++def test_load_ssl_config_verify_existing_file():
++    context = httpx.SSLContext()
++    context.load_verify_locations(capath=certifi.where())
+     assert context.verify_mode == ssl.VerifyMode.CERT_REQUIRED
+     assert context.check_hostname is True
+-    assert len(context.get_ca_certs()) == 1
+ 
+ 
+ def test_load_ssl_config_verify_directory():
+-    path = Path(certifi.where()).parent
+-    context = httpx.create_ssl_context(verify=str(path))
++    context = httpx.SSLContext()
++    context.load_verify_locations(capath=Path(certifi.where()).parent)
+     assert context.verify_mode == ssl.VerifyMode.CERT_REQUIRED
+     assert context.check_hostname is True
+ 
+ 
+ def test_load_ssl_config_cert_and_key(cert_pem_file, cert_private_key_file):
+-    context = httpx.create_ssl_context(cert=(cert_pem_file, cert_private_key_file))
++    context = httpx.SSLContext()
++    context.load_cert_chain(cert_pem_file, cert_private_key_file)
+     assert context.verify_mode == ssl.VerifyMode.CERT_REQUIRED
+     assert context.check_hostname is True
+ 
+@@ -59,9 +51,8 @@ def test_load_ssl_config_cert_and_key(cert_pem_file, cert_private_key_file):
+ def test_load_ssl_config_cert_and_encrypted_key(
+     cert_pem_file, cert_encrypted_private_key_file, password
+ ):
+-    context = httpx.create_ssl_context(
+-        cert=(cert_pem_file, cert_encrypted_private_key_file, password)
+-    )
++    context = httpx.SSLContext()
++    context.load_cert_chain(cert_pem_file, cert_encrypted_private_key_file, password)
+     assert context.verify_mode == ssl.VerifyMode.CERT_REQUIRED
+     assert context.check_hostname is True
+ 
+@@ -70,33 +61,35 @@ def test_load_ssl_config_cert_and_key_invalid_password(
+     cert_pem_file, cert_encrypted_private_key_file
+ ):
+     with pytest.raises(ssl.SSLError):
+-        httpx.create_ssl_context(
+-            cert=(cert_pem_file, cert_encrypted_private_key_file, "password1")
++        context = httpx.SSLContext()
++        context.load_cert_chain(
++            cert_pem_file, cert_encrypted_private_key_file, "password1"
+         )
+ 
+ 
+ def test_load_ssl_config_cert_without_key_raises(cert_pem_file):
+     with pytest.raises(ssl.SSLError):
+-        httpx.create_ssl_context(cert=cert_pem_file)
++        context = httpx.SSLContext()
++        context.load_cert_chain(cert_pem_file)
+ 
+ 
+ def test_load_ssl_config_no_verify():
+-    context = httpx.create_ssl_context(verify=False)
++    context = httpx.SSLContext(verify=False)
+     assert context.verify_mode == ssl.VerifyMode.CERT_NONE
+     assert context.check_hostname is False
+ 
+ 
+-def test_load_ssl_context():
+-    ssl_context = ssl.create_default_context()
+-    context = httpx.create_ssl_context(verify=ssl_context)
++def test_SSLContext_with_get_request(server, cert_pem_file):
++    context = httpx.SSLContext()
++    context.load_verify_locations(cert_pem_file)
++    response = httpx.get(server.url, ssl_context=context)
++    assert response.status_code == 200
+ 
+-    assert context is ssl_context
+ 
++def test_SSLContext_repr():
++    ssl_context = httpx.SSLContext()
+ 
+-def test_create_ssl_context_with_get_request(server, cert_pem_file):
+-    context = httpx.create_ssl_context(verify=cert_pem_file)
+-    response = httpx.get(server.url, verify=context)
+-    assert response.status_code == 200
++    assert repr(ssl_context) == "<SSLContext(verify=True)>"
+ 
+ 
+ def test_limits_repr():
+@@ -174,32 +167,6 @@ def test_timeout_repr():
+     assert repr(timeout) == "Timeout(connect=None, read=5.0, write=None, pool=None)"
+ 
+ 
+-@pytest.mark.skipif(
+-    not hasattr(ssl.SSLContext, "keylog_filename"),
+-    reason="requires OpenSSL 1.1.1 or higher",
+-)
+-def test_ssl_config_support_for_keylog_file(tmpdir, monkeypatch):  # pragma: no cover
+-    with monkeypatch.context() as m:
+-        m.delenv("SSLKEYLOGFILE", raising=False)
+-
+-        context = httpx.create_ssl_context(trust_env=True)
+-
+-        assert context.keylog_filename is None
+-
+-    filename = str(tmpdir.join("test.log"))
+-
+-    with monkeypatch.context() as m:
+-        m.setenv("SSLKEYLOGFILE", filename)
+-
+-        context = httpx.create_ssl_context(trust_env=True)
+-
+-        assert context.keylog_filename == filename
+-
+-        context = httpx.create_ssl_context(trust_env=False)
+-
+-        assert context.keylog_filename is None
+-
+-
+ def test_proxy_from_url():
+     proxy = httpx.Proxy("https://example.com")
+ 
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index f98a18f2cd..f7e6c1642a 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -3,18 +3,14 @@
+ import os
+ import random
+ 
+-import certifi
+ import pytest
+ 
+ import httpx
+ from httpx._utils import (
+     URLPattern,
+-    get_ca_bundle_from_env,
+     get_environment_proxies,
+ )
+ 
+-from .common import TESTS_DIR
+-
+ 
+ @pytest.mark.parametrize(
+     "encoding",
+@@ -122,66 +118,6 @@ def test_logging_redirect_chain(server, caplog):
+     ]
+ 
+ 
+-def test_logging_ssl(caplog):
+-    caplog.set_level(logging.DEBUG)
+-    with httpx.Client():
+-        pass
+-
+-    cafile = certifi.where()
+-    assert caplog.record_tuples == [
+-        (
+-            "httpx",
+-            logging.DEBUG,
+-            "load_ssl_context verify=True cert=None trust_env=True http2=False",
+-        ),
+-        (
+-            "httpx",
+-            logging.DEBUG,
+-            f"load_verify_locations cafile='{cafile}'",
+-        ),
+-    ]
+-
+-
+-def test_get_ssl_cert_file():
+-    # Two environments is not set.
+-    assert get_ca_bundle_from_env() is None
+-
+-    os.environ["SSL_CERT_DIR"] = str(TESTS_DIR)
+-    # SSL_CERT_DIR is correctly set, SSL_CERT_FILE is not set.
+-    ca_bundle = get_ca_bundle_from_env()
+-    assert ca_bundle is not None and ca_bundle.endswith("tests")
+-
+-    del os.environ["SSL_CERT_DIR"]
+-    os.environ["SSL_CERT_FILE"] = str(TESTS_DIR / "test_utils.py")
+-    # SSL_CERT_FILE is correctly set, SSL_CERT_DIR is not set.
+-    ca_bundle = get_ca_bundle_from_env()
+-    assert ca_bundle is not None and ca_bundle.endswith("tests/test_utils.py")
+-
+-    os.environ["SSL_CERT_FILE"] = "wrongfile"
+-    # SSL_CERT_FILE is set with wrong file,  SSL_CERT_DIR is not set.
+-    assert get_ca_bundle_from_env() is None
+-
+-    del os.environ["SSL_CERT_FILE"]
+-    os.environ["SSL_CERT_DIR"] = "wrongpath"
+-    # SSL_CERT_DIR is set with wrong path,  SSL_CERT_FILE is not set.
+-    assert get_ca_bundle_from_env() is None
+-
+-    os.environ["SSL_CERT_DIR"] = str(TESTS_DIR)
+-    os.environ["SSL_CERT_FILE"] = str(TESTS_DIR / "test_utils.py")
+-    # Two environments is correctly set.
+-    ca_bundle = get_ca_bundle_from_env()
+-    assert ca_bundle is not None and ca_bundle.endswith("tests/test_utils.py")
+-
+-    os.environ["SSL_CERT_FILE"] = "wrongfile"
+-    # Two environments is set but SSL_CERT_FILE is not a file.
+-    ca_bundle = get_ca_bundle_from_env()
+-    assert ca_bundle is not None and ca_bundle.endswith("tests")
+-
+-    os.environ["SSL_CERT_DIR"] = "wrongpath"
+-    # Two environments is set but both are not correct.
+-    assert get_ca_bundle_from_env() is None
+-
+-
+ @pytest.mark.parametrize(
+     ["environment", "proxies"],
+     [
+diff --git a/tests/test_wsgi.py b/tests/test_wsgi.py
+index 0134bee854..dc2b52885a 100644
+--- a/tests/test_wsgi.py
++++ b/tests/test_wsgi.py
+@@ -201,12 +201,3 @@ def app(environ, start_response):
+     assert response.status_code == 200
+     assert response.text == "success"
+     assert server_protocol == "HTTP/1.1"
+-
+-
+-def test_deprecated_shortcut():
+-    """
+-    The `app=...` shortcut is now deprecated.
+-    Use the explicit transport style instead.
+-    """
+-    with pytest.warns(DeprecationWarning):
+-        httpx.Client(app=application_factory([b"Hello, World!"]))

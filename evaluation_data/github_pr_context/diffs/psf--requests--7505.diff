@@ -1,0 +1,93 @@
+diff --git a/src/requests/_types.py b/src/requests/_types.py
+index b2273d612b..6c2f59d028 100644
+--- a/src/requests/_types.py
++++ b/src/requests/_types.py
+@@ -29,6 +29,11 @@ class SupportsRead(Protocol[_T_co]):
+     def read(self, length: int = ..., /) -> _T_co: ...
+ 
+ 
++def has_read(obj: Any) -> TypeIs[SupportsRead[str | bytes]]:
++    """Check if obj supports read, including __getattr__ based proxies."""
++    return isinstance(obj, SupportsRead) or hasattr(obj, "read")
++
++
+ @runtime_checkable
+ class SupportsItems(Protocol[_KT_co, _VT_co]):
+     def items(self) -> Iterable[tuple[_KT_co, _VT_co]]: ...
+diff --git a/src/requests/models.py b/src/requests/models.py
+index ebeba1e39f..17b39cd1b3 100644
+--- a/src/requests/models.py
++++ b/src/requests/models.py
+@@ -35,8 +35,8 @@
+ from urllib3.filepost import encode_multipart_formdata
+ from urllib3.util import parse_url
+ 
++from . import _types as _t
+ from ._internal_utils import to_native_string, unicode_is_ascii
+-from ._types import SupportsRead as _SupportsRead
+ from .auth import HTTPBasicAuth
+ from .compat import (
+     JSONDecodeError,
+@@ -87,7 +87,6 @@
+ 
+     from typing_extensions import Self
+ 
+-    from . import _types as _t
+     from .adapters import HTTPAdapter
+     from .cookies import RequestsCookieJar
+ 
+@@ -161,7 +160,7 @@ def _encode_params(
+ 
+         if isinstance(data, (str, bytes)):
+             return data
+-        elif isinstance(data, _SupportsRead):
++        elif _t.has_read(data):
+             return data
+         elif hasattr(data, "__iter__"):
+             result: list[tuple[bytes, bytes]] = []
+@@ -236,9 +235,7 @@ def _encode_files(
+ 
+             if isinstance(fp, (str, bytes, bytearray)):
+                 fdata = fp
+-            # data that proxies attributes to underlying objects needs hasattr
+-            # defensive check for untyped callers
+-            elif isinstance(fp, _SupportsRead) or hasattr(fp, "read"):
++            elif _t.has_read(fp):
+                 fdata = fp.read()
+             elif fp is None:  # defensive check for untyped callers
+                 continue
+@@ -641,7 +638,7 @@ def prepare_body(
+             else:
+                 if raw_data:
+                     body = self._encode_params(raw_data)
+-                    if isinstance(data, basestring) or isinstance(data, _SupportsRead):
++                    if isinstance(data, basestring) or _t.has_read(data):
+                         content_type = None
+                     else:
+                         content_type = "application/x-www-form-urlencoded"
+diff --git a/tests/test_requests.py b/tests/test_requests.py
+index 2cea2fe8d9..8bcb81d8b1 100644
+--- a/tests/test_requests.py
++++ b/tests/test_requests.py
+@@ -1098,6 +1098,21 @@ def test_post_named_tempfile(self, httpbin):
+         assert r.status_code == 200
+         assert r.json()["files"]["file"] == "named temp file contents\n"
+ 
++    def test_post_getattr_proxy_read_only(self, httpbin):
++
++        class ReadProxy:
++            def __init__(self):
++                self._file = io.BytesIO(b"streamed body")
++
++            def __getattr__(self, name):
++                if name == "__iter__":
++                    raise AttributeError(name)
++                return getattr(self._file, name)
++
++        r = requests.post(httpbin("post"), data=ReadProxy())
++        assert r.status_code == 200
++        assert r.json()["data"] == "streamed body"
++
+     @pytest.mark.parametrize(
+         "data",
+         (

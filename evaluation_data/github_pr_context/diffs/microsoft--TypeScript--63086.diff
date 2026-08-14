@@ -1,0 +1,1300 @@
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable.js b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es2015).js
+similarity index 100%
+rename from tests/baselines/reference/arrayLiteralSpreadES5iterable.js
+rename to tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es2015).js
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable.symbols b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es2015).symbols
+similarity index 100%
+rename from tests/baselines/reference/arrayLiteralSpreadES5iterable.symbols
+rename to tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es2015).symbols
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable.types b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es2015).types
+similarity index 100%
+rename from tests/baselines/reference/arrayLiteralSpreadES5iterable.types
+rename to tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es2015).types
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).errors.txt b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).errors.txt
+new file mode 100644
+index 0000000000000..b7a042dd551fb
+--- /dev/null
++++ b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).errors.txt
+@@ -0,0 +1,28 @@
++error TS5107: Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
++
++
++!!! error TS5107: Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
++==== arrayLiteralSpreadES5iterable.ts (0 errors) ====
++    function f0() {
++        var a = [1, 2, 3];
++        var a1 = [...a];
++        var a2 = [1, ...a];
++        var a3 = [1, 2, ...a];
++        var a4 = [...a, 1];
++        var a5 = [...a, 1, 2];
++        var a6 = [1, 2, ...a, 1, 2];
++        var a7 = [1, ...a, 2, ...a];
++        var a8 = [...a, ...a, ...a];
++    }
++    
++    function f1() {
++        var a = [1, 2, 3];
++        var b = ["hello", ...a, true];
++        var b: (string | number | boolean)[];
++    }
++    
++    function f2() {
++        var a = [...[...[...[...[...[]]]]]];
++        var b = [...[...[...[...[...[5]]]]]];
++    }
++    
+\ No newline at end of file
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).js b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).js
+new file mode 100644
+index 0000000000000..7ee1ec23a90d9
+--- /dev/null
++++ b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).js
+@@ -0,0 +1,74 @@
++//// [tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts] ////
++
++//// [arrayLiteralSpreadES5iterable.ts]
++function f0() {
++    var a = [1, 2, 3];
++    var a1 = [...a];
++    var a2 = [1, ...a];
++    var a3 = [1, 2, ...a];
++    var a4 = [...a, 1];
++    var a5 = [...a, 1, 2];
++    var a6 = [1, 2, ...a, 1, 2];
++    var a7 = [1, ...a, 2, ...a];
++    var a8 = [...a, ...a, ...a];
++}
++
++function f1() {
++    var a = [1, 2, 3];
++    var b = ["hello", ...a, true];
++    var b: (string | number | boolean)[];
++}
++
++function f2() {
++    var a = [...[...[...[...[...[]]]]]];
++    var b = [...[...[...[...[...[5]]]]]];
++}
++
++
++//// [arrayLiteralSpreadES5iterable.js]
++"use strict";
++var __read = (this && this.__read) || function (o, n) {
++    var m = typeof Symbol === "function" && o[Symbol.iterator];
++    if (!m) return o;
++    var i = m.call(o), r, ar = [], e;
++    try {
++        while ((n === void 0 || n-- > 0) && !(r = i.next()).done) ar.push(r.value);
++    }
++    catch (error) { e = { error: error }; }
++    finally {
++        try {
++            if (r && !r.done && (m = i["return"])) m.call(i);
++        }
++        finally { if (e) throw e.error; }
++    }
++    return ar;
++};
++var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
++    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
++        if (ar || !(i in from)) {
++            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
++            ar[i] = from[i];
++        }
++    }
++    return to.concat(ar || Array.prototype.slice.call(from));
++};
++function f0() {
++    var a = [1, 2, 3];
++    var a1 = __spreadArray([], __read(a), false);
++    var a2 = __spreadArray([1], __read(a), false);
++    var a3 = __spreadArray([1, 2], __read(a), false);
++    var a4 = __spreadArray(__spreadArray([], __read(a), false), [1], false);
++    var a5 = __spreadArray(__spreadArray([], __read(a), false), [1, 2], false);
++    var a6 = __spreadArray(__spreadArray([1, 2], __read(a), false), [1, 2], false);
++    var a7 = __spreadArray(__spreadArray(__spreadArray([1], __read(a), false), [2], false), __read(a), false);
++    var a8 = __spreadArray(__spreadArray(__spreadArray([], __read(a), false), __read(a), false), __read(a), false);
++}
++function f1() {
++    var a = [1, 2, 3];
++    var b = __spreadArray(__spreadArray(["hello"], __read(a), false), [true], false);
++    var b;
++}
++function f2() {
++    var a = [];
++    var b = [5];
++}
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).symbols b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).symbols
+new file mode 100644
+index 0000000000000..949b2e07217b2
+--- /dev/null
++++ b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).symbols
+@@ -0,0 +1,69 @@
++//// [tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts] ////
++
++=== arrayLiteralSpreadES5iterable.ts ===
++function f0() {
++>f0 : Symbol(f0, Decl(arrayLiteralSpreadES5iterable.ts, 0, 0))
++
++    var a = [1, 2, 3];
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a1 = [...a];
++>a1 : Symbol(a1, Decl(arrayLiteralSpreadES5iterable.ts, 2, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a2 = [1, ...a];
++>a2 : Symbol(a2, Decl(arrayLiteralSpreadES5iterable.ts, 3, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a3 = [1, 2, ...a];
++>a3 : Symbol(a3, Decl(arrayLiteralSpreadES5iterable.ts, 4, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a4 = [...a, 1];
++>a4 : Symbol(a4, Decl(arrayLiteralSpreadES5iterable.ts, 5, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a5 = [...a, 1, 2];
++>a5 : Symbol(a5, Decl(arrayLiteralSpreadES5iterable.ts, 6, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a6 = [1, 2, ...a, 1, 2];
++>a6 : Symbol(a6, Decl(arrayLiteralSpreadES5iterable.ts, 7, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a7 = [1, ...a, 2, ...a];
++>a7 : Symbol(a7, Decl(arrayLiteralSpreadES5iterable.ts, 8, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++
++    var a8 = [...a, ...a, ...a];
++>a8 : Symbol(a8, Decl(arrayLiteralSpreadES5iterable.ts, 9, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 1, 7))
++}
++
++function f1() {
++>f1 : Symbol(f1, Decl(arrayLiteralSpreadES5iterable.ts, 10, 1))
++
++    var a = [1, 2, 3];
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 13, 7))
++
++    var b = ["hello", ...a, true];
++>b : Symbol(b, Decl(arrayLiteralSpreadES5iterable.ts, 14, 7), Decl(arrayLiteralSpreadES5iterable.ts, 15, 7))
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 13, 7))
++
++    var b: (string | number | boolean)[];
++>b : Symbol(b, Decl(arrayLiteralSpreadES5iterable.ts, 14, 7), Decl(arrayLiteralSpreadES5iterable.ts, 15, 7))
++}
++
++function f2() {
++>f2 : Symbol(f2, Decl(arrayLiteralSpreadES5iterable.ts, 16, 1))
++
++    var a = [...[...[...[...[...[]]]]]];
++>a : Symbol(a, Decl(arrayLiteralSpreadES5iterable.ts, 19, 7))
++
++    var b = [...[...[...[...[...[5]]]]]];
++>b : Symbol(b, Decl(arrayLiteralSpreadES5iterable.ts, 20, 7))
++}
++
+diff --git a/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).types b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).types
+new file mode 100644
+index 0000000000000..f3dbd145f12ff
+--- /dev/null
++++ b/tests/baselines/reference/arrayLiteralSpreadES5iterable(target=es5).types
+@@ -0,0 +1,230 @@
++//// [tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts] ////
++
++=== arrayLiteralSpreadES5iterable.ts ===
++function f0() {
++>f0 : () => void
++>   : ^^^^^^^^^^
++
++    var a = [1, 2, 3];
++>a : number[]
++>  : ^^^^^^^^
++>[1, 2, 3] : number[]
++>          : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>3 : 3
++>  : ^
++
++    var a1 = [...a];
++>a1 : number[]
++>   : ^^^^^^^^
++>[...a] : number[]
++>       : ^^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++
++    var a2 = [1, ...a];
++>a2 : number[]
++>   : ^^^^^^^^
++>[1, ...a] : number[]
++>          : ^^^^^^^^
++>1 : 1
++>  : ^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++
++    var a3 = [1, 2, ...a];
++>a3 : number[]
++>   : ^^^^^^^^
++>[1, 2, ...a] : number[]
++>             : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++
++    var a4 = [...a, 1];
++>a4 : number[]
++>   : ^^^^^^^^
++>[...a, 1] : number[]
++>          : ^^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>1 : 1
++>  : ^
++
++    var a5 = [...a, 1, 2];
++>a5 : number[]
++>   : ^^^^^^^^
++>[...a, 1, 2] : number[]
++>             : ^^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++
++    var a6 = [1, 2, ...a, 1, 2];
++>a6 : number[]
++>   : ^^^^^^^^
++>[1, 2, ...a, 1, 2] : number[]
++>                   : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++
++    var a7 = [1, ...a, 2, ...a];
++>a7 : number[]
++>   : ^^^^^^^^
++>[1, ...a, 2, ...a] : number[]
++>                   : ^^^^^^^^
++>1 : 1
++>  : ^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>2 : 2
++>  : ^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++
++    var a8 = [...a, ...a, ...a];
++>a8 : number[]
++>   : ^^^^^^^^
++>[...a, ...a, ...a] : number[]
++>                   : ^^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++}
++
++function f1() {
++>f1 : () => void
++>   : ^^^^^^^^^^
++
++    var a = [1, 2, 3];
++>a : number[]
++>  : ^^^^^^^^
++>[1, 2, 3] : number[]
++>          : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>3 : 3
++>  : ^
++
++    var b = ["hello", ...a, true];
++>b : (string | number | boolean)[]
++>  : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>["hello", ...a, true] : (string | number | boolean)[]
++>                      : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>"hello" : "hello"
++>        : ^^^^^^^
++>...a : number
++>     : ^^^^^^
++>a : number[]
++>  : ^^^^^^^^
++>true : true
++>     : ^^^^
++
++    var b: (string | number | boolean)[];
++>b : (string | number | boolean)[]
++>  : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++}
++
++function f2() {
++>f2 : () => void
++>   : ^^^^^^^^^^
++
++    var a = [...[...[...[...[...[]]]]]];
++>a : any[]
++>  : ^^^^^
++>[...[...[...[...[...[]]]]]] : undefined[]
++>                            : ^^^^^^^^^^^
++>...[...[...[...[...[]]]]] : undefined
++>                          : ^^^^^^^^^
++>[...[...[...[...[]]]]] : undefined[]
++>                       : ^^^^^^^^^^^
++>...[...[...[...[]]]] : undefined
++>                     : ^^^^^^^^^
++>[...[...[...[]]]] : undefined[]
++>                  : ^^^^^^^^^^^
++>...[...[...[]]] : undefined
++>                : ^^^^^^^^^
++>[...[...[]]] : undefined[]
++>             : ^^^^^^^^^^^
++>...[...[]] : undefined
++>           : ^^^^^^^^^
++>[...[]] : undefined[]
++>        : ^^^^^^^^^^^
++>...[] : undefined
++>      : ^^^^^^^^^
++>[] : undefined[]
++>   : ^^^^^^^^^^^
++
++    var b = [...[...[...[...[...[5]]]]]];
++>b : number[]
++>  : ^^^^^^^^
++>[...[...[...[...[...[5]]]]]] : number[]
++>                             : ^^^^^^^^
++>...[...[...[...[...[5]]]]] : number
++>                           : ^^^^^^
++>[...[...[...[...[5]]]]] : number[]
++>                        : ^^^^^^^^
++>...[...[...[...[5]]]] : number
++>                      : ^^^^^^
++>[...[...[...[5]]]] : number[]
++>                   : ^^^^^^^^
++>...[...[...[5]]] : number
++>                 : ^^^^^^
++>[...[...[5]]] : number[]
++>              : ^^^^^^^^
++>...[...[5]] : number
++>            : ^^^^^^
++>[...[5]] : number[]
++>         : ^^^^^^^^
++>...[5] : number
++>       : ^^^^^^
++>[5] : number[]
++>    : ^^^^^^^^
++>5 : 5
++>  : ^
++}
++
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.errors.txt b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).errors.txt
+similarity index 100%
+rename from tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.errors.txt
+rename to tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).errors.txt
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.js b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).js
+similarity index 100%
+rename from tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.js
+rename to tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).js
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.symbols b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).symbols
+similarity index 100%
+rename from tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.symbols
+rename to tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).symbols
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.types b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).types
+similarity index 100%
+rename from tests/baselines/reference/destructuringVariableDeclaration1ES5iterable.types
+rename to tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es2015).types
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).errors.txt b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).errors.txt
+new file mode 100644
+index 0000000000000..380199fd3f807
+--- /dev/null
++++ b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).errors.txt
+@@ -0,0 +1,52 @@
++error TS5107: Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
++destructuringVariableDeclaration1ES5iterable.ts(39,16): error TS2322: Type 'undefined' is not assignable to type 'number'.
++destructuringVariableDeclaration1ES5iterable.ts(39,27): error TS2322: Type 'null' is not assignable to type 'number'.
++
++
++!!! error TS5107: Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
++==== destructuringVariableDeclaration1ES5iterable.ts (2 errors) ====
++    // The type T associated with a destructuring variable declaration is determined as follows:
++    //      If the declaration includes a type annotation, T is that type.
++    var {a1, a2}: { a1: number, a2: string } = { a1: 10, a2: "world" }
++    var [a3, [[a4]], a5]: [number, [[string]], boolean] = [1, [["hello"]], true];
++    
++    // The type T associated with a destructuring variable declaration is determined as follows:
++    //      Otherwise, if the declaration includes an initializer expression, T is the type of that initializer expression.
++    var { b1: { b11 } = { b11: "string" }  } = { b1: { b11: "world" } };
++    var temp = { t1: true, t2: "false" };
++    var [b2 = 3, b3 = true, b4 = temp] = [3, false, { t1: false, t2: "hello" }];
++    var [b5 = 3, b6 = true, b7 = temp] = [undefined, undefined, undefined];
++    
++    // The type T associated with a binding element is determined as follows:
++    //      If the binding element is a rest element, T is an array type with
++    //          an element type E, where E is the type of the numeric index signature of S.
++    var [...c1] = [1,2,3];
++    var [...c2] = [1,2,3, "string"];
++    
++    // The type T associated with a binding element is determined as follows:
++    //      Otherwise, if S is a tuple- like type (section 3.3.3):
++    //          	Let N be the zero-based index of the binding element in the array binding pattern.
++    // 	            If S has a property with the numerical name N, T is the type of that property.
++    var [d1,d2] = [1,"string"]
++    
++    // The type T associated with a binding element is determined as follows:
++    //      Otherwise, if S is a tuple- like type (section 3.3.3):
++    //              Otherwise, if S has a numeric index signature, T is the type of the numeric index signature.
++    var temp1 = [true, false, true]
++    var [d3, d4] = [1, "string", ...temp1];
++    
++    //  Combining both forms of destructuring,
++    var {e: [e1, e2, e3 = { b1: 1000, b4: 200 }]} = { e: [1, 2, { b1: 4, b4: 0 }] };
++    var {f: [f1, f2, { f3: f4, f5 }, , ]} = { f: [1, 2, { f3: 4, f5: 0 }] };
++    
++    // When a destructuring variable declaration, binding property, or binding element specifies
++    // an initializer expression, the type of the initializer expression is required to be assignable
++    // to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
++    var {g: {g1 = [undefined, null]}}: { g: { g1: any[] } } = { g: { g1: [1, 2] } };
++    var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] } };
++                   ~~~~~~~~~
++!!! error TS2322: Type 'undefined' is not assignable to type 'number'.
++                              ~~~~
++!!! error TS2322: Type 'null' is not assignable to type 'number'.
++    
++    
+\ No newline at end of file
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).js b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).js
+new file mode 100644
+index 0000000000000..37b32484f4e0a
+--- /dev/null
++++ b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).js
+@@ -0,0 +1,105 @@
++//// [tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts] ////
++
++//// [destructuringVariableDeclaration1ES5iterable.ts]
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      If the declaration includes a type annotation, T is that type.
++var {a1, a2}: { a1: number, a2: string } = { a1: 10, a2: "world" }
++var [a3, [[a4]], a5]: [number, [[string]], boolean] = [1, [["hello"]], true];
++
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      Otherwise, if the declaration includes an initializer expression, T is the type of that initializer expression.
++var { b1: { b11 } = { b11: "string" }  } = { b1: { b11: "world" } };
++var temp = { t1: true, t2: "false" };
++var [b2 = 3, b3 = true, b4 = temp] = [3, false, { t1: false, t2: "hello" }];
++var [b5 = 3, b6 = true, b7 = temp] = [undefined, undefined, undefined];
++
++// The type T associated with a binding element is determined as follows:
++//      If the binding element is a rest element, T is an array type with
++//          an element type E, where E is the type of the numeric index signature of S.
++var [...c1] = [1,2,3];
++var [...c2] = [1,2,3, "string"];
++
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//          	Let N be the zero-based index of the binding element in the array binding pattern.
++// 	            If S has a property with the numerical name N, T is the type of that property.
++var [d1,d2] = [1,"string"]
++
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//              Otherwise, if S has a numeric index signature, T is the type of the numeric index signature.
++var temp1 = [true, false, true]
++var [d3, d4] = [1, "string", ...temp1];
++
++//  Combining both forms of destructuring,
++var {e: [e1, e2, e3 = { b1: 1000, b4: 200 }]} = { e: [1, 2, { b1: 4, b4: 0 }] };
++var {f: [f1, f2, { f3: f4, f5 }, , ]} = { f: [1, 2, { f3: 4, f5: 0 }] };
++
++// When a destructuring variable declaration, binding property, or binding element specifies
++// an initializer expression, the type of the initializer expression is required to be assignable
++// to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
++var {g: {g1 = [undefined, null]}}: { g: { g1: any[] } } = { g: { g1: [1, 2] } };
++var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] } };
++
++
++
++//// [destructuringVariableDeclaration1ES5iterable.js]
++"use strict";
++var __read = (this && this.__read) || function (o, n) {
++    var m = typeof Symbol === "function" && o[Symbol.iterator];
++    if (!m) return o;
++    var i = m.call(o), r, ar = [], e;
++    try {
++        while ((n === void 0 || n-- > 0) && !(r = i.next()).done) ar.push(r.value);
++    }
++    catch (error) { e = { error: error }; }
++    finally {
++        try {
++            if (r && !r.done && (m = i["return"])) m.call(i);
++        }
++        finally { if (e) throw e.error; }
++    }
++    return ar;
++};
++var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
++    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
++        if (ar || !(i in from)) {
++            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
++            ar[i] = from[i];
++        }
++    }
++    return to.concat(ar || Array.prototype.slice.call(from));
++};
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      If the declaration includes a type annotation, T is that type.
++var _a = { a1: 10, a2: "world" }, a1 = _a.a1, a2 = _a.a2;
++var _b = __read([1, [["hello"]], true], 3), a3 = _b[0], _c = __read(_b[1], 1), _d = __read(_c[0], 1), a4 = _d[0], a5 = _b[2];
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      Otherwise, if the declaration includes an initializer expression, T is the type of that initializer expression.
++var _e = { b1: { b11: "world" } }.b1, _f = _e === void 0 ? { b11: "string" } : _e, b11 = _f.b11;
++var temp = { t1: true, t2: "false" };
++var _g = __read([3, false, { t1: false, t2: "hello" }], 3), _h = _g[0], b2 = _h === void 0 ? 3 : _h, _j = _g[1], b3 = _j === void 0 ? true : _j, _k = _g[2], b4 = _k === void 0 ? temp : _k;
++var _l = __read([undefined, undefined, undefined], 3), _m = _l[0], b5 = _m === void 0 ? 3 : _m, _o = _l[1], b6 = _o === void 0 ? true : _o, _p = _l[2], b7 = _p === void 0 ? temp : _p;
++// The type T associated with a binding element is determined as follows:
++//      If the binding element is a rest element, T is an array type with
++//          an element type E, where E is the type of the numeric index signature of S.
++var _q = __read([1, 2, 3]), c1 = _q.slice(0);
++var _r = __read([1, 2, 3, "string"]), c2 = _r.slice(0);
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//          	Let N be the zero-based index of the binding element in the array binding pattern.
++// 	            If S has a property with the numerical name N, T is the type of that property.
++var _s = __read([1, "string"], 2), d1 = _s[0], d2 = _s[1];
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//              Otherwise, if S has a numeric index signature, T is the type of the numeric index signature.
++var temp1 = [true, false, true];
++var _t = __read(__spreadArray([1, "string"], __read(temp1), false), 2), d3 = _t[0], d4 = _t[1];
++//  Combining both forms of destructuring,
++var _u = __read({ e: [1, 2, { b1: 4, b4: 0 }] }.e, 3), e1 = _u[0], e2 = _u[1], _v = _u[2], e3 = _v === void 0 ? { b1: 1000, b4: 200 } : _v;
++var _w = __read({ f: [1, 2, { f3: 4, f5: 0 }] }.f, 4), f1 = _w[0], f2 = _w[1], _x = _w[2], f4 = _x.f3, f5 = _x.f5;
++// When a destructuring variable declaration, binding property, or binding element specifies
++// an initializer expression, the type of the initializer expression is required to be assignable
++// to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
++var _y = { g: { g1: [1, 2] } }.g.g1, g1 = _y === void 0 ? [undefined, null] : _y;
++var _z = { h: { h1: [1, 2] } }.h.h1, h1 = _z === void 0 ? [undefined, null] : _z;
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).symbols b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).symbols
+new file mode 100644
+index 0000000000000..8ee0b316cd0ce
+--- /dev/null
++++ b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).symbols
+@@ -0,0 +1,122 @@
++//// [tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts] ////
++
++=== destructuringVariableDeclaration1ES5iterable.ts ===
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      If the declaration includes a type annotation, T is that type.
++var {a1, a2}: { a1: number, a2: string } = { a1: 10, a2: "world" }
++>a1 : Symbol(a1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 2, 5))
++>a2 : Symbol(a2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 2, 8))
++>a1 : Symbol(a1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 2, 15))
++>a2 : Symbol(a2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 2, 27))
++>a1 : Symbol(a1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 2, 44))
++>a2 : Symbol(a2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 2, 52))
++
++var [a3, [[a4]], a5]: [number, [[string]], boolean] = [1, [["hello"]], true];
++>a3 : Symbol(a3, Decl(destructuringVariableDeclaration1ES5iterable.ts, 3, 5))
++>a4 : Symbol(a4, Decl(destructuringVariableDeclaration1ES5iterable.ts, 3, 11))
++>a5 : Symbol(a5, Decl(destructuringVariableDeclaration1ES5iterable.ts, 3, 16))
++
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      Otherwise, if the declaration includes an initializer expression, T is the type of that initializer expression.
++var { b1: { b11 } = { b11: "string" }  } = { b1: { b11: "world" } };
++>b1 : Symbol(b1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 7, 44))
++>b11 : Symbol(b11, Decl(destructuringVariableDeclaration1ES5iterable.ts, 7, 11))
++>b11 : Symbol(b11, Decl(destructuringVariableDeclaration1ES5iterable.ts, 7, 21))
++>b1 : Symbol(b1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 7, 44))
++>b11 : Symbol(b11, Decl(destructuringVariableDeclaration1ES5iterable.ts, 7, 50))
++
++var temp = { t1: true, t2: "false" };
++>temp : Symbol(temp, Decl(destructuringVariableDeclaration1ES5iterable.ts, 8, 3))
++>t1 : Symbol(t1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 8, 12))
++>t2 : Symbol(t2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 8, 22))
++
++var [b2 = 3, b3 = true, b4 = temp] = [3, false, { t1: false, t2: "hello" }];
++>b2 : Symbol(b2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 9, 5))
++>b3 : Symbol(b3, Decl(destructuringVariableDeclaration1ES5iterable.ts, 9, 12))
++>b4 : Symbol(b4, Decl(destructuringVariableDeclaration1ES5iterable.ts, 9, 23))
++>temp : Symbol(temp, Decl(destructuringVariableDeclaration1ES5iterable.ts, 8, 3))
++>t1 : Symbol(t1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 9, 49))
++>t2 : Symbol(t2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 9, 60))
++
++var [b5 = 3, b6 = true, b7 = temp] = [undefined, undefined, undefined];
++>b5 : Symbol(b5, Decl(destructuringVariableDeclaration1ES5iterable.ts, 10, 5))
++>b6 : Symbol(b6, Decl(destructuringVariableDeclaration1ES5iterable.ts, 10, 12))
++>b7 : Symbol(b7, Decl(destructuringVariableDeclaration1ES5iterable.ts, 10, 23))
++>temp : Symbol(temp, Decl(destructuringVariableDeclaration1ES5iterable.ts, 8, 3))
++>undefined : Symbol(undefined)
++>undefined : Symbol(undefined)
++>undefined : Symbol(undefined)
++
++// The type T associated with a binding element is determined as follows:
++//      If the binding element is a rest element, T is an array type with
++//          an element type E, where E is the type of the numeric index signature of S.
++var [...c1] = [1,2,3];
++>c1 : Symbol(c1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 15, 5))
++
++var [...c2] = [1,2,3, "string"];
++>c2 : Symbol(c2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 16, 5))
++
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//          	Let N be the zero-based index of the binding element in the array binding pattern.
++// 	            If S has a property with the numerical name N, T is the type of that property.
++var [d1,d2] = [1,"string"]
++>d1 : Symbol(d1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 22, 5))
++>d2 : Symbol(d2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 22, 8))
++
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//              Otherwise, if S has a numeric index signature, T is the type of the numeric index signature.
++var temp1 = [true, false, true]
++>temp1 : Symbol(temp1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 27, 3))
++
++var [d3, d4] = [1, "string", ...temp1];
++>d3 : Symbol(d3, Decl(destructuringVariableDeclaration1ES5iterable.ts, 28, 5))
++>d4 : Symbol(d4, Decl(destructuringVariableDeclaration1ES5iterable.ts, 28, 8))
++>temp1 : Symbol(temp1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 27, 3))
++
++//  Combining both forms of destructuring,
++var {e: [e1, e2, e3 = { b1: 1000, b4: 200 }]} = { e: [1, 2, { b1: 4, b4: 0 }] };
++>e : Symbol(e, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 49))
++>e1 : Symbol(e1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 9))
++>e2 : Symbol(e2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 12))
++>e3 : Symbol(e3, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 16))
++>b1 : Symbol(b1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 23))
++>b4 : Symbol(b4, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 33))
++>e : Symbol(e, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 49))
++>b1 : Symbol(b1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 61))
++>b4 : Symbol(b4, Decl(destructuringVariableDeclaration1ES5iterable.ts, 31, 68))
++
++var {f: [f1, f2, { f3: f4, f5 }, , ]} = { f: [1, 2, { f3: 4, f5: 0 }] };
++>f : Symbol(f, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 41))
++>f1 : Symbol(f1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 9))
++>f2 : Symbol(f2, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 12))
++>f3 : Symbol(f3, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 53))
++>f4 : Symbol(f4, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 18))
++>f5 : Symbol(f5, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 26))
++>f : Symbol(f, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 41))
++>f3 : Symbol(f3, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 53))
++>f5 : Symbol(f5, Decl(destructuringVariableDeclaration1ES5iterable.ts, 32, 60))
++
++// When a destructuring variable declaration, binding property, or binding element specifies
++// an initializer expression, the type of the initializer expression is required to be assignable
++// to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
++var {g: {g1 = [undefined, null]}}: { g: { g1: any[] } } = { g: { g1: [1, 2] } };
++>g : Symbol(g, Decl(destructuringVariableDeclaration1ES5iterable.ts, 37, 36))
++>g1 : Symbol(g1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 37, 9))
++>undefined : Symbol(undefined)
++>g : Symbol(g, Decl(destructuringVariableDeclaration1ES5iterable.ts, 37, 36))
++>g1 : Symbol(g1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 37, 41))
++>g : Symbol(g, Decl(destructuringVariableDeclaration1ES5iterable.ts, 37, 59))
++>g1 : Symbol(g1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 37, 64))
++
++var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] } };
++>h : Symbol(h, Decl(destructuringVariableDeclaration1ES5iterable.ts, 38, 36))
++>h1 : Symbol(h1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 38, 9))
++>undefined : Symbol(undefined)
++>h : Symbol(h, Decl(destructuringVariableDeclaration1ES5iterable.ts, 38, 36))
++>h1 : Symbol(h1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 38, 41))
++>h : Symbol(h, Decl(destructuringVariableDeclaration1ES5iterable.ts, 38, 62))
++>h1 : Symbol(h1, Decl(destructuringVariableDeclaration1ES5iterable.ts, 38, 67))
++
++
+diff --git a/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).types b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).types
+new file mode 100644
+index 0000000000000..8e19bb1c10772
+--- /dev/null
++++ b/tests/baselines/reference/destructuringVariableDeclaration1ES5iterable(target=es5).types
+@@ -0,0 +1,346 @@
++//// [tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts] ////
++
++=== destructuringVariableDeclaration1ES5iterable.ts ===
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      If the declaration includes a type annotation, T is that type.
++var {a1, a2}: { a1: number, a2: string } = { a1: 10, a2: "world" }
++>a1 : number
++>   : ^^^^^^
++>a2 : string
++>   : ^^^^^^
++>a1 : number
++>   : ^^^^^^
++>a2 : string
++>   : ^^^^^^
++>{ a1: 10, a2: "world" } : { a1: number; a2: string; }
++>                        : ^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>a1 : number
++>   : ^^^^^^
++>10 : 10
++>   : ^^
++>a2 : string
++>   : ^^^^^^
++>"world" : "world"
++>        : ^^^^^^^
++
++var [a3, [[a4]], a5]: [number, [[string]], boolean] = [1, [["hello"]], true];
++>a3 : number
++>   : ^^^^^^
++>a4 : string
++>   : ^^^^^^
++>a5 : boolean
++>   : ^^^^^^^
++>[1, [["hello"]], true] : [number, [[string]], true]
++>                       : ^^^^^^^^^^^^^^^^^^^^^^^^^^
++>1 : 1
++>  : ^
++>[["hello"]] : [[string]]
++>            : ^^^^^^^^^^
++>["hello"] : [string]
++>          : ^^^^^^^^
++>"hello" : "hello"
++>        : ^^^^^^^
++>true : true
++>     : ^^^^
++
++// The type T associated with a destructuring variable declaration is determined as follows:
++//      Otherwise, if the declaration includes an initializer expression, T is the type of that initializer expression.
++var { b1: { b11 } = { b11: "string" }  } = { b1: { b11: "world" } };
++>b1 : any
++>   : ^^^
++>b11 : string
++>    : ^^^^^^
++>{ b11: "string" } : { b11: string; }
++>                  : ^^^^^^^^^^^^^^^^
++>b11 : string
++>    : ^^^^^^
++>"string" : "string"
++>         : ^^^^^^^^
++>{ b1: { b11: "world" } } : { b1?: { b11: string; }; }
++>                         : ^^^^^^^^^^^^^^^^^^^^^^^^^^
++>b1 : { b11: string; }
++>   : ^^^^^^^^^^^^^^^^
++>{ b11: "world" } : { b11: string; }
++>                 : ^^^^^^^^^^^^^^^^
++>b11 : string
++>    : ^^^^^^
++>"world" : "world"
++>        : ^^^^^^^
++
++var temp = { t1: true, t2: "false" };
++>temp : { t1: boolean; t2: string; }
++>     : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>{ t1: true, t2: "false" } : { t1: boolean; t2: string; }
++>                          : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>t1 : boolean
++>   : ^^^^^^^
++>true : true
++>     : ^^^^
++>t2 : string
++>   : ^^^^^^
++>"false" : "false"
++>        : ^^^^^^^
++
++var [b2 = 3, b3 = true, b4 = temp] = [3, false, { t1: false, t2: "hello" }];
++>b2 : number
++>   : ^^^^^^
++>3 : 3
++>  : ^
++>b3 : boolean
++>   : ^^^^^^^
++>true : true
++>     : ^^^^
++>b4 : { t1: boolean; t2: string; }
++>   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>temp : { t1: boolean; t2: string; }
++>     : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>[3, false, { t1: false, t2: "hello" }] : [number, false, { t1: false; t2: string; }]
++>                                       : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>3 : 3
++>  : ^
++>false : false
++>      : ^^^^^
++>{ t1: false, t2: "hello" } : { t1: false; t2: string; }
++>                           : ^^^^^^^^^^^^^^^^^^^^^^^^^^
++>t1 : false
++>   : ^^^^^
++>false : false
++>      : ^^^^^
++>t2 : string
++>   : ^^^^^^
++>"hello" : "hello"
++>        : ^^^^^^^
++
++var [b5 = 3, b6 = true, b7 = temp] = [undefined, undefined, undefined];
++>b5 : number
++>   : ^^^^^^
++>3 : 3
++>  : ^
++>b6 : boolean
++>   : ^^^^^^^
++>true : true
++>     : ^^^^
++>b7 : { t1: boolean; t2: string; }
++>   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>temp : { t1: boolean; t2: string; }
++>     : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>[undefined, undefined, undefined] : [undefined, undefined, undefined]
++>                                  : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>undefined : undefined
++>          : ^^^^^^^^^
++>undefined : undefined
++>          : ^^^^^^^^^
++>undefined : undefined
++>          : ^^^^^^^^^
++
++// The type T associated with a binding element is determined as follows:
++//      If the binding element is a rest element, T is an array type with
++//          an element type E, where E is the type of the numeric index signature of S.
++var [...c1] = [1,2,3];
++>c1 : number[]
++>   : ^^^^^^^^
++>[1,2,3] : number[]
++>        : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>3 : 3
++>  : ^
++
++var [...c2] = [1,2,3, "string"];
++>c2 : (string | number)[]
++>   : ^^^^^^^^^^^^^^^^^^^
++>[1,2,3, "string"] : (string | number)[]
++>                  : ^^^^^^^^^^^^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>3 : 3
++>  : ^
++>"string" : "string"
++>         : ^^^^^^^^
++
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//          	Let N be the zero-based index of the binding element in the array binding pattern.
++// 	            If S has a property with the numerical name N, T is the type of that property.
++var [d1,d2] = [1,"string"]
++>d1 : number
++>   : ^^^^^^
++>d2 : string
++>   : ^^^^^^
++>[1,"string"] : [number, string]
++>             : ^^^^^^^^^^^^^^^^
++>1 : 1
++>  : ^
++>"string" : "string"
++>         : ^^^^^^^^
++
++// The type T associated with a binding element is determined as follows:
++//      Otherwise, if S is a tuple- like type (section 3.3.3):
++//              Otherwise, if S has a numeric index signature, T is the type of the numeric index signature.
++var temp1 = [true, false, true]
++>temp1 : boolean[]
++>      : ^^^^^^^^^
++>[true, false, true] : boolean[]
++>                    : ^^^^^^^^^
++>true : true
++>     : ^^^^
++>false : false
++>      : ^^^^^
++>true : true
++>     : ^^^^
++
++var [d3, d4] = [1, "string", ...temp1];
++>d3 : number
++>   : ^^^^^^
++>d4 : string
++>   : ^^^^^^
++>[1, "string", ...temp1] : [number, string, ...boolean[]]
++>                        : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>1 : 1
++>  : ^
++>"string" : "string"
++>         : ^^^^^^^^
++>...temp1 : boolean
++>         : ^^^^^^^
++>temp1 : boolean[]
++>      : ^^^^^^^^^
++
++//  Combining both forms of destructuring,
++var {e: [e1, e2, e3 = { b1: 1000, b4: 200 }]} = { e: [1, 2, { b1: 4, b4: 0 }] };
++>e : any
++>  : ^^^
++>e1 : number
++>   : ^^^^^^
++>e2 : number
++>   : ^^^^^^
++>e3 : { b1: number; b4: number; }
++>   : ^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>{ b1: 1000, b4: 200 } : { b1: number; b4: number; }
++>                      : ^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>b1 : number
++>   : ^^^^^^
++>1000 : 1000
++>     : ^^^^
++>b4 : number
++>   : ^^^^^^
++>200 : 200
++>    : ^^^
++>{ e: [1, 2, { b1: 4, b4: 0 }] } : { e: [number, number, { b1: number; b4: number; }]; }
++>                                : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>e : [number, number, { b1: number; b4: number; }]
++>  : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>[1, 2, { b1: 4, b4: 0 }] : [number, number, { b1: number; b4: number; }]
++>                         : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>{ b1: 4, b4: 0 } : { b1: number; b4: number; }
++>                 : ^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>b1 : number
++>   : ^^^^^^
++>4 : 4
++>  : ^
++>b4 : number
++>   : ^^^^^^
++>0 : 0
++>  : ^
++
++var {f: [f1, f2, { f3: f4, f5 }, , ]} = { f: [1, 2, { f3: 4, f5: 0 }] };
++>f : any
++>  : ^^^
++>f1 : number
++>   : ^^^^^^
++>f2 : number
++>   : ^^^^^^
++>f3 : any
++>   : ^^^
++>f4 : number
++>   : ^^^^^^
++>f5 : number
++>   : ^^^^^^
++>{ f: [1, 2, { f3: 4, f5: 0 }] } : { f: [number, number, { f3: number; f5: number; }]; }
++>                                : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>f : [number, number, { f3: number; f5: number; }]
++>  : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>[1, 2, { f3: 4, f5: 0 }] : [number, number, { f3: number; f5: number; }]
++>                         : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++>{ f3: 4, f5: 0 } : { f3: number; f5: number; }
++>                 : ^^^^^^^^^^^^^^^^^^^^^^^^^^^
++>f3 : number
++>   : ^^^^^^
++>4 : 4
++>  : ^
++>f5 : number
++>   : ^^^^^^
++>0 : 0
++>  : ^
++
++// When a destructuring variable declaration, binding property, or binding element specifies
++// an initializer expression, the type of the initializer expression is required to be assignable
++// to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
++var {g: {g1 = [undefined, null]}}: { g: { g1: any[] } } = { g: { g1: [1, 2] } };
++>g : any
++>  : ^^^
++>g1 : any[]
++>   : ^^^^^
++>[undefined, null] : (null | undefined)[]
++>                  : ^^^^^^^^^^^^^^^^^^^^
++>undefined : undefined
++>          : ^^^^^^^^^
++>g : { g1: any[]; }
++>  : ^^^^^^     ^^^
++>g1 : any[]
++>   : ^^^^^
++>{ g: { g1: [1, 2] } } : { g: { g1: number[]; }; }
++>                      : ^^^^^^^^^^^^^^^^^^^^^^^^^
++>g : { g1: number[]; }
++>  : ^^^^^^^^^^^^^^^^^
++>{ g1: [1, 2] } : { g1: number[]; }
++>               : ^^^^^^^^^^^^^^^^^
++>g1 : number[]
++>   : ^^^^^^^^
++>[1, 2] : number[]
++>       : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++
++var {h: {h1 = [undefined, null]}}: { h: { h1: number[] } } = { h: { h1: [1, 2] } };
++>h : any
++>  : ^^^
++>h1 : number[]
++>   : ^^^^^^^^
++>[undefined, null] : (null | undefined)[]
++>                  : ^^^^^^^^^^^^^^^^^^^^
++>undefined : undefined
++>          : ^^^^^^^^^
++>h : { h1: number[]; }
++>  : ^^^^^^        ^^^
++>h1 : number[]
++>   : ^^^^^^^^
++>{ h: { h1: [1, 2] } } : { h: { h1: number[]; }; }
++>                      : ^^^^^^^^^^^^^^^^^^^^^^^^^
++>h : { h1: number[]; }
++>  : ^^^^^^^^^^^^^^^^^
++>{ h1: [1, 2] } : { h1: number[]; }
++>               : ^^^^^^^^^^^^^^^^^
++>h1 : number[]
++>   : ^^^^^^^^
++>[1, 2] : number[]
++>       : ^^^^^^^^
++>1 : 1
++>  : ^
++>2 : 2
++>  : ^
++
++
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.js b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).js
+similarity index 100%
+rename from tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.js
+rename to tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).js
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.js.map b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).js.map
+similarity index 100%
+rename from tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.js.map
+rename to tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).js.map
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.sourcemap.txt b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).sourcemap.txt
+similarity index 100%
+rename from tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.sourcemap.txt
+rename to tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).sourcemap.txt
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.symbols b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).symbols
+similarity index 100%
+rename from tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.symbols
+rename to tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).symbols
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.types b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).types
+similarity index 100%
+rename from tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator.types
+rename to tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es2015).types
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).errors.txt b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).errors.txt
+new file mode 100644
+index 0000000000000..285f9d57cafbb
+--- /dev/null
++++ b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).errors.txt
+@@ -0,0 +1,8 @@
++error TS5107: Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
++
++
++!!! error TS5107: Option 'target=ES5' is deprecated and will stop functioning in TypeScript 7.0. Specify compilerOption '"ignoreDeprecations": "6.0"' to silence this error.
++==== sourceMapValidationVarInDownLevelGenerator.ts (0 errors) ====
++    function * f() {
++        var x = 1, y;
++    }
+\ No newline at end of file
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).js b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).js
+new file mode 100644
+index 0000000000000..0af1a0fed0eb2
+--- /dev/null
++++ b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).js
+@@ -0,0 +1,17 @@
++//// [tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts] ////
++
++//// [sourceMapValidationVarInDownLevelGenerator.ts]
++function * f() {
++    var x = 1, y;
++}
++
++//// [sourceMapValidationVarInDownLevelGenerator.js]
++"use strict";
++function f() {
++    var x, y;
++    return __generator(this, function (_a) {
++        x = 1;
++        return [2 /*return*/];
++    });
++}
++//# sourceMappingURL=sourceMapValidationVarInDownLevelGenerator.js.map
+\ No newline at end of file
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).js.map b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).js.map
+new file mode 100644
+index 0000000000000..98cc8fcd61b53
+--- /dev/null
++++ b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).js.map
+@@ -0,0 +1,3 @@
++//// [sourceMapValidationVarInDownLevelGenerator.js.map]
++{"version":3,"file":"sourceMapValidationVarInDownLevelGenerator.js","sourceRoot":"","sources":["sourceMapValidationVarInDownLevelGenerator.ts"],"names":[],"mappings":";AAAA,SAAW,CAAC;;;QACJ,CAAC,GAAG,CAAC,CAAI;;;CAChB"}
++//// https://sokra.github.io/source-map-visualization#base64,InVzZSBzdHJpY3QiOw0KZnVuY3Rpb24gZigpIHsNCiAgICB2YXIgeCwgeTsNCiAgICByZXR1cm4gX19nZW5lcmF0b3IodGhpcywgZnVuY3Rpb24gKF9hKSB7DQogICAgICAgIHggPSAxOw0KICAgICAgICByZXR1cm4gWzIgLypyZXR1cm4qL107DQogICAgfSk7DQp9DQovLyMgc291cmNlTWFwcGluZ1VSTD1zb3VyY2VNYXBWYWxpZGF0aW9uVmFySW5Eb3duTGV2ZWxHZW5lcmF0b3IuanMubWFw,eyJ2ZXJzaW9uIjozLCJmaWxlIjoic291cmNlTWFwVmFsaWRhdGlvblZhckluRG93bkxldmVsR2VuZXJhdG9yLmpzIiwic291cmNlUm9vdCI6IiIsInNvdXJjZXMiOlsic291cmNlTWFwVmFsaWRhdGlvblZhckluRG93bkxldmVsR2VuZXJhdG9yLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7QUFBQSxTQUFXLENBQUM7OztRQUNKLENBQUMsR0FBRyxDQUFDLENBQUk7OztDQUNoQiJ9,ZnVuY3Rpb24gKiBmKCkgewogICAgdmFyIHggPSAxLCB5Owp9
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).sourcemap.txt b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).sourcemap.txt
+new file mode 100644
+index 0000000000000..2767f0818efb1
+--- /dev/null
++++ b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).sourcemap.txt
+@@ -0,0 +1,54 @@
++===================================================================
++JsFile: sourceMapValidationVarInDownLevelGenerator.js
++mapUrl: sourceMapValidationVarInDownLevelGenerator.js.map
++sourceRoot: 
++sources: sourceMapValidationVarInDownLevelGenerator.ts
++===================================================================
++-------------------------------------------------------------------
++emittedFile:sourceMapValidationVarInDownLevelGenerator.js
++sourceFile:sourceMapValidationVarInDownLevelGenerator.ts
++-------------------------------------------------------------------
++>>>"use strict";
++>>>function f() {
++1 >
++2 >^^^^^^^^^
++3 >         ^
++4 >          ^^^^->
++1 >
++2 >function * 
++3 >         f
++1 >Emitted(2, 1) Source(1, 1) + SourceIndex(0)
++2 >Emitted(2, 10) Source(1, 12) + SourceIndex(0)
++3 >Emitted(2, 11) Source(1, 13) + SourceIndex(0)
++---
++>>>    var x, y;
++>>>    return __generator(this, function (_a) {
++>>>        x = 1;
++1->^^^^^^^^
++2 >        ^
++3 >         ^^^
++4 >            ^
++5 >             ^
++6 >              ^^^^^^^^^^^^^^^^^->
++1->() {
++  >    var 
++2 >        x
++3 >          = 
++4 >            1
++5 >             , y;
++1->Emitted(5, 9) Source(2, 9) + SourceIndex(0)
++2 >Emitted(5, 10) Source(2, 10) + SourceIndex(0)
++3 >Emitted(5, 13) Source(2, 13) + SourceIndex(0)
++4 >Emitted(5, 14) Source(2, 14) + SourceIndex(0)
++5 >Emitted(5, 15) Source(2, 18) + SourceIndex(0)
++---
++>>>        return [2 /*return*/];
++>>>    });
++>>>}
++1->^
++2 > ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^->
++1->
++  >}
++1->Emitted(8, 2) Source(3, 2) + SourceIndex(0)
++---
++>>>//# sourceMappingURL=sourceMapValidationVarInDownLevelGenerator.js.map
+\ No newline at end of file
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).symbols b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).symbols
+new file mode 100644
+index 0000000000000..6398cd2ed416d
+--- /dev/null
++++ b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).symbols
+@@ -0,0 +1,10 @@
++//// [tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts] ////
++
++=== sourceMapValidationVarInDownLevelGenerator.ts ===
++function * f() {
++>f : Symbol(f, Decl(sourceMapValidationVarInDownLevelGenerator.ts, 0, 0))
++
++    var x = 1, y;
++>x : Symbol(x, Decl(sourceMapValidationVarInDownLevelGenerator.ts, 1, 7))
++>y : Symbol(y, Decl(sourceMapValidationVarInDownLevelGenerator.ts, 1, 14))
++}
+diff --git a/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).types b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).types
+new file mode 100644
+index 0000000000000..0ea6ff9b07f35
+--- /dev/null
++++ b/tests/baselines/reference/sourceMapValidationVarInDownLevelGenerator(target=es5).types
+@@ -0,0 +1,15 @@
++//// [tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts] ////
++
++=== sourceMapValidationVarInDownLevelGenerator.ts ===
++function * f() {
++>f : () => Generator<never, void, unknown>
++>  : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++
++    var x = 1, y;
++>x : number
++>  : ^^^^^^
++>1 : 1
++>  : ^
++>y : any
++>  : ^^^
++}
+diff --git a/tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts b/tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts
+index 71170da86c250..3f7c1612df6f1 100644
+--- a/tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts
++++ b/tests/cases/compiler/sourceMapValidationVarInDownLevelGenerator.ts
+@@ -1,4 +1,4 @@
+-// @target: es2015
++// @target: es5,es2015
+ // @sourcemap: true
+ // @downlevelIteration: true
+ // @noEmitHelpers: true
+diff --git a/tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts b/tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts
+index 7fd3ede9c40be..520eea4895677 100644
+--- a/tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts
++++ b/tests/cases/conformance/es6/destructuring/destructuringVariableDeclaration1ES5iterable.ts
+@@ -1,4 +1,4 @@
+-﻿// @target: es2015
++﻿// @target: es5,es2015
+ // @downlevelIteration: true
+ // The type T associated with a destructuring variable declaration is determined as follows:
+ //      If the declaration includes a type annotation, T is that type.
+diff --git a/tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts b/tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts
+index 9e66420fe097d..282f94be46722 100644
+--- a/tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts
++++ b/tests/cases/conformance/es6/spread/arrayLiteralSpreadES5iterable.ts
+@@ -1,4 +1,4 @@
+-// @target: es2015
++// @target: es5,es2015
+ // @strict: false
+ // @downlevelIteration: true
+ function f0() {

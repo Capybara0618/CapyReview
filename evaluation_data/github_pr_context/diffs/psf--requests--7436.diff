@@ -1,0 +1,28 @@
+diff --git a/src/requests/_types.py b/src/requests/_types.py
+index 963867b012..4346358f48 100644
+--- a/src/requests/_types.py
++++ b/src/requests/_types.py
+@@ -9,7 +9,7 @@
+ 
+ from __future__ import annotations
+ 
+-from collections.abc import Callable, Iterable, Mapping, MutableMapping
++from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+ from typing import (
+     TYPE_CHECKING,
+     Any,
+@@ -139,7 +139,13 @@ class _ValidatedRequest(PreparedRequest):
+     VerifyType: TypeAlias = bool | str
+     CertType: TypeAlias = str | tuple[str, str] | None
+     JsonType: TypeAlias = (
+-        None | bool | int | float | str | list["JsonType"] | dict[str, "JsonType"]
++        None
++        | bool
++        | int
++        | float
++        | str
++        | Sequence["JsonType"]
++        | Mapping[str, "JsonType"]
+     )
+ 
+     # TypedDicts for Unpack kwargs (PEP 692)

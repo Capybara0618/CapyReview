@@ -1,0 +1,2173 @@
+diff --git a/docs/geographic_failover.rst b/docs/geographic_failover.rst
+index bb90b99cae..16ffdb69a9 100644
+--- a/docs/geographic_failover.rst
++++ b/docs/geographic_failover.rst
+@@ -185,8 +185,8 @@ MultiDbConfig
+ 
+         # Global command retry policy (applied at multi-db layer)
+         command_retry=Retry(
+-            retries=3,
+-            backoff=ExponentialWithJitterBackoff(base=1, cap=10),
++            retries=10,
++            backoff=ExponentialWithJitterBackoff(base=0.01, cap=1),
+         ),
+ 
+         # Health checks
+diff --git a/docs/retry.rst b/docs/retry.rst
+index 0f2e318022..afeedc9f95 100644
+--- a/docs/retry.rst
++++ b/docs/retry.rst
+@@ -48,8 +48,8 @@ Retry in Redis Cluster
+ 
+ Retry behaviour in Redis Cluster is a little bit different from Standalone:
+ 
+-* ``retry``: :class:`~.Retry` instance with a :ref:`backoff-label` strategy and the max number of retries, default value is ``Retry(ExponentialWithJitterBackoff(base=1, cap=10), cluster_error_retry_attempts)``
+-* ``cluster_error_retry_attempts``: number of times to retry before raising an error when :class:`~.TimeoutError`, :class:`~.ConnectionError`, :class:`~.ClusterDownError` or :class:`~.SlotNotCoveredError` are encountered, default value is ``3``
++* ``retry``: :class:`~.Retry` instance with a :ref:`backoff-label` strategy and the max number of retries, default value is ``Retry(ExponentialWithJitterBackoff(base=0.01, cap=1), cluster_error_retry_attempts)``
++* ``cluster_error_retry_attempts``: number of times to retry before raising an error when :class:`~.TimeoutError`, :class:`~.ConnectionError`, :class:`~.ClusterDownError` or :class:`~.SlotNotCoveredError` are encountered, default value is ``10``
+     * This argument is deprecated - it is used to initialize the number of retries for the retry object,
+       only in the case when the ``retry`` object is not provided.
+       When the ``retry`` argument is provided, the ``cluster_error_retry_attempts`` argument is ignored!
+@@ -70,4 +70,4 @@ Let's consider the following example:
+ #. given the hash slot, it then determines which node to connect to, in order to execute the command.
+ #. during the connection, a :class:`~.ConnectionError` is raised.
+ #. because we set ``retry=Retry(ExponentialBackoff(), 6)``, the cluster client starts a cluster update, removes the failed node from the startup nodes, and re-initializes the cluster.
+-#. the cluster client retries the command until it either succeeds or the max number of retries is reached.
+\ No newline at end of file
++#. the cluster client retries the command until it either succeeds or the max number of retries is reached.
+diff --git a/redis/_defaults.py b/redis/_defaults.py
+new file mode 100644
+index 0000000000..0ea49c5d20
+--- /dev/null
++++ b/redis/_defaults.py
+@@ -0,0 +1,39 @@
++"""Internal default helper functions shared across redis-py modules."""
++
++import socket
++
++# Connection defaults
++
++DEFAULT_SOCKET_TIMEOUT = 5  # 5s
++DEFAULT_SOCKET_CONNECT_TIMEOUT = DEFAULT_SOCKET_TIMEOUT
++DEFAULT_SOCKET_READ_SIZE = 32768  # 32KB
++
++
++def get_default_socket_keepalive_options() -> dict[int, int]:
++    options = {}
++
++    # Linux exposes TCP_KEEPIDLE; macOS exposes the equivalent TCP_KEEPALIVE.
++    # Some platforms expose neither and only support SO_KEEPALIVE itself.
++    tcp_keepidle = getattr(socket, "TCP_KEEPIDLE", None)
++    if tcp_keepidle is None:
++        tcp_keepidle = getattr(socket, "TCP_KEEPALIVE", None)
++    if tcp_keepidle is not None:
++        options[tcp_keepidle] = 30
++
++    # Not every platform exposes interval/probe tuning constants.
++    tcp_keepintvl = getattr(socket, "TCP_KEEPINTVL", None)
++    if tcp_keepintvl is not None:
++        options[tcp_keepintvl] = 5
++
++    # Not every platform exposes interval/probe tuning constants.
++    tcp_keepcnt = getattr(socket, "TCP_KEEPCNT", None)
++    if tcp_keepcnt is not None:
++        options[tcp_keepcnt] = 3
++
++    return options
++
++
++# Retry defaults
++DEFAULT_RETRY_COUNT = 10
++DEFAULT_RETRY_BASE = 0.01  # 10ms
++DEFAULT_RETRY_CAP = 1  # 1s
+diff --git a/redis/_parsers/hiredis.py b/redis/_parsers/hiredis.py
+index 48d469c452..342fccf09e 100644
+--- a/redis/_parsers/hiredis.py
++++ b/redis/_parsers/hiredis.py
+@@ -5,7 +5,7 @@
+ 
+ from ..exceptions import ConnectionError, InvalidResponse, RedisError, TimeoutError
+ from ..typing import EncodableT
+-from ..utils import HIREDIS_AVAILABLE, deprecated_function
++from ..utils import HIREDIS_AVAILABLE, SENTINEL, deprecated_function
+ from .base import (
+     AsyncBaseParser,
+     AsyncPushNotificationsParser,
+@@ -15,7 +15,6 @@
+ from .socket import (
+     NONBLOCKING_EXCEPTION_ERROR_NUMBERS,
+     NONBLOCKING_EXCEPTIONS,
+-    SENTINEL,
+     SERVER_CLOSED_CONNECTION_ERROR,
+ )
+ 
+diff --git a/redis/_parsers/resp2.py b/redis/_parsers/resp2.py
+index 375a2312b7..26701157f0 100644
+--- a/redis/_parsers/resp2.py
++++ b/redis/_parsers/resp2.py
+@@ -2,8 +2,9 @@
+ 
+ from ..exceptions import ConnectionError, InvalidResponse, ResponseError
+ from ..typing import EncodableT
++from ..utils import SENTINEL
+ from .base import _AsyncRESPBase, _RESPBase
+-from .socket import SENTINEL, SERVER_CLOSED_CONNECTION_ERROR
++from .socket import SERVER_CLOSED_CONNECTION_ERROR
+ 
+ 
+ class _RESP2Parser(_RESPBase):
+diff --git a/redis/_parsers/resp3.py b/redis/_parsers/resp3.py
+index 5dd51b61d1..8a9e41e27e 100644
+--- a/redis/_parsers/resp3.py
++++ b/redis/_parsers/resp3.py
+@@ -3,13 +3,14 @@
+ 
+ from ..exceptions import ConnectionError, InvalidResponse, ResponseError
+ from ..typing import EncodableT
++from ..utils import SENTINEL
+ from .base import (
+     AsyncPushNotificationsParser,
+     PushNotificationsParser,
+     _AsyncRESPBase,
+     _RESPBase,
+ )
+-from .socket import SENTINEL, SERVER_CLOSED_CONNECTION_ERROR
++from .socket import SERVER_CLOSED_CONNECTION_ERROR
+ 
+ 
+ class _RESP3Parser(_RESPBase, PushNotificationsParser):
+diff --git a/redis/_parsers/socket.py b/redis/_parsers/socket.py
+index 08f3070fcb..e4de677922 100644
+--- a/redis/_parsers/socket.py
++++ b/redis/_parsers/socket.py
+@@ -7,8 +7,6 @@
+ from ..exceptions import ConnectionError, TimeoutError
+ from ..utils import SENTINEL, SSL_AVAILABLE
+ 
+-# Re-export SENTINEL from this historical location for compatibility.
+-
+ NONBLOCKING_EXCEPTION_ERROR_NUMBERS = {BlockingIOError: errno.EWOULDBLOCK}
+ 
+ if SSL_AVAILABLE:
+diff --git a/redis/asyncio/client.py b/redis/asyncio/client.py
+index d17e329313..911586d9b5 100644
+--- a/redis/asyncio/client.py
++++ b/redis/asyncio/client.py
+@@ -27,6 +27,14 @@
+     cast,
+ )
+ 
++from redis._defaults import (
++    DEFAULT_RETRY_BASE,
++    DEFAULT_RETRY_CAP,
++    DEFAULT_RETRY_COUNT,
++    DEFAULT_SOCKET_CONNECT_TIMEOUT,
++    DEFAULT_SOCKET_READ_SIZE,
++    DEFAULT_SOCKET_TIMEOUT,
++)
+ from redis._parsers.helpers import bool_ok, get_response_callbacks
+ from redis.asyncio.connection import (
+     Connection,
+@@ -232,49 +240,53 @@ def __init__(
+         *,
+         host: str = "localhost",
+         port: int = 6379,
+-        db: Union[str, int] = 0,
+-        password: Optional[str] = None,
+-        socket_timeout: Optional[float] = None,
+-        socket_connect_timeout: Optional[float] = None,
+-        socket_keepalive: Optional[bool] = None,
+-        socket_keepalive_options: Optional[Mapping[int, Union[int, bytes]]] = None,
+-        connection_pool: Optional[ConnectionPool] = None,
+-        unix_socket_path: Optional[str] = None,
++        db: str | int = 0,
++        password: str | None = None,
++        socket_timeout: float | None = DEFAULT_SOCKET_TIMEOUT,
++        socket_connect_timeout: float | None = DEFAULT_SOCKET_CONNECT_TIMEOUT,
++        socket_read_size: int = DEFAULT_SOCKET_READ_SIZE,
++        socket_keepalive: bool | None = True,
++        socket_keepalive_options: Mapping[int, int | bytes] | object | None = SENTINEL,
++        connection_pool: ConnectionPool | None = None,
++        unix_socket_path: str | None = None,
+         encoding: str = "utf-8",
+         encoding_errors: str = "strict",
+         decode_responses: bool = False,
+         retry_on_timeout: bool = False,
+         retry: Retry = Retry(
+-            backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3
++            backoff=ExponentialWithJitterBackoff(
++                base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++            ),
++            retries=DEFAULT_RETRY_COUNT,
+         ),
+-        retry_on_error: Optional[list] = None,
++        retry_on_error: list | None = None,
+         ssl: bool = False,
+-        ssl_keyfile: Optional[str] = None,
+-        ssl_certfile: Optional[str] = None,
+-        ssl_cert_reqs: Union[str, VerifyMode] = "required",
+-        ssl_include_verify_flags: Optional[List[VerifyFlags]] = None,
+-        ssl_exclude_verify_flags: Optional[List[VerifyFlags]] = None,
+-        ssl_ca_certs: Optional[str] = None,
+-        ssl_ca_data: Optional[str] = None,
+-        ssl_ca_path: Optional[str] = None,
++        ssl_keyfile: str | None = None,
++        ssl_certfile: str | None = None,
++        ssl_cert_reqs: "str | VerifyMode" = "required",
++        ssl_include_verify_flags: List["VerifyFlags"] | None = None,
++        ssl_exclude_verify_flags: List["VerifyFlags"] | None = None,
++        ssl_ca_certs: str | None = None,
++        ssl_ca_data: str | None = None,
++        ssl_ca_path: str | None = None,
+         ssl_check_hostname: bool = True,
+-        ssl_min_version: Optional[TLSVersion] = None,
+-        ssl_ciphers: Optional[str] = None,
+-        ssl_password: Optional[str] = None,
+-        max_connections: Optional[int] = None,
++        ssl_min_version: "TLSVersion | None" = None,
++        ssl_ciphers: str | None = None,
++        ssl_password: str | None = None,
++        max_connections: int | None = None,
+         single_connection_client: bool = False,
+         health_check_interval: int = 0,
+-        client_name: Optional[str] = None,
+-        lib_name: Union[Optional[str], object] = SENTINEL,
+-        lib_version: Union[Optional[str], object] = SENTINEL,
+-        driver_info: Union[Optional["DriverInfo"], object] = SENTINEL,
+-        username: Optional[str] = None,
+-        auto_close_connection_pool: Optional[bool] = None,
++        client_name: str | None = None,
++        lib_name: str | object | None = SENTINEL,
++        lib_version: str | object | None = SENTINEL,
++        driver_info: DriverInfo | object | None = SENTINEL,
++        username: str | None = None,
++        auto_close_connection_pool: bool | None = None,
+         redis_connect_func=None,
+-        credential_provider: Optional[CredentialProvider] = None,
+-        protocol: Optional[int] = None,
++        credential_provider: CredentialProvider | None = None,
++        protocol: int | None = None,
+         legacy_responses: bool = True,
+-        event_dispatcher: Optional[EventDispatcher] = None,
++        event_dispatcher: EventDispatcher | None = None,
+     ):
+         """
+         Initialize a new Redis client.
+@@ -296,6 +308,20 @@ def __init__(
+ 
+         When 'connection_pool' is provided - the retry configuration of the
+         provided pool will be used.
++
++        Args:
++
++        socket_keepalive:
++            if `True`, TCP keepalive is enabled for TCP socket connections.
++            Argument is ignored when connection_pool is provided.
++        socket_keepalive_options:
++            mapping of TCP keepalive socket option constants to values, for
++            example `{socket.TCP_KEEPIDLE: 30}`. If left unspecified, redis-py
++            uses TCP keepalive defaults when `socket_keepalive` is enabled:
++            idle 30 seconds, interval 5 seconds, and 3 probes. Platform-specific
++            options that are not available are skipped. Pass `None` or `{}` to
++            avoid setting additional TCP keepalive options. Argument is ignored
++            when connection_pool is provided.
+         """
+         kwargs: Dict[str, Any]
+         if event_dispatcher is None:
+@@ -333,6 +359,7 @@ def __init__(
+                 "password": password,
+                 "credential_provider": credential_provider,
+                 "socket_timeout": socket_timeout,
++                "socket_read_size": socket_read_size,
+                 "encoding": encoding,
+                 "encoding_errors": encoding_errors,
+                 "decode_responses": decode_responses,
+diff --git a/redis/asyncio/cluster.py b/redis/asyncio/cluster.py
+index cb3910393a..b748ce2053 100644
+--- a/redis/asyncio/cluster.py
++++ b/redis/asyncio/cluster.py
+@@ -36,6 +36,14 @@
+         AsyncClusterKeyspaceNotifications,
+     )
+ 
++from redis._defaults import (
++    DEFAULT_RETRY_BASE,
++    DEFAULT_RETRY_CAP,
++    DEFAULT_RETRY_COUNT,
++    DEFAULT_SOCKET_CONNECT_TIMEOUT,
++    DEFAULT_SOCKET_READ_SIZE,
++    DEFAULT_SOCKET_TIMEOUT,
++)
+ from redis._parsers import AsyncCommandsParser, Encoder
+ from redis._parsers.commands import CommandPolicies, RequestPolicy, ResponsePolicy
+ from redis._parsers.helpers import get_response_callbacks
+@@ -218,6 +226,16 @@ class RedisCluster(AbstractRedis, AbstractRedisCluster, AsyncRedisClusterCommand
+         | Maximum number of connections per node. If there are no free connections & the
+           maximum number of connections are already created, a
+           :class:`~.MaxConnectionsError` is raised.
++    :param socket_keepalive:
++        | If ``True``, TCP keepalive is enabled for TCP socket connections.
++    :param socket_keepalive_options:
++        | Mapping of TCP keepalive socket option constants to values, for
++          example ``{socket.TCP_KEEPIDLE: 30}``. If left unspecified, redis-py
++          uses TCP keepalive defaults when ``socket_keepalive`` is enabled:
++          idle 30 seconds, interval 5 seconds, and 3 probes.
++          Platform-specific options that are not available are skipped.
++          Pass ``None`` or ``{}`` to avoid setting additional TCP keepalive
++          options.
+     :param address_remap:
+         | An optional callable which, when provided with an internal network
+           address of a node, e.g. a `(host, port)` tuple, will return the address
+@@ -309,55 +327,56 @@ def from_url(cls, url: str, **kwargs: Any) -> "RedisCluster":
+     )
+     def __init__(
+         self,
+-        host: Optional[str] = None,
+-        port: Union[str, int] = 6379,
++        host: str | None = None,
++        port: str | int = 6379,
+         # Cluster related kwargs
+-        startup_nodes: Optional[List["ClusterNode"]] = None,
++        startup_nodes: List["ClusterNode"] | None = None,
+         require_full_coverage: bool = True,
+         read_from_replicas: bool = False,
+-        load_balancing_strategy: Optional[LoadBalancingStrategy] = None,
++        load_balancing_strategy: LoadBalancingStrategy | None = None,
+         dynamic_startup_nodes: bool = True,
+         reinitialize_steps: int = 5,
+-        cluster_error_retry_attempts: int = 3,
+-        max_connections: int = 2**31,
+-        retry: Optional["Retry"] = None,
+-        retry_on_error: Optional[List[Type[Exception]]] = None,
++        cluster_error_retry_attempts: int = DEFAULT_RETRY_COUNT,
++        max_connections: int = 100,
++        retry: Retry | None = None,
++        retry_on_error: List[Type[Exception]] | None = None,
+         # Client related kwargs
+-        db: Union[str, int] = 0,
+-        path: Optional[str] = None,
+-        credential_provider: Optional[CredentialProvider] = None,
+-        username: Optional[str] = None,
+-        password: Optional[str] = None,
+-        client_name: Optional[str] = None,
+-        lib_name: Union[Optional[str], object] = SENTINEL,
+-        lib_version: Union[Optional[str], object] = SENTINEL,
+-        driver_info: Union[Optional["DriverInfo"], object] = SENTINEL,
++        db: str | int = 0,
++        path: str | None = None,
++        credential_provider: CredentialProvider | None = None,
++        username: str | None = None,
++        password: str | None = None,
++        client_name: str | None = None,
++        lib_name: str | object | None = SENTINEL,
++        lib_version: str | object | None = SENTINEL,
++        driver_info: DriverInfo | object | None = SENTINEL,
+         # Encoding related kwargs
+         encoding: str = "utf-8",
+         encoding_errors: str = "strict",
+         decode_responses: bool = False,
+         # Connection related kwargs
+         health_check_interval: float = 0,
+-        socket_connect_timeout: Optional[float] = None,
+-        socket_keepalive: bool = False,
+-        socket_keepalive_options: Optional[Mapping[int, Union[int, bytes]]] = None,
+-        socket_timeout: Optional[float] = None,
++        socket_timeout: float | None = DEFAULT_SOCKET_TIMEOUT,
++        socket_connect_timeout: float | None = DEFAULT_SOCKET_CONNECT_TIMEOUT,
++        socket_read_size: int = DEFAULT_SOCKET_READ_SIZE,
++        socket_keepalive: bool = True,
++        socket_keepalive_options: Mapping[int, int | bytes] | object | None = SENTINEL,
+         # SSL related kwargs
+         ssl: bool = False,
+-        ssl_ca_certs: Optional[str] = None,
+-        ssl_ca_data: Optional[str] = None,
+-        ssl_cert_reqs: Union[str, VerifyMode] = "required",
+-        ssl_include_verify_flags: Optional[List[VerifyFlags]] = None,
+-        ssl_exclude_verify_flags: Optional[List[VerifyFlags]] = None,
+-        ssl_certfile: Optional[str] = None,
++        ssl_ca_certs: str | None = None,
++        ssl_ca_data: str | None = None,
++        ssl_cert_reqs: "str | VerifyMode" = "required",
++        ssl_include_verify_flags: List["VerifyFlags"] | None = None,
++        ssl_exclude_verify_flags: List["VerifyFlags"] | None = None,
++        ssl_certfile: str | None = None,
+         ssl_check_hostname: bool = True,
+-        ssl_keyfile: Optional[str] = None,
+-        ssl_min_version: Optional[TLSVersion] = None,
+-        ssl_ciphers: Optional[str] = None,
+-        protocol: Optional[int] = None,
++        ssl_keyfile: str | None = None,
++        ssl_min_version: "TLSVersion | None" = None,
++        ssl_ciphers: str | None = None,
++        protocol: int | None = None,
+         legacy_responses: bool = True,
+-        address_remap: Optional[Callable[[Tuple[str, int]], Tuple[str, int]]] = None,
+-        event_dispatcher: Optional[EventDispatcher] = None,
++        address_remap: Callable[[Tuple[str, int]], Tuple[str, int]] | None = None,
++        event_dispatcher: EventDispatcher | None = None,
+         policy_resolver: AsyncPolicyResolver = AsyncStaticPolicyResolver(),
+     ) -> None:
+         if db:
+@@ -399,6 +418,7 @@ def __init__(
+             "socket_connect_timeout": socket_connect_timeout,
+             "socket_keepalive": socket_keepalive,
+             "socket_keepalive_options": socket_keepalive_options,
++            "socket_read_size": socket_read_size,
+             "socket_timeout": socket_timeout,
+             "protocol": protocol,
+             "legacy_responses": legacy_responses,
+@@ -430,7 +450,9 @@ def __init__(
+             self.retry = retry
+         else:
+             self.retry = Retry(
+-                backoff=ExponentialWithJitterBackoff(base=1, cap=10),
++                backoff=ExponentialWithJitterBackoff(
++                    base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++                ),
+                 retries=cluster_error_retry_attempts,
+             )
+         if retry_on_error:
+@@ -1463,7 +1485,7 @@ def __init__(
+         port: Union[str, int],
+         server_type: Optional[str] = None,
+         *,
+-        max_connections: int = 2**31,
++        max_connections: int = 100,
+         connection_class: Type[Connection] = Connection,
+         **connection_kwargs: Any,
+     ) -> None:
+diff --git a/redis/asyncio/connection.py b/redis/asyncio/connection.py
+index 62b9f1a70c..07039224c2 100644
+--- a/redis/asyncio/connection.py
++++ b/redis/asyncio/connection.py
+@@ -1,6 +1,5 @@
+ import asyncio
+ import copy
+-import enum
+ import inspect
+ import socket
+ import sys
+@@ -82,12 +81,16 @@
+ from redis.utils import (
+     DEFAULT_RESP_VERSION,
+     HIREDIS_AVAILABLE,
++    SENTINEL,
+     str_if_bytes,
+ )
+-from redis.utils import (
+-    SENTINEL as DEFAULT_SENTINEL,
+-)
+ 
++from .._defaults import (
++    DEFAULT_SOCKET_CONNECT_TIMEOUT,
++    DEFAULT_SOCKET_READ_SIZE,
++    DEFAULT_SOCKET_TIMEOUT,
++    get_default_socket_keepalive_options,
++)
+ from .._parsers import (
+     BaseParser,
+     Encoder,
+@@ -103,13 +106,6 @@
+ SYM_EMPTY = b""
+ 
+ 
+-class _Sentinel(enum.Enum):
+-    sentinel = object()
+-
+-
+-SENTINEL = _Sentinel.sentinel
+-
+-
+ DefaultParser: Type[Union[_AsyncRESP2Parser, _AsyncRESP3Parser, _AsyncHiredisParser]]
+ if HIREDIS_AVAILABLE:
+     DefaultParser = _AsyncHiredisParser
+@@ -168,30 +164,30 @@ class AbstractConnection:
+     def __init__(
+         self,
+         *,
+-        db: Union[str, int] = 0,
+-        password: Optional[str] = None,
+-        socket_timeout: Optional[float] = None,
+-        socket_connect_timeout: Optional[float] = None,
++        db: str | int = 0,
++        password: str | None = None,
++        socket_timeout: float | None = DEFAULT_SOCKET_TIMEOUT,
++        socket_connect_timeout: float | None = DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         retry_on_timeout: bool = False,
+-        retry_on_error: Union[list, _Sentinel] = SENTINEL,
++        retry_on_error: list | object = SENTINEL,
+         encoding: str = "utf-8",
+         encoding_errors: str = "strict",
+         decode_responses: bool = False,
+         parser_class: Type[BaseParser] = DefaultParser,
+-        socket_read_size: int = 65536,
++        socket_read_size: int = DEFAULT_SOCKET_READ_SIZE,
+         health_check_interval: float = 0,
+-        client_name: Optional[str] = None,
+-        lib_name: Union[Optional[str], object] = DEFAULT_SENTINEL,
+-        lib_version: Union[Optional[str], object] = DEFAULT_SENTINEL,
+-        driver_info: Union[Optional[DriverInfo], object] = DEFAULT_SENTINEL,
+-        username: Optional[str] = None,
+-        retry: Optional[Retry] = None,
+-        redis_connect_func: Optional[ConnectCallbackT] = None,
++        client_name: str | None = None,
++        lib_name: str | object | None = SENTINEL,
++        lib_version: str | object | None = SENTINEL,
++        driver_info: DriverInfo | object | None = SENTINEL,
++        username: str | None = None,
++        retry: Retry | None = None,
++        redis_connect_func: ConnectCallbackT | None = None,
+         encoder_class: Type[Encoder] = Encoder,
+-        credential_provider: Optional[CredentialProvider] = None,
+-        protocol: Optional[int] = None,
++        credential_provider: CredentialProvider | None = None,
++        protocol: int | None = None,
+         legacy_responses: bool = True,
+-        event_dispatcher: Optional[EventDispatcher] = None,
++        event_dispatcher: EventDispatcher | None = None,
+     ):
+         """
+         Initialize a new async Connection.
+@@ -905,15 +901,32 @@ def __init__(
+         self,
+         *,
+         host: str = "localhost",
+-        port: Union[str, int] = 6379,
+-        socket_keepalive: bool = False,
+-        socket_keepalive_options: Optional[Mapping[int, Union[int, bytes]]] = None,
++        port: str | int = 6379,
++        socket_keepalive: bool = True,
++        socket_keepalive_options: Mapping[int, int | bytes] | object | None = SENTINEL,
+         socket_type: int = 0,
+         **kwargs,
+     ):
++        """
++        Initialize a TCP connection.
++
++        Parameters
++        ----------
++        socket_keepalive : bool
++            If `True`, TCP keepalive is enabled for TCP socket connections.
++        socket_keepalive_options : Mapping[int, int | bytes] | object | None
++            Mapping of TCP keepalive socket option constants to values, for
++            example `{socket.TCP_KEEPIDLE: 30}`. If left unspecified, redis-py
++            uses TCP keepalive defaults when `socket_keepalive` is enabled:
++            idle 30 seconds, interval 5 seconds, and 3 probes. Platform-specific
++            options that are not available are skipped. Pass `None` or `{}` to
++            avoid setting additional TCP keepalive options.
++        """
+         self.host = host
+         self.port = int(port)
+         self.socket_keepalive = socket_keepalive
++        if socket_keepalive_options is SENTINEL:
++            socket_keepalive_options = get_default_socket_keepalive_options()
+         self.socket_keepalive_options = socket_keepalive_options or {}
+         self.socket_type = socket_type
+         super().__init__(**kwargs)
+@@ -1185,6 +1198,7 @@ def parse_ssl_verify_flags(value):
+         "db": int,
+         "socket_timeout": float,
+         "socket_connect_timeout": float,
++        "socket_read_size": int,
+         "socket_keepalive": to_bool,
+         "retry_on_timeout": to_bool,
+         "max_connections": int,
+@@ -1385,7 +1399,7 @@ def __init__(
+         max_connections: Optional[int] = None,
+         **connection_kwargs,
+     ):
+-        max_connections = max_connections or 2**31
++        max_connections = max_connections or 100
+         if not isinstance(max_connections, int) or max_connections < 0:
+             raise ValueError('"max_connections" must be a positive integer')
+ 
+diff --git a/redis/asyncio/multidb/config.py b/redis/asyncio/multidb/config.py
+index d39dc0e40e..07f5f3d92e 100644
+--- a/redis/asyncio/multidb/config.py
++++ b/redis/asyncio/multidb/config.py
+@@ -4,6 +4,7 @@
+ 
+ import pybreaker
+ 
++from redis._defaults import DEFAULT_RETRY_BASE, DEFAULT_RETRY_CAP, DEFAULT_RETRY_COUNT
+ from redis.asyncio import ConnectionPool, Redis, RedisCluster
+ from redis.asyncio.multidb.database import Database, Databases
+ from redis.asyncio.multidb.failover import (
+@@ -142,7 +143,10 @@ class MultiDbConfig:
+     databases_config: List[DatabaseConfig]
+     client_class: Type[Union[Redis, RedisCluster]] = Redis
+     command_retry: Retry = Retry(
+-        backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3
++        backoff=ExponentialWithJitterBackoff(
++            base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++        ),
++        retries=DEFAULT_RETRY_COUNT,
+     )
+     failure_detectors: Optional[List[AsyncFailureDetector]] = None
+     min_num_failures: int = DEFAULT_MIN_NUM_FAILURES
+diff --git a/redis/client.py b/redis/client.py
+index e63c8e2d6d..794629946f 100755
+--- a/redis/client.py
++++ b/redis/client.py
+@@ -18,6 +18,14 @@
+     Union,
+ )
+ 
++from redis._defaults import (
++    DEFAULT_RETRY_BASE,
++    DEFAULT_RETRY_CAP,
++    DEFAULT_RETRY_COUNT,
++    DEFAULT_SOCKET_CONNECT_TIMEOUT,
++    DEFAULT_SOCKET_READ_SIZE,
++    DEFAULT_SOCKET_TIMEOUT,
++)
+ from redis._parsers.encoders import Encoder
+ from redis._parsers.helpers import bool_ok, get_response_callbacks
+ from redis.backoff import ExponentialWithJitterBackoff
+@@ -236,57 +244,60 @@ def __init__(
+         host: str = "localhost",
+         port: int = 6379,
+         db: int = 0,
+-        password: Optional[str] = None,
+-        socket_timeout: Optional[float] = None,
+-        socket_connect_timeout: Optional[float] = None,
+-        socket_keepalive: Optional[bool] = None,
+-        socket_keepalive_options: Optional[Mapping[int, Union[int, bytes]]] = None,
+-        connection_pool: Optional[ConnectionPool] = None,
+-        unix_socket_path: Optional[str] = None,
++        password: str | None = None,
++        socket_timeout: float | None = DEFAULT_SOCKET_TIMEOUT,
++        socket_connect_timeout: float | None = DEFAULT_SOCKET_CONNECT_TIMEOUT,
++        socket_read_size: int = DEFAULT_SOCKET_READ_SIZE,
++        socket_keepalive: bool | None = True,
++        socket_keepalive_options: Mapping[int, int | bytes] | object | None = SENTINEL,
++        connection_pool: ConnectionPool | None = None,
++        unix_socket_path: str | None = None,
+         encoding: str = "utf-8",
+         encoding_errors: str = "strict",
+         decode_responses: bool = False,
+         retry_on_timeout: bool = False,
+         retry: Retry = Retry(
+-            backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3
++            backoff=ExponentialWithJitterBackoff(
++                base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++            ),
++            retries=DEFAULT_RETRY_COUNT,
+         ),
+-        retry_on_error: Optional[List[Type[Exception]]] = None,
++        retry_on_error: List[Type[Exception]] | None = None,
+         ssl: bool = False,
+-        ssl_keyfile: Optional[str] = None,
+-        ssl_certfile: Optional[str] = None,
+-        ssl_cert_reqs: Union[str, "ssl.VerifyMode"] = "required",
+-        ssl_include_verify_flags: Optional[List["ssl.VerifyFlags"]] = None,
+-        ssl_exclude_verify_flags: Optional[List["ssl.VerifyFlags"]] = None,
+-        ssl_ca_certs: Optional[str] = None,
+-        ssl_ca_path: Optional[str] = None,
+-        ssl_ca_data: Optional[str] = None,
++        ssl_keyfile: str | None = None,
++        ssl_certfile: str | None = None,
++        ssl_cert_reqs: "str | ssl.VerifyMode" = "required",
++        ssl_include_verify_flags: List["ssl.VerifyFlags"] | None = None,
++        ssl_exclude_verify_flags: List["ssl.VerifyFlags"] | None = None,
++        ssl_ca_certs: str | None = None,
++        ssl_ca_path: str | None = None,
++        ssl_ca_data: str | None = None,
+         ssl_check_hostname: bool = True,
+-        ssl_password: Optional[str] = None,
++        ssl_password: str | None = None,
+         ssl_validate_ocsp: bool = False,
+         ssl_validate_ocsp_stapled: bool = False,
+-        ssl_ocsp_context: Optional["OpenSSL.SSL.Context"] = None,
+-        ssl_ocsp_expected_cert: Optional[str] = None,
+-        ssl_min_version: Optional["ssl.TLSVersion"] = None,
+-        ssl_ciphers: Optional[str] = None,
+-        max_connections: Optional[int] = None,
++        ssl_ocsp_context: "OpenSSL.SSL.Context | None" = None,
++        ssl_ocsp_expected_cert: str | None = None,
++        ssl_min_version: "ssl.TLSVersion | None" = None,
++        ssl_ciphers: str | None = None,
++        max_connections: int | None = None,
+         single_connection_client: bool = False,
+         health_check_interval: int = 0,
+-        client_name: Optional[str] = None,
+-        lib_name: Union[Optional[str], object] = SENTINEL,
+-        lib_version: Union[Optional[str], object] = SENTINEL,
+-        driver_info: Union[Optional["DriverInfo"], object] = SENTINEL,
+-        username: Optional[str] = None,
+-        redis_connect_func: Optional[Callable[[], None]] = None,
+-        credential_provider: Optional[CredentialProvider] = None,
+-        protocol: Optional[int] = None,
++        client_name: str | None = None,
++        lib_name: str | object | None = SENTINEL,
++        lib_version: str | object | None = SENTINEL,
++        driver_info: DriverInfo | object | None = SENTINEL,
++        username: str | None = None,
++        redis_connect_func: Callable[[], None] | None = None,
++        credential_provider: CredentialProvider | None = None,
++        protocol: int | None = None,
+         legacy_responses: bool = True,
+-        cache: Optional[CacheInterface] = None,
+-        cache_config: Optional[CacheConfig] = None,
+-        event_dispatcher: Optional[EventDispatcher] = None,
+-        maint_notifications_config: Optional[MaintNotificationsConfig] = None,
+-        oss_cluster_maint_notifications_handler: Optional[
+-            OSSMaintNotificationsHandler
+-        ] = None,
++        cache: CacheInterface | None = None,
++        cache_config: CacheConfig | None = None,
++        event_dispatcher: EventDispatcher | None = None,
++        maint_notifications_config: MaintNotificationsConfig | None = None,
++        oss_cluster_maint_notifications_handler: OSSMaintNotificationsHandler
++        | None = None,
+     ) -> None:
+         """
+         Initialize a new Redis client.
+@@ -311,6 +322,17 @@ def __init__(
+ 
+         Args:
+ 
++        socket_keepalive:
++            if `True`, TCP keepalive is enabled for TCP socket connections.
++            Argument is ignored when connection_pool is provided.
++        socket_keepalive_options:
++            mapping of TCP keepalive socket option constants to values, for
++            example `{socket.TCP_KEEPIDLE: 30}`. If left unspecified, redis-py
++            uses TCP keepalive defaults when `socket_keepalive` is enabled:
++            idle 30 seconds, interval 5 seconds, and 3 probes. Platform-specific
++            options that are not available are skipped. Pass `None` or `{}` to
++            avoid setting additional TCP keepalive options. Argument is ignored
++            when connection_pool is provided.
+         single_connection_client:
+             if `True`, connection pool is not used. In that case `Redis`
+             instance use is not thread safe.
+@@ -359,6 +381,7 @@ def __init__(
+                 "username": username,
+                 "password": password,
+                 "socket_timeout": socket_timeout,
++                "socket_read_size": socket_read_size,
+                 "encoding": encoding,
+                 "encoding_errors": encoding_errors,
+                 "decode_responses": decode_responses,
+diff --git a/redis/cluster.py b/redis/cluster.py
+index aa3cc1343d..be575154f7 100644
+--- a/redis/cluster.py
++++ b/redis/cluster.py
+@@ -29,6 +29,7 @@
+ if TYPE_CHECKING:
+     from redis.keyspace_notifications import ClusterKeyspaceNotifications
+ 
++from redis._defaults import DEFAULT_RETRY_BASE, DEFAULT_RETRY_CAP, DEFAULT_RETRY_COUNT
+ from redis._parsers import CommandsParser, Encoder
+ from redis._parsers.commands import CommandPolicies, RequestPolicy, ResponsePolicy
+ from redis._parsers.helpers import parse_scan
+@@ -289,6 +290,7 @@ def parse_cluster_myshardid(resp, **options):
+     "socket_connect_timeout",
+     "socket_keepalive",
+     "socket_keepalive_options",
++    "socket_read_size",
+     "socket_timeout",
+     "ssl",
+     "ssl_ca_certs",
+@@ -700,7 +702,7 @@ def __init__(
+         host: Optional[str] = None,
+         port: int = 6379,
+         startup_nodes: Optional[List["ClusterNode"]] = None,
+-        cluster_error_retry_attempts: int = 3,
++        cluster_error_retry_attempts: int = DEFAULT_RETRY_COUNT,
+         retry: Optional["Retry"] = None,
+         require_full_coverage: bool = True,
+         reinitialize_steps: int = 5,
+@@ -863,7 +865,9 @@ def __init__(
+             self.retry = retry
+         else:
+             self.retry = Retry(
+-                backoff=ExponentialWithJitterBackoff(base=1, cap=10),
++                backoff=ExponentialWithJitterBackoff(
++                    base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++                ),
+                 retries=cluster_error_retry_attempts,
+             )
+ 
+@@ -1487,7 +1491,7 @@ def _internal_execute_command(self, *args, **kwargs):
+         Wrapper for ERRORS_ALLOW_RETRY error handling.
+ 
+         It will try the number of times specified by the retries property from
+-        config option "self.retry" which defaults to 3 unless manually
++        config option "self.retry" which defaults to 10 unless manually
+         configured.
+ 
+         If it reaches the number of times, the command will raise the exception
+@@ -3406,7 +3410,7 @@ def __init__(
+         startup_nodes: Optional[List["ClusterNode"]] = None,
+         read_from_replicas: bool = False,
+         load_balancing_strategy: Optional[LoadBalancingStrategy] = None,
+-        cluster_error_retry_attempts: int = 3,
++        cluster_error_retry_attempts: int = DEFAULT_RETRY_COUNT,
+         reinitialize_steps: int = 5,
+         retry: Optional[Retry] = None,
+         lock=None,
+@@ -3434,7 +3438,9 @@ def __init__(
+             self.retry = retry
+         else:
+             self.retry = Retry(
+-                backoff=ExponentialWithJitterBackoff(base=1, cap=10),
++                backoff=ExponentialWithJitterBackoff(
++                    base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++                ),
+                 retries=cluster_error_retry_attempts,
+             )
+ 
+@@ -4029,7 +4035,7 @@ def send_cluster_commands(
+ 
+         It will try the number of times specified by
+         the retries in config option "self.retry"
+-        which defaults to 3 unless manually configured.
++        which defaults to 10 unless manually configured.
+ 
+         If it reaches the number of times, the command will
+         raises ClusterDownException.
+diff --git a/redis/connection.py b/redis/connection.py
+index d0b6005370..2f41a507ff 100644
+--- a/redis/connection.py
++++ b/redis/connection.py
+@@ -32,6 +32,12 @@
+     CacheProxy,
+ )
+ 
++from ._defaults import (
++    DEFAULT_SOCKET_CONNECT_TIMEOUT,
++    DEFAULT_SOCKET_READ_SIZE,
++    DEFAULT_SOCKET_TIMEOUT,
++    get_default_socket_keepalive_options,
++)
+ from ._parsers import Encoder, _HiredisParser, _RESP2Parser, _RESP3Parser
+ from .auth.token import TokenInterface
+ from .backoff import NoBackoff
+@@ -786,15 +792,15 @@ def __init__(
+         self,
+         db: int = 0,
+         password: Optional[str] = None,
+-        socket_timeout: Optional[float] = None,
+-        socket_connect_timeout: Optional[float] = None,
++        socket_timeout: Optional[float] = DEFAULT_SOCKET_TIMEOUT,
++        socket_connect_timeout: Optional[float] = DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         retry_on_timeout: bool = False,
+         retry_on_error: Union[Iterable[Type[Exception]], object] = SENTINEL,
+         encoding: str = "utf-8",
+         encoding_errors: str = "strict",
+         decode_responses: bool = False,
+         parser_class=DefaultParser,
+-        socket_read_size: int = 65536,
++        socket_read_size: int = DEFAULT_SOCKET_READ_SIZE,
+         health_check_interval: int = 0,
+         client_name: Optional[str] = None,
+         lib_name: Union[Optional[str], object] = SENTINEL,
+@@ -1494,14 +1500,31 @@ def __init__(
+         self,
+         host="localhost",
+         port=6379,
+-        socket_keepalive=False,
+-        socket_keepalive_options=None,
++        socket_keepalive=True,
++        socket_keepalive_options=SENTINEL,
+         socket_type=0,
+         **kwargs,
+     ):
++        """
++        Initialize a TCP connection.
++
++        Parameters
++        ----------
++        socket_keepalive : bool
++            If `True`, TCP keepalive is enabled for TCP socket connections.
++        socket_keepalive_options : Mapping[int, int | bytes] | object | None
++            Mapping of TCP keepalive socket option constants to values, for
++            example `{socket.TCP_KEEPIDLE: 30}`. If left unspecified, redis-py
++            uses TCP keepalive defaults when `socket_keepalive` is enabled:
++            idle 30 seconds, interval 5 seconds, and 3 probes. Platform-specific
++            options that are not available are skipped. Pass `None` or `{}` to
++            avoid setting additional TCP keepalive options.
++        """
+         self._host = host
+         self.port = int(port)
+         self.socket_keepalive = socket_keepalive
++        if socket_keepalive_options is SENTINEL:
++            socket_keepalive_options = get_default_socket_keepalive_options()
+         self.socket_keepalive_options = socket_keepalive_options or {}
+         self.socket_type = socket_type
+         super().__init__(**kwargs)
+@@ -2160,7 +2183,7 @@ def _wrap_socket_with_ssl(self, sock):
+ class UnixDomainSocketConnection(AbstractConnection):
+     "Manages UDS communication to and from a Redis server"
+ 
+-    def __init__(self, path="", socket_timeout=None, **kwargs):
++    def __init__(self, path="", socket_timeout=DEFAULT_SOCKET_TIMEOUT, **kwargs):
+         super().__init__(**kwargs)
+         self.path = path
+         self.socket_timeout = socket_timeout
+@@ -2221,6 +2244,7 @@ def parse_ssl_verify_flags(value):
+     "db": int,
+     "socket_timeout": float,
+     "socket_connect_timeout": float,
++    "socket_read_size": int,
+     "socket_keepalive": to_bool,
+     "retry_on_timeout": to_bool,
+     "retry_on_error": list,
+@@ -2533,10 +2557,10 @@ def _update_connection_kwargs_for_maint_notifications(
+                 {
+                     "orig_host_address": self.connection_kwargs.get("host"),
+                     "orig_socket_timeout": self.connection_kwargs.get(
+-                        "socket_timeout", None
++                        "socket_timeout", DEFAULT_SOCKET_TIMEOUT
+                     ),
+                     "orig_socket_connect_timeout": self.connection_kwargs.get(
+-                        "socket_connect_timeout", None
++                        "socket_connect_timeout", DEFAULT_SOCKET_CONNECT_TIMEOUT
+                     ),
+                 }
+             )
+@@ -2853,7 +2877,7 @@ def __init__(
+         maint_notifications_config: Optional[MaintNotificationsConfig] = None,
+         **connection_kwargs,
+     ):
+-        max_connections = max_connections or 2**31
++        max_connections = max_connections or 100
+         if not isinstance(max_connections, int) or max_connections < 0:
+             raise ValueError('"max_connections" must be a positive integer')
+ 
+diff --git a/redis/http/http_client.py b/redis/http/http_client.py
+index 7d9d5c4ad4..02d18a849a 100644
+--- a/redis/http/http_client.py
++++ b/redis/http/http_client.py
+@@ -13,6 +13,7 @@
+ 
+ __all__ = ["HttpClient", "HttpResponse", "HttpError", "DEFAULT_TIMEOUT"]
+ 
++from redis._defaults import DEFAULT_RETRY_BASE, DEFAULT_RETRY_CAP, DEFAULT_RETRY_COUNT
+ from redis.backoff import ExponentialWithJitterBackoff
+ from redis.retry import Retry
+ from redis.utils import dummy_fail
+@@ -66,7 +67,10 @@ def __init__(
+         headers: Optional[Mapping[str, str]] = None,
+         timeout: float = DEFAULT_TIMEOUT,
+         retry: Retry = Retry(
+-            backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3
++            backoff=ExponentialWithJitterBackoff(
++                base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++            ),
++            retries=DEFAULT_RETRY_COUNT,
+         ),
+         verify_tls: bool = True,
+         # TLS verification (server) options
+diff --git a/redis/multidb/config.py b/redis/multidb/config.py
+index 2ffd8c78a6..41a1011294 100644
+--- a/redis/multidb/config.py
++++ b/redis/multidb/config.py
+@@ -5,6 +5,7 @@
+ import pybreaker
+ 
+ from redis import ConnectionPool, Redis, RedisCluster
++from redis._defaults import DEFAULT_RETRY_BASE, DEFAULT_RETRY_CAP, DEFAULT_RETRY_COUNT
+ from redis.asyncio.multidb.healthcheck import (
+     DEFAULT_HEALTH_CHECK_DELAY,
+     DEFAULT_HEALTH_CHECK_INTERVAL,
+@@ -140,7 +141,10 @@ class MultiDbConfig:
+     databases_config: List[DatabaseConfig]
+     client_class: Type[Union[Redis, RedisCluster]] = Redis
+     command_retry: Retry = Retry(
+-        backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3
++        backoff=ExponentialWithJitterBackoff(
++            base=DEFAULT_RETRY_BASE, cap=DEFAULT_RETRY_CAP
++        ),
++        retries=DEFAULT_RETRY_COUNT,
+     )
+     failure_detectors: Optional[List[FailureDetector]] = None
+     min_num_failures: int = DEFAULT_MIN_NUM_FAILURES
+diff --git a/redis/sentinel.py b/redis/sentinel.py
+index 4de7db892a..1beae1f403 100644
+--- a/redis/sentinel.py
++++ b/redis/sentinel.py
+@@ -2,7 +2,6 @@
+ import weakref
+ from typing import Optional, Union
+ 
+-from redis._parsers.socket import SENTINEL
+ from redis.client import Redis
+ from redis.commands import SentinelCommands
+ from redis.connection import Connection, ConnectionPool, SSLConnection
+@@ -12,6 +11,7 @@
+     ResponseError,
+     TimeoutError,
+ )
++from redis.utils import SENTINEL
+ 
+ 
+ class MasterNotFoundError(ConnectionError):
+diff --git a/redis/utils.py b/redis/utils.py
+index de8f3d2edf..78d4bfabb3 100644
+--- a/redis/utils.py
++++ b/redis/utils.py
+@@ -43,7 +43,9 @@
+ 
+ from importlib import metadata
+ 
+-# Marker for omitted arguments. Compare by identity only.
++# Shared marker for omitted arguments, especially where None is a valid
++# explicit value. Import this object from redis.utils instead of creating local
++# sentinels, and compare it by identity only (`is` / `is not`).
+ SENTINEL = object()
+ 
+ 
+diff --git a/tests/maint_notifications/test_cluster_maint_notifications_handling.py b/tests/maint_notifications/test_cluster_maint_notifications_handling.py
+index f2b566d2c7..591972d012 100644
+--- a/tests/maint_notifications/test_cluster_maint_notifications_handling.py
++++ b/tests/maint_notifications/test_cluster_maint_notifications_handling.py
+@@ -28,6 +28,8 @@
+ NODE_IP_LOCALHOST = "127.0.0.1"
+ NODE_IP_PROXY = "0.0.0.0"
+ 
++DEFAULT_SOCKET_TIMEOUT = 5
++
+ # Initial cluster node configuration for proxy-based tests
+ PROXY_CLUSTER_NODES = [
+     ClusterNode("127.0.0.1", NODE_PORT_1),
+@@ -1142,11 +1144,12 @@ def test_smigrating_smigrated_with_sharded_pubsub(
+         assert not pubsub.node_pubsub_mapping[node_1.name].connection._should_reconnect
+         assert pubsub.node_pubsub_mapping[node_1.name].connection._sock is not None
+         assert (
+-            pubsub.node_pubsub_mapping[node_1.name].connection._socket_timeout is None
++            pubsub.node_pubsub_mapping[node_1.name].connection._socket_timeout
++            == DEFAULT_SOCKET_TIMEOUT
+         )
+         assert (
+             pubsub.node_pubsub_mapping[node_1.name].connection._socket_connect_timeout
+-            is None
++            == DEFAULT_SOCKET_TIMEOUT
+         )
+         assert (
+             pubsub.node_pubsub_mapping[node_1.name].connection.maintenance_state
+@@ -1250,11 +1253,12 @@ def test_smigrating_smigrated_with_sharded_pubsub_and_reconnect_after_smigrated_
+         assert not pubsub.node_pubsub_mapping[node_1.name].connection._should_reconnect
+         assert pubsub.node_pubsub_mapping[node_1.name].connection._sock is not None
+         assert (
+-            pubsub.node_pubsub_mapping[node_1.name].connection._socket_timeout is None
++            pubsub.node_pubsub_mapping[node_1.name].connection._socket_timeout
++            == DEFAULT_SOCKET_TIMEOUT
+         )
+         assert (
+             pubsub.node_pubsub_mapping[node_1.name].connection._socket_connect_timeout
+-            is None
++            == DEFAULT_SOCKET_TIMEOUT
+         )
+         assert (
+             pubsub.node_pubsub_mapping[node_1.name].connection.maintenance_state
+@@ -1331,8 +1335,8 @@ def test_smigrating_smigrated_with_std_pubsub(
+ 
+         assert not pubsub.connection._should_reconnect
+         assert pubsub.connection._sock is not None
+-        assert pubsub.connection._socket_timeout is None
+-        assert pubsub.connection._socket_connect_timeout is None
++        assert pubsub.connection._socket_timeout == DEFAULT_SOCKET_TIMEOUT
++        assert pubsub.connection._socket_connect_timeout == DEFAULT_SOCKET_TIMEOUT
+         assert pubsub.connection.maintenance_state == MaintenanceState.NONE
+         # validate resubscribed
+         assert pubsub.subscribed
+diff --git a/tests/maint_notifications/test_maint_notifications_handling.py b/tests/maint_notifications/test_maint_notifications_handling.py
+index 50754d368d..b98dcedff1 100644
+--- a/tests/maint_notifications/test_maint_notifications_handling.py
++++ b/tests/maint_notifications/test_maint_notifications_handling.py
+@@ -7,6 +7,7 @@
+ from time import sleep
+ 
+ from redis import Redis
++from redis._defaults import DEFAULT_SOCKET_CONNECT_TIMEOUT, DEFAULT_SOCKET_TIMEOUT
+ from redis.cache import CacheConfig
+ from redis.connection import (
+     AbstractConnection,
+@@ -56,12 +57,12 @@ def validate_in_use_connections_state(
+         expected_state=MaintenanceState.NONE,
+         expected_should_reconnect: Union[bool, str] = True,
+         expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-        expected_socket_timeout=None,
+-        expected_socket_connect_timeout=None,
++        expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++        expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-        expected_orig_socket_timeout=None,
+-        expected_orig_socket_connect_timeout=None,
+-        expected_current_socket_timeout=None,
++        expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++        expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++        expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+         expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+     ):
+         """Helper method to validate state of in-use connections."""
+@@ -96,11 +97,11 @@ def validate_free_connections_state(
+         tmp_address=AFTER_MOVING_ADDRESS.split(":")[0],
+         expected_state=MaintenanceState.MOVING,
+         expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-        expected_socket_timeout=None,
+-        expected_socket_connect_timeout=None,
++        expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++        expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-        expected_orig_socket_timeout=None,
+-        expected_orig_socket_connect_timeout=None,
++        expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++        expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+     ):
+         """Helper method to validate state of free/available connections."""
+ 
+@@ -621,7 +622,7 @@ def test_client_initialization(self):
+ 
+         assert conn.should_reconnect() is False
+         assert conn.orig_host_address == "localhost"
+-        assert conn.orig_socket_timeout is None
++        assert conn.orig_socket_timeout == DEFAULT_SOCKET_TIMEOUT
+ 
+         self._validate_connection_handlers(conn, pool_handler, self.config)
+ 
+@@ -851,7 +852,7 @@ def test_migration_related_notifications_handling_integration(self, pool_class):
+             assert result5 is True, "Command 5 (SET key_receive_migrated) failed"
+ 
+             # Step 8: Validate socket timeout is reversed back to original after MIGRATED
+-            self._validate_current_timeout(None)
++            self._validate_current_timeout(DEFAULT_SOCKET_TIMEOUT)
+ 
+             # Verify maintenance notifications were processed correctly
+             # The key is that we have at least 1 socket and all operations succeeded
+@@ -904,8 +905,8 @@ def test_migrating_notification_with_disabled_relaxed_timeout(self, pool_class):
+             assert result2 is True, "Command 2 (SET key_receive_migrating) failed"
+ 
+             # Validate timeout was NOT updated (relaxed is disabled)
+-            # Should remain at default timeout (None), not relaxed to 30s
+-            self._validate_current_timeout(None)
++            # Should remain at the default timeout, not relaxed to 30s
++            self._validate_current_timeout(DEFAULT_SOCKET_TIMEOUT)
+ 
+             # Command 3: Another command to verify timeout remains unchanged
+             result3 = test_redis_client.get(key1)
+@@ -925,7 +926,7 @@ def test_migrating_notification_with_disabled_relaxed_timeout(self, pool_class):
+             assert result4 is True, "Command 4 (SET key_receive_migrated) failed"
+ 
+             # Validate timeout is still NOT updated after MIGRATED (relaxed is disabled)
+-            self._validate_current_timeout(None)
++            self._validate_current_timeout(DEFAULT_SOCKET_TIMEOUT)
+ 
+             # Command 5: This SET command will receive FAILING_OVER push message before response
+             key_failing_over = "key_receive_failing_over"
+@@ -936,7 +937,7 @@ def test_migrating_notification_with_disabled_relaxed_timeout(self, pool_class):
+             assert result5 is True, "Command 5 (SET key_receive_failing_over) failed"
+ 
+             # Validate timeout is still NOT updated after FAILING_OVER (relaxed is disabled)
+-            self._validate_current_timeout(None)
++            self._validate_current_timeout(DEFAULT_SOCKET_TIMEOUT)
+ 
+             # Command 6: Another command to verify timeout remains unchanged during failover
+             result6 = test_redis_client.get(key_failing_over)
+@@ -956,7 +957,7 @@ def test_migrating_notification_with_disabled_relaxed_timeout(self, pool_class):
+             assert result7 is True, "Command 7 (SET key_receive_failed_over) failed"
+ 
+             # Validate timeout is still NOT updated after FAILED_OVER (relaxed is disabled)
+-            self._validate_current_timeout(None)
++            self._validate_current_timeout(DEFAULT_SOCKET_TIMEOUT)
+ 
+             # Command 8: Final command to verify timeout remains unchanged after all notifications
+             result8 = test_redis_client.get(key_failed_over)
+@@ -1049,7 +1050,7 @@ def test_failing_over_related_notifications_handling_integration(self, pool_clas
+             assert result5 is True, "Command 5 (SET key_receive_failed_over) failed"
+ 
+             # Step 8: Validate socket timeout is reversed back to original after FAILED_OVER
+-            self._validate_current_timeout(None)
++            self._validate_current_timeout(DEFAULT_SOCKET_TIMEOUT)
+ 
+             # Verify maintenance notifications were processed correctly
+             # The key is that we have at least 1 socket and all operations succeeded
+@@ -1118,8 +1119,8 @@ def test_moving_related_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+             self._validate_disconnected(5)
+             self._validate_connected(6)
+@@ -1130,8 +1131,8 @@ def test_moving_related_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_current_socket_timeout=self.config.relaxed_timeout,
+                 expected_current_peername=DEFAULT_ADDRESS.split(":")[
+                     0
+@@ -1144,8 +1145,8 @@ def test_moving_related_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 should_be_connected_count=1,
+                 connected_to_tmp_address=True,
+             )
+@@ -1156,12 +1157,12 @@ def test_moving_related_notifications_handling_integration(self, pool_class):
+                 in_use_connections,
+                 expected_state=MaintenanceState.NONE,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
+-                expected_current_socket_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++                expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+                 expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+             )
+             Helpers.validate_conn_kwargs(
+@@ -1170,20 +1171,20 @@ def test_moving_related_notifications_handling_integration(self, pool_class):
+                 expected_maintenance_notification_hash=None,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+                 expected_port=int(DEFAULT_ADDRESS.split(":")[1]),
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+             Helpers.validate_free_connections_state(
+                 pool=test_redis_client.connection_pool,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 should_be_connected_count=1,
+                 connected_to_tmp_address=True,
+                 expected_state=MaintenanceState.NONE,
+@@ -1249,8 +1250,8 @@ def test_moving_none_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+             self._validate_disconnected(0)
+             self._validate_connected(10)
+@@ -1262,8 +1263,8 @@ def test_moving_none_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_current_socket_timeout=self.config.relaxed_timeout,
+                 expected_current_peername=DEFAULT_ADDRESS.split(":")[
+                     0
+@@ -1276,8 +1277,8 @@ def test_moving_none_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 should_be_connected_count=5,
+                 connected_to_tmp_address=False,
+             )
+@@ -1291,8 +1292,8 @@ def test_moving_none_notifications_handling_integration(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_current_socket_timeout=self.config.relaxed_timeout,
+                 expected_current_peername=DEFAULT_ADDRESS.split(":")[
+                     0
+@@ -1307,12 +1308,12 @@ def test_moving_none_notifications_handling_integration(self, pool_class):
+                 in_use_connections,
+                 expected_state=MaintenanceState.NONE,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
+-                expected_current_socket_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++                expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+                 expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+             )
+             Helpers.validate_conn_kwargs(
+@@ -1321,20 +1322,20 @@ def test_moving_none_notifications_handling_integration(self, pool_class):
+                 expected_maintenance_notification_hash=None,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+                 expected_port=int(DEFAULT_ADDRESS.split(":")[1]),
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+             Helpers.validate_free_connections_state(
+                 pool=test_redis_client.connection_pool,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 should_be_connected_count=0,
+                 connected_to_tmp_address=True,
+                 expected_state=MaintenanceState.NONE,
+@@ -1390,8 +1391,8 @@ def test_create_new_conn_while_moving_not_expired(self, pool_class):
+                 expected_maintenance_notification_hash=hash(MOVING_NOTIFICATION),
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+                 expected_port=int(DEFAULT_ADDRESS.split(":")[1]),
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_host_address=AFTER_MOVING_ADDRESS.split(":")[0],
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+@@ -1476,12 +1477,11 @@ def test_create_new_conn_after_moving_expires(self, pool_class):
+ 
+             # Validate that new connections are created with original address (no temporary settings)
+             assert new_connection.orig_host_address == DEFAULT_ADDRESS.split(":")[0]
+-            assert new_connection.orig_socket_timeout is None
++            assert new_connection.orig_socket_timeout == DEFAULT_SOCKET_TIMEOUT
+             # New connections should be connected to the original address
+             assert new_connection._get_socket() is not None
+             assert new_connection._get_socket().connected is True
+-            # Socket timeout should be None (original timeout)
+-            assert new_connection._get_socket().gettimeout() is None
++            assert new_connection._get_socket().gettimeout() == DEFAULT_SOCKET_TIMEOUT
+ 
+         finally:
+             if hasattr(test_redis_client.connection_pool, "disconnect"):
+@@ -1538,8 +1538,8 @@ def test_receive_migrated_after_moving(self, pool_class):
+                 expected_maintenance_notification_hash=hash(MOVING_NOTIFICATION),
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+                 expected_port=int(DEFAULT_ADDRESS.split(":")[1]),
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_host_address=AFTER_MOVING_ADDRESS.split(":")[0],
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+@@ -1566,8 +1566,8 @@ def test_receive_migrated_after_moving(self, pool_class):
+                 expected_maintenance_notification_hash=hash(MOVING_NOTIFICATION),
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+                 expected_port=int(DEFAULT_ADDRESS.split(":")[1]),
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_host_address=AFTER_MOVING_ADDRESS.split(":")[0],
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+@@ -1640,8 +1640,8 @@ def test_overlapping_moving_notifications(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+             # Validate all connections reflect the first MOVING notification
+             Helpers.validate_in_use_connections_state(
+@@ -1651,8 +1651,8 @@ def test_overlapping_moving_notifications(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_current_socket_timeout=self.config.relaxed_timeout,
+                 expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+             )
+@@ -1665,8 +1665,8 @@ def test_overlapping_moving_notifications(self, pool_class):
+                 expected_socket_timeout=self.config.relaxed_timeout,
+                 expected_socket_connect_timeout=self.config.relaxed_timeout,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+             # Reconnect in use connections
+             for conn in in_use_connections:
+@@ -1701,8 +1701,8 @@ def test_overlapping_moving_notifications(self, pool_class):
+                     expected_socket_timeout=self.config.relaxed_timeout,
+                     expected_socket_connect_timeout=self.config.relaxed_timeout,
+                     expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                    expected_orig_socket_timeout=None,
+-                    expected_orig_socket_connect_timeout=None,
++                    expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                    expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 )
+                 # Validate all connections reflect the second MOVING notification
+                 Helpers.validate_in_use_connections_state(
+@@ -1712,8 +1712,8 @@ def test_overlapping_moving_notifications(self, pool_class):
+                     expected_socket_timeout=self.config.relaxed_timeout,
+                     expected_socket_connect_timeout=self.config.relaxed_timeout,
+                     expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                    expected_orig_socket_timeout=None,
+-                    expected_orig_socket_connect_timeout=None,
++                    expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                    expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                     expected_current_socket_timeout=self.config.relaxed_timeout,
+                     expected_current_peername=orig_after_moving.split(":")[0],
+                 )
+@@ -1727,8 +1727,8 @@ def test_overlapping_moving_notifications(self, pool_class):
+                     expected_socket_timeout=self.config.relaxed_timeout,
+                     expected_socket_connect_timeout=self.config.relaxed_timeout,
+                     expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                    expected_orig_socket_timeout=None,
+-                    expected_orig_socket_connect_timeout=None,
++                    expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                    expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 )
+             finally:
+                 AFTER_MOVING_ADDRESS = orig_after_moving
+@@ -1741,11 +1741,11 @@ def test_overlapping_moving_notifications(self, pool_class):
+                 expected_maintenance_notification_hash=None,
+                 expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+                 expected_port=int(DEFAULT_ADDRESS.split(":")[1]),
+-                expected_socket_timeout=None,
+-                expected_socket_connect_timeout=None,
++                expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+                 expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-                expected_orig_socket_timeout=None,
+-                expected_orig_socket_connect_timeout=None,
++                expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++                expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             )
+         finally:
+             if hasattr(test_redis_client.connection_pool, "disconnect"):
+@@ -1789,8 +1789,8 @@ def worker(idx):
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         )
+ 
+         if hasattr(test_redis_client.connection_pool, "disconnect"):
+@@ -1852,8 +1852,8 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+         )
+@@ -1866,8 +1866,8 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         )
+ 
+         # 2. MIGRATING notification (simulate direct connection handler call)
+@@ -1882,8 +1882,8 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+         )
+@@ -1901,8 +1901,8 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+         )
+@@ -1920,8 +1920,8 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+         )
+@@ -1939,8 +1939,8 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+         )
+@@ -1951,12 +1951,12 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             in_use_connections,
+             expected_state=MaintenanceState.NONE,
+             expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_socket_timeout=None,
+-            expected_socket_connect_timeout=None,
++            expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
+-            expected_current_socket_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++            expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+             expected_current_peername=DEFAULT_ADDRESS.split(":")[0],
+         )
+         Helpers.validate_free_connections_state(
+@@ -1965,11 +1965,11 @@ def test_moving_migrating_migrated_moved_state_transitions(
+             connected_to_tmp_address=False,
+             expected_state=MaintenanceState.NONE,
+             expected_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_socket_timeout=None,
+-            expected_socket_connect_timeout=None,
++            expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_orig_host_address=DEFAULT_ADDRESS.split(":")[0],
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+         )
+         # New connection after MOVED
+         new_conn_none = pool.get_connection()
+@@ -2072,8 +2072,8 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=self.orig_host,
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=key1,
+         )
+@@ -2089,16 +2089,20 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+                 assert conn.socket_timeout == self.config.relaxed_timeout
+                 assert conn.socket_connect_timeout == self.config.relaxed_timeout
+                 assert conn.orig_host_address == self.orig_host
+-                assert conn.orig_socket_timeout is None
+-                assert conn.orig_socket_connect_timeout is None
++                assert conn.orig_socket_timeout == DEFAULT_SOCKET_TIMEOUT
++                assert (
++                    conn.orig_socket_connect_timeout == DEFAULT_SOCKET_CONNECT_TIMEOUT
++                )
+             else:
+                 assert conn.maintenance_state == MaintenanceState.NONE
+                 assert conn.host == self.orig_host
+-                assert conn.socket_timeout is None
+-                assert conn.socket_connect_timeout is None
++                assert conn.socket_timeout == DEFAULT_SOCKET_TIMEOUT
++                assert conn.socket_connect_timeout == DEFAULT_SOCKET_CONNECT_TIMEOUT
+                 assert conn.orig_host_address == self.orig_host
+-                assert conn.orig_socket_timeout is None
+-                assert conn.orig_socket_connect_timeout is None
++                assert conn.orig_socket_timeout == DEFAULT_SOCKET_TIMEOUT
++                assert (
++                    conn.orig_socket_connect_timeout == DEFAULT_SOCKET_CONNECT_TIMEOUT
++                )
+         assert changed_free_connections == 2
+         assert len(free_connections) == 4
+ 
+@@ -2120,8 +2124,8 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=self.orig_host,
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=key2,
+         )
+@@ -2137,8 +2141,10 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+                 assert conn.socket_timeout == self.config.relaxed_timeout
+                 assert conn.socket_connect_timeout == self.config.relaxed_timeout
+                 assert conn.orig_host_address == self.orig_host
+-                assert conn.orig_socket_timeout is None
+-                assert conn.orig_socket_connect_timeout is None
++                assert conn.orig_socket_timeout == DEFAULT_SOCKET_TIMEOUT
++                assert (
++                    conn.orig_socket_connect_timeout == DEFAULT_SOCKET_CONNECT_TIMEOUT
++                )
+             # here I can't validate the other connections since some of
+             # them are in MOVING state from the first notification
+             # and some are in NONE state
+@@ -2173,7 +2179,7 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+         conn_notification_handler.handle_notification(NodeMigratedNotification(id=3))
+         # validate connection is in MOVING state
+         assert conn.maintenance_state == MaintenanceState.NONE
+-        assert conn.socket_timeout is None
++        assert conn.socket_timeout == DEFAULT_SOCKET_TIMEOUT
+ 
+         # sleep to expire only the first MOVING notifications
+         sleep(1.3)
+@@ -2183,12 +2189,12 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+             in_use_connections[key1],
+             expected_state=MaintenanceState.NONE,
+             expected_host_address=self.orig_host,
+-            expected_socket_timeout=None,
+-            expected_socket_connect_timeout=None,
++            expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_orig_host_address=self.orig_host,
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
+-            expected_current_socket_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++            expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+             expected_current_peername=key1,
+         )
+         Helpers.validate_in_use_connections_state(
+@@ -2198,8 +2204,8 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+             expected_socket_timeout=self.config.relaxed_timeout,
+             expected_socket_connect_timeout=self.config.relaxed_timeout,
+             expected_orig_host_address=self.orig_host,
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_current_socket_timeout=self.config.relaxed_timeout,
+             expected_current_peername=key2,
+         )
+@@ -2208,12 +2214,12 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+             expected_state=MaintenanceState.NONE,
+             expected_should_reconnect=False,
+             expected_host_address=self.orig_host,
+-            expected_socket_timeout=None,
+-            expected_socket_connect_timeout=None,
++            expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_orig_host_address=self.orig_host,
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
+-            expected_current_socket_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++            expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+             expected_current_peername=key3,
+         )
+         # TODO validate free connections
+@@ -2230,12 +2236,12 @@ def test_migrating_after_moving_multiple_proxies(self, pool_class):
+             expected_state=MaintenanceState.NONE,
+             expected_should_reconnect="any",
+             expected_host_address=self.orig_host,
+-            expected_socket_timeout=None,
+-            expected_socket_connect_timeout=None,
++            expected_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
+             expected_orig_host_address=self.orig_host,
+-            expected_orig_socket_timeout=None,
+-            expected_orig_socket_connect_timeout=None,
+-            expected_current_socket_timeout=None,
++            expected_orig_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
++            expected_orig_socket_connect_timeout=DEFAULT_SOCKET_CONNECT_TIMEOUT,
++            expected_current_socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+             expected_current_peername="any",
+         )
+         # TODO validate free connections
+diff --git a/tests/test_asyncio/test_cluster.py b/tests/test_asyncio/test_cluster.py
+index 9a827aa6fc..f1e282b691 100644
+--- a/tests/test_asyncio/test_cluster.py
++++ b/tests/test_asyncio/test_cluster.py
+@@ -433,8 +433,10 @@ async def test_cluster_retry_object(self, request: FixtureRequest) -> None:
+             host = rc_default.get_default_node().host
+ 
+             assert isinstance(retry, Retry)
+-            assert retry._retries == 3
++            assert retry._retries == 10
+             assert isinstance(retry._backoff, type(ExponentialWithJitterBackoff()))
++            assert retry._backoff._base == 0.01
++            assert retry._backoff._cap == 1
+ 
+             # validate nodes connections are using the default retry for
+             # lower level connections when client is created through 'from_url' method
+@@ -3969,8 +3971,11 @@ async def test_readonly_pipeline_with_reading_from_replicas_strategies(
+                         break
+             assert executed_on_replicas_only
+ 
+-    async def test_can_run_concurrent_pipelines(self, r: RedisCluster) -> None:
++    async def test_can_run_concurrent_pipelines(
++        self, create_redis: Callable[..., RedisCluster]
++    ) -> None:
+         """Test that the pipeline can be used concurrently."""
++        r = await create_redis(max_connections=1000)
+         await asyncio.gather(
+             *(self.test_redis_cluster_pipeline(r) for i in range(100)),
+             *(self.test_multi_key_operation_with_a_single_slot(r) for i in range(100)),
+diff --git a/tests/test_asyncio/test_cluster_transaction.py b/tests/test_asyncio/test_cluster_transaction.py
+index e371f36e1d..6befedbfbb 100644
+--- a/tests/test_asyncio/test_cluster_transaction.py
++++ b/tests/test_asyncio/test_cluster_transaction.py
+@@ -125,18 +125,25 @@ async def test_retry_transaction_during_unfinished_slot_migration(self, r):
+         slot = r.keyslot(key)
+         node_migrating, node_importing = _find_source_and_target_node_for_slot(r, slot)
+ 
++        original_parse_response = ClusterNode.parse_response
+         with (
+-            patch.object(ClusterNode, "parse_response") as parse_response,
++            patch.object(
++                ClusterNode, "parse_response", autospec=True
++            ) as parse_response,
+             patch.object(NodesManager, "move_slot") as manager_move_slot,
+         ):
+ 
+-            def ask_redirect_effect(connection, *args, **options):
+-                if "MULTI" in args:
++            async def ask_redirect_effect(redis_node, connection, command, **options):
++                if command == "MULTI":
+                     return
+-                elif "EXEC" in args:
++                elif command == "EXEC":
+                     raise redis.exceptions.ExecAbortError()
++                elif command in ("_", "SET"):
++                    raise redis.exceptions.AskError(f"{slot} {node_importing.name}")
+ 
+-                raise redis.exceptions.AskError(f"{slot} {node_importing.name}")
++                return await original_parse_response(
++                    redis_node, connection, command, **options
++                )
+ 
+             parse_response.side_effect = ask_redirect_effect
+ 
+diff --git a/tests/test_cluster.py b/tests/test_cluster.py
+index b4e1db7c1b..e09af591cc 100644
+--- a/tests/test_cluster.py
++++ b/tests/test_cluster.py
+@@ -1008,8 +1008,10 @@ def test_cluster_retry_object(self, r) -> None:
+         # test default retry config
+         retry = r.retry
+         assert isinstance(retry, Retry)
+-        assert retry.get_retries() == 3
++        assert retry.get_retries() == 10
+         assert isinstance(retry._backoff, type(ExponentialWithJitterBackoff()))
++        assert retry._backoff._base == 0.01
++        assert retry._backoff._cap == 1
+         node1_connection = r.get_node(host, 16379).redis_connection
+         node2_connection = r.get_node(host, 16380).redis_connection
+         assert node1_connection.get_retry()._retries == 0
+@@ -4074,6 +4076,7 @@ def raise_connection_error():
+             e = ConnectionError("error")
+             return e
+ 
++        r.reinitialize_steps = 0
+         with r.pipeline() as pipe:
+             mock_node_resp_func(node, raise_connection_error)
+             with pytest.raises(ConnectionError):
+diff --git a/tests/test_cluster_transaction.py b/tests/test_cluster_transaction.py
+index 1fdc88af90..730eb5e52f 100644
+--- a/tests/test_cluster_transaction.py
++++ b/tests/test_cluster_transaction.py
+@@ -128,17 +128,22 @@ def test_retry_transaction_during_unfinished_slot_migration(self, r):
+         slot = r.keyslot(key)
+         node_migrating, node_importing = _find_source_and_target_node_for_slot(r, slot)
+ 
++        original_parse_response = Redis.parse_response
+         with (
+-            patch.object(Redis, "parse_response") as parse_response,
++            patch.object(Redis, "parse_response", autospec=True) as parse_response,
+         ):
+ 
+-            def ask_redirect_effect(connection, *args, **options):
+-                if "MULTI" in args:
++            def ask_redirect_effect(redis_node, connection, command, **options):
++                if command == "MULTI":
+                     return
+-                elif "EXEC" in args:
++                elif command == "EXEC":
+                     raise redis.exceptions.ExecAbortError()
++                elif command in ("_", "SET"):
++                    raise redis.exceptions.AskError(f"{slot} {node_importing.name}")
+ 
+-                raise redis.exceptions.AskError(f"{slot} {node_importing.name}")
++                return original_parse_response(
++                    redis_node, connection, command, **options
++                )
+ 
+             parse_response.side_effect = ask_redirect_effect
+ 
+diff --git a/tests/test_connection.py b/tests/test_connection.py
+index 5abacc793d..20b09aa2bf 100644
+--- a/tests/test_connection.py
++++ b/tests/test_connection.py
+@@ -13,7 +13,7 @@
+ from redis import ConnectionPool, Redis
+ from redis._parsers import _HiredisParser, _RESP2Parser, _RESP3Parser
+ from redis._parsers.hiredis import NOT_ENOUGH_DATA
+-from redis._parsers.socket import SENTINEL, SocketBuffer
++from redis._parsers.socket import SocketBuffer
+ from redis.backoff import NoBackoff
+ from redis.cache import (
+     CacheConfig,
+@@ -44,7 +44,7 @@
+     ConnectionState,
+ )
+ from redis.retry import Retry
+-from redis.utils import HIREDIS_AVAILABLE
++from redis.utils import HIREDIS_AVAILABLE, SENTINEL
+ 
+ from .conftest import skip_if_server_version_lt
+ from .mocks import MockSocket
+diff --git a/tests/test_defaults.py b/tests/test_defaults.py
+new file mode 100644
+index 0000000000..bd11b5861b
+--- /dev/null
++++ b/tests/test_defaults.py
+@@ -0,0 +1,226 @@
++import inspect
++import socket
++
++from redis._defaults import (
++    DEFAULT_SOCKET_CONNECT_TIMEOUT,
++    DEFAULT_SOCKET_READ_SIZE,
++    DEFAULT_SOCKET_TIMEOUT,
++    get_default_socket_keepalive_options,
++)
++from redis.asyncio.client import Redis as AsyncRedis
++from redis.asyncio.cluster import ClusterNode as AsyncClusterNode
++from redis.asyncio.cluster import RedisCluster as AsyncRedisCluster
++from redis.asyncio.connection import AbstractConnection as AsyncAbstractConnection
++from redis.asyncio.connection import Connection as AsyncConnection
++from redis.asyncio.connection import ConnectionPool as AsyncConnectionPool
++from redis.asyncio.retry import Retry as AsyncRetry
++from redis.backoff import ExponentialWithJitterBackoff
++from redis.client import Redis
++from redis.cluster import REDIS_ALLOWED_KEYS, RedisCluster
++from redis.connection import AbstractConnection
++from redis.connection import Connection
++from redis.connection import ConnectionPool
++from redis.connection import UnixDomainSocketConnection
++from redis.retry import Retry
++from redis.utils import SENTINEL
++
++
++def test_socket_keepalive_signature_defaults_are_true():
++    classes = (Redis, Connection, AsyncRedis, AsyncConnection, AsyncRedisCluster)
++
++    for cls in classes:
++        default = inspect.signature(cls.__init__).parameters["socket_keepalive"].default
++        assert default is True
++
++
++def test_connection_socket_keepalive_defaults_to_true():
++    assert Connection().socket_keepalive is True
++    assert AsyncConnection().socket_keepalive is True
++
++
++def test_connection_socket_read_size_defaults_to_32kb():
++    classes = (
++        Redis,
++        AbstractConnection,
++        AsyncRedis,
++        AsyncRedisCluster,
++        AsyncAbstractConnection,
++    )
++
++    for cls in classes:
++        default = inspect.signature(cls.__init__).parameters["socket_read_size"].default
++        assert default == DEFAULT_SOCKET_READ_SIZE
++
++    assert Connection()._socket_read_size == DEFAULT_SOCKET_READ_SIZE
++    assert AsyncConnection()._socket_read_size == DEFAULT_SOCKET_READ_SIZE
++    assert "socket_read_size" in REDIS_ALLOWED_KEYS
++
++
++def test_socket_read_size_can_be_configured_from_clients_and_pools():
++    socket_read_size = 65536
++
++    assert (
++        Redis(socket_read_size=socket_read_size).connection_pool.connection_kwargs[
++            "socket_read_size"
++        ]
++        == socket_read_size
++    )
++    assert (
++        AsyncRedis(socket_read_size=socket_read_size).connection_pool.connection_kwargs[
++            "socket_read_size"
++        ]
++        == socket_read_size
++    )
++    assert (
++        ConnectionPool(socket_read_size=socket_read_size).connection_kwargs[
++            "socket_read_size"
++        ]
++        == socket_read_size
++    )
++    assert (
++        AsyncConnectionPool(socket_read_size=socket_read_size).connection_kwargs[
++            "socket_read_size"
++        ]
++        == socket_read_size
++    )
++    assert (
++        ConnectionPool.from_url(
++            f"redis://localhost?socket_read_size={socket_read_size}"
++        ).connection_kwargs["socket_read_size"]
++        == socket_read_size
++    )
++    assert (
++        AsyncConnectionPool.from_url(
++            f"redis://localhost?socket_read_size={socket_read_size}"
++        ).connection_kwargs["socket_read_size"]
++        == socket_read_size
++    )
++
++
++def test_socket_timeout_default():
++    classes = (Redis, AbstractConnection, AsyncRedis, AsyncAbstractConnection)
++
++    for cls in classes:
++        parameters = inspect.signature(cls.__init__).parameters
++        assert parameters["socket_timeout"].default == DEFAULT_SOCKET_TIMEOUT
++        assert (
++            parameters["socket_connect_timeout"].default
++            == DEFAULT_SOCKET_CONNECT_TIMEOUT
++        )
++
++    cluster_parameters = inspect.signature(AsyncRedisCluster.__init__).parameters
++    assert cluster_parameters["socket_timeout"].default == DEFAULT_SOCKET_TIMEOUT
++    assert (
++        cluster_parameters["socket_connect_timeout"].default
++        == DEFAULT_SOCKET_CONNECT_TIMEOUT
++    )
++
++    assert Connection().socket_timeout == DEFAULT_SOCKET_TIMEOUT
++    assert Connection().socket_connect_timeout == DEFAULT_SOCKET_CONNECT_TIMEOUT
++    assert AsyncConnection().socket_timeout == DEFAULT_SOCKET_TIMEOUT
++    assert AsyncConnection().socket_connect_timeout == DEFAULT_SOCKET_CONNECT_TIMEOUT
++    assert UnixDomainSocketConnection().socket_timeout == DEFAULT_SOCKET_TIMEOUT
++
++
++def test_default_max_connections():
++    assert ConnectionPool().max_connections == 100
++    assert AsyncConnectionPool().max_connections == 100
++    assert Redis().connection_pool.max_connections == 100
++    assert AsyncRedis().connection_pool.max_connections == 100
++
++    async_cluster_parameters = inspect.signature(AsyncRedisCluster.__init__).parameters
++    assert async_cluster_parameters["max_connections"].default == 100
++    async_cluster_node_parameters = inspect.signature(
++        AsyncClusterNode.__init__
++    ).parameters
++    assert async_cluster_node_parameters["max_connections"].default == 100
++
++
++def test_default_retry_config():
++    sync_retry = inspect.signature(Redis.__init__).parameters["retry"].default
++    assert isinstance(sync_retry, Retry)
++    assert sync_retry.get_retries() == 10
++    assert isinstance(sync_retry._backoff, ExponentialWithJitterBackoff)
++    assert sync_retry._backoff._base == 0.01
++    assert sync_retry._backoff._cap == 1
++
++    async_retry = inspect.signature(AsyncRedis.__init__).parameters["retry"].default
++    assert isinstance(async_retry, AsyncRetry)
++    assert async_retry.get_retries() == 10
++    assert isinstance(async_retry._backoff, ExponentialWithJitterBackoff)
++    assert async_retry._backoff._base == 0.01
++    assert async_retry._backoff._cap == 1
++
++    for cls in (RedisCluster, AsyncRedisCluster):
++        default = (
++            inspect.signature(cls.__init__)
++            .parameters["cluster_error_retry_attempts"]
++            .default
++        )
++        assert default == 10
++
++
++def test_default_socket_keepalive_options():
++    options = get_default_socket_keepalive_options()
++
++    tcp_keepidle = getattr(socket, "TCP_KEEPIDLE", None)
++    if tcp_keepidle is None:
++        tcp_keepidle = getattr(socket, "TCP_KEEPALIVE", None)
++    if tcp_keepidle is not None:
++        assert options[tcp_keepidle] == 30
++
++    tcp_keepintvl = getattr(socket, "TCP_KEEPINTVL", None)
++    if tcp_keepintvl is not None:
++        assert options[tcp_keepintvl] == 5
++
++    tcp_keepcnt = getattr(socket, "TCP_KEEPCNT", None)
++    if tcp_keepcnt is not None:
++        assert options[tcp_keepcnt] == 3
++
++
++def test_socket_keepalive_options_signature_defaults_use_sentinel():
++    sync_classes = (Redis, Connection)
++
++    for cls in sync_classes:
++        default = (
++            inspect.signature(cls.__init__)
++            .parameters["socket_keepalive_options"]
++            .default
++        )
++        assert default is SENTINEL
++
++    async_classes = (AsyncRedis, AsyncConnection, AsyncRedisCluster)
++
++    for cls in async_classes:
++        default = (
++            inspect.signature(cls.__init__)
++            .parameters["socket_keepalive_options"]
++            .default
++        )
++        assert default is SENTINEL
++
++
++def test_connection_socket_keepalive_options_resolve_sentinel_default():
++    assert (
++        Connection().socket_keepalive_options == get_default_socket_keepalive_options()
++    )
++    assert (
++        AsyncConnection().socket_keepalive_options
++        == get_default_socket_keepalive_options()
++    )
++
++
++def test_connection_socket_keepalive_options_default_is_not_shared():
++    assert (
++        Connection().socket_keepalive_options
++        is not Connection().socket_keepalive_options
++    )
++    assert (
++        AsyncConnection().socket_keepalive_options
++        is not AsyncConnection().socket_keepalive_options
++    )
++
++
++def test_connection_socket_keepalive_options_none_stays_empty():
++    assert Connection(socket_keepalive_options=None).socket_keepalive_options == {}
++    assert AsyncConnection(socket_keepalive_options=None).socket_keepalive_options == {}
+diff --git a/tests/test_driver_info.py b/tests/test_driver_info.py
+index f857199bc2..f8c4d8d003 100644
+--- a/tests/test_driver_info.py
++++ b/tests/test_driver_info.py
+@@ -1,6 +1,5 @@
+ import pytest
+ 
+-from redis._parsers.socket import SENTINEL as PARSER_SENTINEL
+ from redis.driver_info import DriverInfo, resolve_driver_info
+ from redis.utils import SENTINEL, get_lib_version
+ 
+@@ -34,11 +33,6 @@ def test_resolve_driver_info_default_values():
+     assert info.lib_version == get_lib_version()
+ 
+ 
+-@pytest.mark.fixed_client
+-def test_parser_sentinel_uses_shared_sentinel():
+-    assert PARSER_SENTINEL is SENTINEL
+-
+-
+ @pytest.mark.fixed_client
+ @pytest.mark.parametrize(
+     ("driver_info", "lib_name", "lib_version"),
+diff --git a/tests/test_scenario/conftest.py b/tests/test_scenario/conftest.py
+index 2857adb330..6805db2122 100644
+--- a/tests/test_scenario/conftest.py
++++ b/tests/test_scenario/conftest.py
+@@ -306,7 +306,9 @@ def _get_client_maint_notifications(
+     if disable_retries:
+         retry = Retry(NoBackoff(), 0)
+     else:
+-        retry = Retry(backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3)
++        retry = Retry(
++            backoff=ExponentialWithJitterBackoff(base=0.01, cap=1), retries=10
++        )
+ 
+     tls_enabled = True if parsed.scheme == "rediss" else False
+     logging.info(f"TLS enabled: {tls_enabled}")
+@@ -365,7 +367,9 @@ def get_cluster_client_maint_notifications(
+     if disable_retries:
+         retry = Retry(NoBackoff(), 0)
+     else:
+-        retry = Retry(backoff=ExponentialWithJitterBackoff(base=1, cap=10), retries=3)
++        retry = Retry(
++            backoff=ExponentialWithJitterBackoff(base=0.01, cap=1), retries=10
++        )
+ 
+     tls_enabled = True if parsed.scheme == "rediss" else False
+     logging.info(f"TLS enabled: {tls_enabled}")
+diff --git a/tests/test_sentinel_managed_connection.py b/tests/test_sentinel_managed_connection.py
+index c7ddf635bc..1a29de1cf8 100644
+--- a/tests/test_sentinel_managed_connection.py
++++ b/tests/test_sentinel_managed_connection.py
+@@ -2,10 +2,10 @@
+ 
+ import pytest
+ 
+-from redis._parsers.socket import SENTINEL
+ from redis.retry import Retry
+ from redis.sentinel import SentinelManagedConnection
+ from redis.backoff import NoBackoff
++from redis.utils import SENTINEL
+ from unittest import mock
+ 
+ 

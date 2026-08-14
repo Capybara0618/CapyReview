@@ -1,0 +1,3856 @@
+diff --git a/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-mockitobean.adoc b/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-mockitobean.adoc
+index 153a3b03435f..f92d5c584afa 100644
+--- a/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-mockitobean.adoc
++++ b/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-mockitobean.adoc
+@@ -47,6 +47,21 @@ the same bean in several test classes, make sure to name the fields consistently
+ creating unnecessary contexts.
+ ====
+ 
++[WARNING]
++====
++Using `@MockitoBean` or `@MockitoSpyBean` in conjunction with `@ContextHierarchy` can
++lead to undesirable results since each `@MockitoBean` or `@MockitoSpyBean` will be
++applied to all context hierarchy levels by default. To ensure that a particular
++`@MockitoBean` or `@MockitoSpyBean` is applied to a single context hierarchy level, set
++the `contextName` attribute to match a configured `@ContextConfiguration` name – for
++example, `@MockitoBean(contextName = "app-config")` or
++`@MockitoSpyBean(contextName = "app-config")`.
++
++See
++xref:testing/testcontext-framework/ctx-management/hierarchies.adoc#testcontext-ctx-management-ctx-hierarchies-with-bean-overrides[context
++hierarchies with bean overrides] for further details and examples.
++====
++
+ Each annotation also defines Mockito-specific attributes to fine-tune the mocking behavior.
+ 
+ The `@MockitoBean` annotation uses the `REPLACE_OR_CREATE`
+diff --git a/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-testbean.adoc b/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-testbean.adoc
+index a9cc9ced52dc..4ec33c0c154f 100644
+--- a/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-testbean.adoc
++++ b/framework-docs/modules/ROOT/pages/testing/annotations/integration-spring/annotation-testbean.adoc
+@@ -31,6 +31,19 @@ same bean in several tests, make sure to name the field consistently to avoid cr
+ unnecessary contexts.
+ ====
+ 
++[WARNING]
++====
++Using `@TestBean` in conjunction with `@ContextHierarchy` can lead to undesirable results
++since each `@TestBean` will be applied to all context hierarchy levels by default. To
++ensure that a particular `@TestBean` is applied to a single context hierarchy level, set
++the `contextName` attribute to match a configured `@ContextConfiguration` name – for
++example, `@TestBean(contextName = "app-config")`.
++
++See
++xref:testing/testcontext-framework/ctx-management/hierarchies.adoc#testcontext-ctx-management-ctx-hierarchies-with-bean-overrides[context
++hierarchies with bean overrides] for further details and examples.
++====
++
+ [NOTE]
+ ====
+ There are no restrictions on the visibility of `@TestBean` fields or factory methods.
+diff --git a/framework-docs/modules/ROOT/pages/testing/testcontext-framework/ctx-management/hierarchies.adoc b/framework-docs/modules/ROOT/pages/testing/testcontext-framework/ctx-management/hierarchies.adoc
+index c8d57c4276cb..22f97cc1a0a7 100644
+--- a/framework-docs/modules/ROOT/pages/testing/testcontext-framework/ctx-management/hierarchies.adoc
++++ b/framework-docs/modules/ROOT/pages/testing/testcontext-framework/ctx-management/hierarchies.adoc
+@@ -22,8 +22,19 @@ given level in the hierarchy, the configuration resource type (that is, XML conf
+ files or component classes) must be consistent. Otherwise, it is perfectly acceptable to
+ have different levels in a context hierarchy configured using different resource types.
+ 
+-The remaining JUnit Jupiter based examples in this section show common configuration
+-scenarios for integration tests that require the use of context hierarchies.
++[NOTE]
++====
++If you use `@DirtiesContext` in a test whose context is configured as part of a context
++hierarchy, you can use the `hierarchyMode` flag to control how the context cache is
++cleared.
++
++For further details, see the discussion of `@DirtiesContext` in
++xref:testing/annotations/integration-spring/annotation-dirtiescontext.adoc[Spring Testing Annotations]
++and the {spring-framework-api}/test/annotation/DirtiesContext.html[`@DirtiesContext`] javadoc.
++====
++
++The JUnit Jupiter based examples in this section show common configuration scenarios for
++integration tests that require the use of context hierarchies.
+ 
+ **Single test class with context hierarchy**
+ --
+@@ -229,12 +240,118 @@ Kotlin::
+ 	class ExtendedTests : BaseTests() {}
+ ----
+ ======
++--
+ 
+-.Dirtying a context within a context hierarchy
+-NOTE: If you use `@DirtiesContext` in a test whose context is configured as part of a
+-context hierarchy, you can use the `hierarchyMode` flag to control how the context cache
+-is cleared. For further details, see the discussion of `@DirtiesContext` in
+-xref:testing/annotations/integration-spring/annotation-dirtiescontext.adoc[Spring Testing Annotations] and the
+-{spring-framework-api}/test/annotation/DirtiesContext.html[`@DirtiesContext`] javadoc.
++[[testcontext-ctx-management-ctx-hierarchies-with-bean-overrides]]
++**Context hierarchies with bean overrides**
+ --
++When `@ContextHierarchy` is used in conjunction with
++xref:testing/testcontext-framework/bean-overriding.adoc[bean overrides] such as
++`@TestBean`, `@MockitoBean`, or `@MockitoSpyBean`, it may be desirable or necessary to
++have the override applied to a single level in the context hierarchy. To achieve that,
++the bean override must specify a context name that matches a name configured via the
++`name` attribute in `@ContextConfiguration`.
++
++The following test class configures the name of the second hierarchy level to be
++`"user-config"` and simultaneously specifies that the `UserService` should be wrapped in
++a Mockito spy in the context named `"user-config"`. Consequently, Spring will only
++attempt to create the spy in the `"user-config"` context and will not attempt to create
++the spy in the parent context.
++
++[tabs]
++======
++Java::
+++
++[source,java,indent=0,subs="verbatim,quotes"]
++----
++	@ExtendWith(SpringExtension.class)
++	@ContextHierarchy({
++		@ContextConfiguration(classes = AppConfig.class),
++		@ContextConfiguration(classes = UserConfig.class, name = "user-config")
++	})
++	class IntegrationTests {
++
++		@MockitoSpyBean(contextName = "user-config")
++		UserService userService;
++
++		// ...
++	}
++----
++
++Kotlin::
+++
++[source,kotlin,indent=0,subs="verbatim,quotes"]
++----
++	@ExtendWith(SpringExtension::class)
++	@ContextHierarchy(
++		ContextConfiguration(classes = [AppConfig::class]),
++		ContextConfiguration(classes = [UserConfig::class], name = "user-config"))
++	class IntegrationTests {
++
++		@MockitoSpyBean(contextName = "user-config")
++		lateinit var userService: UserService
++
++		// ...
++	}
++----
++======
+ 
++When applying bean overrides in different levels of the context hierarchy, you may need
++to have all of the bean override instances injected into the test class in order to
++interact with them — for example, to configure stubbing for mocks. However, `@Autowired`
++will always inject a matching bean found in the lowest level of the context hierarchy.
++Thus, to inject bean override instances from specific levels in the context hierarchy,
++you need to annotate fields with appropriate bean override annotations and configure the
++name of the context level.
++
++The following test class configures the names of the hierarchy levels to be `"parent"`
++and `"child"`. It also declares two `PropertyService` fields that are configured to
++create or replace `PropertyService` beans with Mockito mocks in the respective contexts,
++named `"parent"` and `"child"`. Consequently, the mock from the `"parent"` context will
++be injected into the `propertyServiceInParent` field, and the mock from the `"child"`
++context will be injected into the `propertyServiceInChild` field.
++
++[tabs]
++======
++Java::
+++
++[source,java,indent=0,subs="verbatim,quotes"]
++----
++	@ExtendWith(SpringExtension.class)
++	@ContextHierarchy({
++		@ContextConfiguration(classes = ParentConfig.class, name = "parent"),
++		@ContextConfiguration(classes = ChildConfig.class, name = "child")
++	})
++	class IntegrationTests {
++
++		@MockitoBean(contextName = "parent")
++		PropertyService propertyServiceInParent;
++
++		@MockitoBean(contextName = "child")
++		PropertyService propertyServiceInChild;
++
++		// ...
++	}
++----
++
++Kotlin::
+++
++[source,kotlin,indent=0,subs="verbatim,quotes"]
++----
++	@ExtendWith(SpringExtension::class)
++	@ContextHierarchy(
++		ContextConfiguration(classes = [ParentConfig::class], name = "parent"),
++		ContextConfiguration(classes = [ChildConfig::class], name = "child"))
++	class IntegrationTests {
++
++		@MockitoBean(contextName = "parent")
++		lateinit var propertyServiceInParent: PropertyService
++
++		@MockitoBean(contextName = "child")
++		lateinit var propertyServiceInChild: PropertyService
++
++		// ...
++	}
++----
++======
++--
+diff --git a/spring-test/src/main/java/org/springframework/test/context/ContextConfiguration.java b/spring-test/src/main/java/org/springframework/test/context/ContextConfiguration.java
+index 90bb738b7774..9be2ea22a4b8 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/ContextConfiguration.java
++++ b/spring-test/src/main/java/org/springframework/test/context/ContextConfiguration.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -292,13 +292,18 @@
+ 	 * <p>If not specified the name will be inferred based on the numerical level
+ 	 * within all declared contexts within the hierarchy.
+ 	 * <p>This attribute is only applicable when used within a test class hierarchy
+-	 * or enclosing class hierarchy that is configured using
+-	 * {@code @ContextHierarchy}, in which case the name can be used for
+-	 * <em>merging</em> or <em>overriding</em> this configuration with configuration
+-	 * of the same name in hierarchy levels defined in superclasses or enclosing
+-	 * classes. See the Javadoc for {@link ContextHierarchy @ContextHierarchy} for
+-	 * details.
++	 * or enclosing class hierarchy that is configured using {@code @ContextHierarchy},
++	 * in which case the name can be used for <em>merging</em> or <em>overriding</em>
++	 * this configuration with configuration of the same name in hierarchy levels
++	 * defined in superclasses or enclosing classes. As of Spring Framework 6.2.6,
++	 * the name can also be used to identify the configuration in which a
++	 * <em>Bean Override</em> should be applied &mdash; for example,
++	 * {@code @MockitoBean(contextName = "child")}. See the Javadoc for
++	 * {@link ContextHierarchy @ContextHierarchy} for details.
+ 	 * @since 3.2.2
++	 * @see org.springframework.test.context.bean.override.mockito.MockitoBean#contextName @MockitoBean(contextName = ...)
++	 * @see org.springframework.test.context.bean.override.mockito.MockitoSpyBean#contextName @MockitoSpyBean(contextName = ...)
++	 * @see org.springframework.test.context.bean.override.convention.TestBean#contextName @TestBean(contextName = ...)
+ 	 */
+ 	String name() default "";
+ 
+diff --git a/spring-test/src/main/java/org/springframework/test/context/ContextHierarchy.java b/spring-test/src/main/java/org/springframework/test/context/ContextHierarchy.java
+index 0785c965f8c8..9df6e324e68e 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/ContextHierarchy.java
++++ b/spring-test/src/main/java/org/springframework/test/context/ContextHierarchy.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -29,10 +29,12 @@
+  * ApplicationContexts} for integration tests.
+  *
+  * <h3>Examples</h3>
++ *
+  * <p>The following JUnit-based examples demonstrate common configuration
+  * scenarios for integration tests that require the use of context hierarchies.
+  *
+  * <h4>Single Test Class with Context Hierarchy</h4>
++ *
+  * <p>{@code ControllerIntegrationTests} represents a typical integration testing
+  * scenario for a Spring MVC web application by declaring a context hierarchy
+  * consisting of two levels, one for the <em>root</em> {@code WebApplicationContext}
+@@ -57,6 +59,7 @@
+  * }</pre>
+  *
+  * <h4>Class Hierarchy with Implicit Parent Context</h4>
++ *
+  * <p>The following test classes define a context hierarchy within a test class
+  * hierarchy. {@code AbstractWebTests} declares the configuration for a root
+  * {@code WebApplicationContext} in a Spring-powered web application. Note,
+@@ -83,12 +86,13 @@
+  * public class RestWebServiceTests extends AbstractWebTests {}</pre>
+  *
+  * <h4>Class Hierarchy with Merged Context Hierarchy Configuration</h4>
++ *
+  * <p>The following classes demonstrate the use of <em>named</em> hierarchy levels
+  * in order to <em>merge</em> the configuration for specific levels in a context
+- * hierarchy. {@code BaseTests} defines two levels in the hierarchy, {@code parent}
+- * and {@code child}. {@code ExtendedTests} extends {@code BaseTests} and instructs
++ * hierarchy. {@code BaseTests} defines two levels in the hierarchy, {@code "parent"}
++ * and {@code "child"}. {@code ExtendedTests} extends {@code BaseTests} and instructs
+  * the Spring TestContext Framework to merge the context configuration for the
+- * {@code child} hierarchy level, simply by ensuring that the names declared via
++ * {@code "child"} hierarchy level, simply by ensuring that the names declared via
+  * {@link ContextConfiguration#name} are both {@code "child"}. The result is that
+  * three application contexts will be loaded: one for {@code "/app-config.xml"},
+  * one for {@code "/user-config.xml"}, and one for <code>{"/user-config.xml",
+@@ -111,6 +115,7 @@
+  * public class ExtendedTests extends BaseTests {}</pre>
+  *
+  * <h4>Class Hierarchy with Overridden Context Hierarchy Configuration</h4>
++ *
+  * <p>In contrast to the previous example, this example demonstrates how to
+  * <em>override</em> the configuration for a given named level in a context hierarchy
+  * by setting the {@link ContextConfiguration#inheritLocations} flag to {@code false}.
+@@ -131,6 +136,72 @@
+  * )
+  * public class ExtendedTests extends BaseTests {}</pre>
+  *
++ * <h4>Context Hierarchies with Bean Overrides</h4>
++ *
++ * <p>When {@code @ContextHierarchy} is used in conjunction with bean overrides such as
++ * {@link org.springframework.test.context.bean.override.convention.TestBean @TestBean},
++ * {@link org.springframework.test.context.bean.override.mockito.MockitoBean @MockitoBean}, or
++ * {@link org.springframework.test.context.bean.override.mockito.MockitoSpyBean @MockitoSpyBean},
++ * it may be desirable or necessary to have the override applied to a single level
++ * in the context hierarchy. To achieve that, the bean override must specify a
++ * context name that matches a name configured via {@link ContextConfiguration#name}.
++ *
++ * <p>The following test class configures the name of the second hierarchy level to be
++ * {@code "user-config"} and simultaneously specifies that the {@code UserService} should
++ * be wrapped in a Mockito spy in the context named {@code "user-config"}. Consequently,
++ * Spring will only attempt to create the spy in the {@code "user-config"} context and will
++ * not attempt to create the spy in the parent context.
++ *
++ * <pre class="code">
++ * &#064;ExtendWith(SpringExtension.class)
++ * &#064;ContextHierarchy({
++ *     &#064;ContextConfiguration(classes = AppConfig.class),
++ *     &#064;ContextConfiguration(classes = UserConfig.class, name = "user-config")
++ * })
++ * class IntegrationTests {
++ *
++ *     &#064;MockitoSpyBean(contextName = "user-config")
++ *     UserService userService;
++ *
++ *     // ...
++ * }</pre>
++ *
++ * <p>When applying bean overrides in different levels of the context hierarchy, you may
++ * need to have all of the bean override instances injected into the test class in order
++ * to interact with them &mdash; for example, to configure stubbing for mocks. However,
++ * {@link org.springframework.beans.factory.annotation.Autowired @Autowired} will always
++ * inject a matching bean found in the lowest level of the context hierarchy. Thus, to
++ * inject bean override instances from specific levels in the context hierarchy, you need
++ * to annotate fields with appropriate bean override annotations and configure the name
++ * of the context level.
++ *
++ * <p>The following test class configures the names of the hierarchy levels to be
++ * {@code "parent"} and {@code "child"}. It also declares two {@code PropertyService}
++ * fields that are configured to create or replace {@code PropertyService} beans with
++ * Mockito mocks in the respective contexts, named {@code "parent"} and {@code "child"}.
++ * Consequently, the mock from the {@code "parent"} context will be injected into the
++ * {@code propertyServiceInParent} field, and the mock from the {@code "child"} context
++ * will be injected into the {@code propertyServiceInChild} field.
++ *
++ * <pre class="code">
++ * &#064;ExtendWith(SpringExtension.class)
++ * &#064;ContextHierarchy({
++ *     &#064;ContextConfiguration(classes = ParentConfig.class, name = "parent"),
++ *     &#064;ContextConfiguration(classes = ChildConfig.class, name = "child")
++ * })
++ * class IntegrationTests {
++ *
++ *     &#064;MockitoBean(contextName = "parent")
++ *     PropertyService propertyServiceInParent;
++ *
++ *     &#064;MockitoBean(contextName = "child")
++ *     PropertyService propertyServiceInChild;
++ *
++ *     // ...
++ * }</pre>
++ *
++ * <h4>Miscellaneous</h4>
++ *
+  * <p>This annotation may be used as a <em>meta-annotation</em> to create custom
+  * <em>composed annotations</em>.
+  *
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactory.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactory.java
+index dfa9c9589eef..ccefe01a8dda 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactory.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactory.java
+@@ -42,19 +42,25 @@ class BeanOverrideContextCustomizerFactory implements ContextCustomizerFactory {
+ 	public BeanOverrideContextCustomizer createContextCustomizer(Class<?> testClass,
+ 			List<ContextConfigurationAttributes> configAttributes) {
+ 
++		// Base the context name on the "closest" @ContextConfiguration declaration
++		// within the type and enclosing class hierarchies of the test class.
++		String contextName = configAttributes.get(0).getName();
+ 		Set<BeanOverrideHandler> handlers = new LinkedHashSet<>();
+-		findBeanOverrideHandlers(testClass, handlers);
++		findBeanOverrideHandlers(testClass, contextName, handlers);
+ 		if (handlers.isEmpty()) {
+ 			return null;
+ 		}
+ 		return new BeanOverrideContextCustomizer(handlers);
+ 	}
+ 
+-	private void findBeanOverrideHandlers(Class<?> testClass, Set<BeanOverrideHandler> handlers) {
+-		BeanOverrideHandler.findAllHandlers(testClass).forEach(handler ->
+-				Assert.state(handlers.add(handler), () ->
+-						"Duplicate BeanOverrideHandler discovered in test class %s: %s"
+-							.formatted(testClass.getName(), handler)));
++	private void findBeanOverrideHandlers(Class<?> testClass, @Nullable String contextName, Set<BeanOverrideHandler> handlers) {
++		BeanOverrideHandler.findAllHandlers(testClass).stream()
++				// If a handler does not specify a context name, it always gets applied.
++				// Otherwise, the handler's context name must match the current context name.
++				.filter(handler -> handler.getContextName().isEmpty() || handler.getContextName().equals(contextName))
++				.forEach(handler -> Assert.state(handlers.add(handler),
++						() -> "Duplicate BeanOverrideHandler discovered in test class %s: %s"
++								.formatted(testClass.getName(), handler)));
+ 	}
+ 
+ }
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideHandler.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideHandler.java
+index 82d76e388324..4fb5b3c2704f 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideHandler.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideHandler.java
+@@ -87,26 +87,55 @@ public abstract class BeanOverrideHandler {
+ 	@Nullable
+ 	private final String beanName;
+ 
++	private final String contextName;
++
+ 	private final BeanOverrideStrategy strategy;
+ 
+ 
+ 	/**
+ 	 * Construct a new {@code BeanOverrideHandler} from the supplied values.
++	 * <p>To provide proper support for
++	 * {@link org.springframework.test.context.ContextHierarchy @ContextHierarchy},
++	 * invoke {@link #BeanOverrideHandler(Field, ResolvableType, String, String, BeanOverrideStrategy)}
++	 * instead.
+ 	 * @param field the {@link Field} annotated with {@link BeanOverride @BeanOverride},
+ 	 * or {@code null} if {@code @BeanOverride} was declared at the type level
+ 	 * @param beanType the {@linkplain ResolvableType type} of bean to override
+ 	 * @param beanName the name of the bean to override, or {@code null} to look
+ 	 * for a single matching bean by type
+ 	 * @param strategy the {@link BeanOverrideStrategy} to use
++	 * @deprecated As of Spring Framework 6.2.6, in favor of
++	 * {@link #BeanOverrideHandler(Field, ResolvableType, String, String, BeanOverrideStrategy)}
+ 	 */
++	@Deprecated(since = "6.2.6", forRemoval = true)
+ 	protected BeanOverrideHandler(@Nullable Field field, ResolvableType beanType, @Nullable String beanName,
+ 			BeanOverrideStrategy strategy) {
+ 
++		this(field, beanType, beanName, "", strategy);
++	}
++
++	/**
++	 * Construct a new {@code BeanOverrideHandler} from the supplied values.
++	 * @param field the {@link Field} annotated with {@link BeanOverride @BeanOverride},
++	 * or {@code null} if {@code @BeanOverride} was declared at the type level
++	 * @param beanType the {@linkplain ResolvableType type} of bean to override
++	 * @param beanName the name of the bean to override, or {@code null} to look
++	 * for a single matching bean by type
++	 * @param contextName the name of the context hierarchy level in which the
++	 * handler should be applied, or an empty string to indicate that the handler
++	 * should be applied to all application contexts within a context hierarchy
++	 * @param strategy the {@link BeanOverrideStrategy} to use
++	 * @since 6.2.6
++	 */
++	protected BeanOverrideHandler(@Nullable Field field, ResolvableType beanType, @Nullable String beanName,
++			String contextName, BeanOverrideStrategy strategy) {
++
+ 		this.field = field;
+ 		this.qualifierAnnotations = getQualifierAnnotations(field);
+ 		this.beanType = beanType;
+ 		this.beanName = beanName;
+ 		this.strategy = strategy;
++		this.contextName = contextName;
+ 	}
+ 
+ 	/**
+@@ -247,6 +276,21 @@ public final String getBeanName() {
+ 		return this.beanName;
+ 	}
+ 
++	/**
++	 * Get the name of the context hierarchy level in which this handler should
++	 * be applied.
++	 * <p>An empty string indicates that this handler should be applied to all
++	 * application contexts.
++	 * <p>If a context name is configured for this handler, it must match a name
++	 * configured via {@code @ContextConfiguration(name=...)}.
++	 * @since 6.2.6
++	 * @see org.springframework.test.context.ContextHierarchy @ContextHierarchy
++	 * @see org.springframework.test.context.ContextConfiguration#name()
++	 */
++	public final String getContextName() {
++		return this.contextName;
++	}
++
+ 	/**
+ 	 * Get the {@link BeanOverrideStrategy} for this {@code BeanOverrideHandler},
+ 	 * which influences how and when the bean override instance should be created.
+@@ -320,6 +364,7 @@ public boolean equals(Object other) {
+ 		BeanOverrideHandler that = (BeanOverrideHandler) other;
+ 		if (!Objects.equals(this.beanType.getType(), that.beanType.getType()) ||
+ 				!Objects.equals(this.beanName, that.beanName) ||
++				!Objects.equals(this.contextName, that.contextName) ||
+ 				!Objects.equals(this.strategy, that.strategy)) {
+ 			return false;
+ 		}
+@@ -339,7 +384,7 @@ public boolean equals(Object other) {
+ 
+ 	@Override
+ 	public int hashCode() {
+-		int hash = Objects.hash(getClass(), this.beanType.getType(), this.beanName, this.strategy);
++		int hash = Objects.hash(getClass(), this.beanType.getType(), this.beanName, this.contextName, this.strategy);
+ 		return (this.beanName != null ? hash : hash +
+ 				Objects.hash((this.field != null ? this.field.getName() : null), this.qualifierAnnotations));
+ 	}
+@@ -350,6 +395,7 @@ public String toString() {
+ 				.append("field", this.field)
+ 				.append("beanType", this.beanType)
+ 				.append("beanName", this.beanName)
++				.append("contextName", this.contextName)
+ 				.append("strategy", this.strategy)
+ 				.toString();
+ 	}
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideRegistry.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideRegistry.java
+index d9c6deb64471..dd94e9e346f6 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideRegistry.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideRegistry.java
+@@ -24,15 +24,22 @@
+ import org.apache.commons.logging.Log;
+ import org.apache.commons.logging.LogFactory;
+ 
++import org.springframework.beans.factory.BeanFactory;
+ import org.springframework.beans.factory.config.ConfigurableBeanFactory;
+ import org.springframework.lang.Nullable;
+ import org.springframework.util.Assert;
+ 
++import static org.springframework.test.context.bean.override.BeanOverrideContextCustomizer.REGISTRY_BEAN_NAME;
++
+ /**
+  * An internal class used to track {@link BeanOverrideHandler}-related state after
+  * the bean factory has been processed and to provide lookup facilities to test
+  * execution listeners.
+  *
++ * <p>As of Spring Framework 6.2.6, {@code BeanOverrideRegistry} is hierarchical
++ * and has access to a potential parent in order to provide first-class support
++ * for {@link org.springframework.test.context.ContextHierarchy @ContextHierarchy}.
++ *
+  * @author Simon Baslé
+  * @author Sam Brannen
+  * @since 6.2
+@@ -48,10 +55,16 @@ class BeanOverrideRegistry {
+ 
+ 	private final ConfigurableBeanFactory beanFactory;
+ 
++	@Nullable
++	private final BeanOverrideRegistry parent;
++
+ 
+ 	BeanOverrideRegistry(ConfigurableBeanFactory beanFactory) {
+ 		Assert.notNull(beanFactory, "ConfigurableBeanFactory must not be null");
+ 		this.beanFactory = beanFactory;
++		BeanFactory parentBeanFactory = beanFactory.getParentBeanFactory();
++		this.parent = (parentBeanFactory != null && parentBeanFactory.containsBean(REGISTRY_BEAN_NAME) ?
++				parentBeanFactory.getBean(REGISTRY_BEAN_NAME, BeanOverrideRegistry.class) : null);
+ 	}
+ 
+ 	/**
+@@ -110,7 +123,7 @@ Object wrapBeanIfNecessary(Object bean, String beanName) {
+ 	 * @param handler the {@code BeanOverrideHandler} that created the bean
+ 	 * @param requiredType the required bean type
+ 	 * @return the bean instance, or {@code null} if the provided handler is not
+-	 * registered in this registry
++	 * registered in this registry or a parent registry
+ 	 * @since 6.2.6
+ 	 * @see #registerBeanOverrideHandler(BeanOverrideHandler, String)
+ 	 */
+@@ -120,6 +133,9 @@ Object getBeanForHandler(BeanOverrideHandler handler, Class<?> requiredType) {
+ 		if (beanName != null) {
+ 			return this.beanFactory.getBean(beanName, requiredType);
+ 		}
++		if (this.parent != null) {
++			return this.parent.getBeanForHandler(handler, requiredType);
++		}
+ 		return null;
+ 	}
+ 
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListener.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListener.java
+index ca0499c875d3..d3d74ffab02d 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListener.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListener.java
+@@ -18,8 +18,10 @@
+ 
+ import java.lang.reflect.Field;
+ import java.util.List;
++import java.util.Objects;
+ 
+ import org.springframework.beans.factory.BeanCreationException;
++import org.springframework.context.ApplicationContext;
+ import org.springframework.test.context.TestContext;
+ import org.springframework.test.context.support.AbstractTestExecutionListener;
+ import org.springframework.test.context.support.DependencyInjectionTestExecutionListener;
+@@ -94,14 +96,25 @@ private static void injectFields(TestContext testContext) {
+ 		List<BeanOverrideHandler> handlers = BeanOverrideHandler.forTestClass(testContext.getTestClass());
+ 		if (!handlers.isEmpty()) {
+ 			Object testInstance = testContext.getTestInstance();
+-			BeanOverrideRegistry beanOverrideRegistry = testContext.getApplicationContext()
++			ApplicationContext applicationContext = testContext.getApplicationContext();
++
++			Assert.state(applicationContext.containsBean(BeanOverrideContextCustomizer.REGISTRY_BEAN_NAME), () -> """
++					Test class %s declares @BeanOverride fields %s, but no BeanOverrideHandler has been registered. \
++					If you are using @ContextHierarchy, ensure that context names for bean overrides match \
++					configured @ContextConfiguration names.""".formatted(testContext.getTestClass().getSimpleName(),
++							handlers.stream().map(BeanOverrideHandler::getField).filter(Objects::nonNull)
++								.map(Field::getName).toList()));
++			BeanOverrideRegistry beanOverrideRegistry = applicationContext
+ 					.getBean(BeanOverrideContextCustomizer.REGISTRY_BEAN_NAME, BeanOverrideRegistry.class);
+ 
+ 			for (BeanOverrideHandler handler : handlers) {
+ 				Field field = handler.getField();
+ 				Assert.state(field != null, () -> "BeanOverrideHandler must have a non-null field: " + handler);
+ 				Object bean = beanOverrideRegistry.getBeanForHandler(handler, field.getType());
+-				Assert.state(bean != null, () -> "No bean found for BeanOverrideHandler: " + handler);
++				Assert.state(bean != null, () -> """
++						No bean override instance found for BeanOverrideHandler %s. If you are using \
++						@ContextHierarchy, ensure that context names for bean overrides match configured \
++						@ContextConfiguration names.""".formatted(handler));
+ 				injectField(field, testInstance, bean);
+ 			}
+ 		}
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBean.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBean.java
+index 9393a17ed0cb..837b975b331f 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBean.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBean.java
+@@ -99,6 +99,16 @@
+  *     }
+  * }</code></pre>
+  *
++ * <p><strong>WARNING</strong>: Using {@code @TestBean} in conjunction with
++ * {@code @ContextHierarchy} can lead to undesirable results since each
++ * {@code @TestBean} will be applied to all context hierarchy levels by default.
++ * To ensure that a particular {@code @TestBean} is applied to a single context
++ * hierarchy level, set the {@link #contextName() contextName} to match a
++ * configured {@code @ContextConfiguration}
++ * {@link org.springframework.test.context.ContextConfiguration#name() name}.
++ * See the Javadoc for {@link org.springframework.test.context.ContextHierarchy @ContextHierarchy}
++ * for further details and examples.
++ *
+  * <p><strong>NOTE</strong>: Only <em>singleton</em> beans can be overridden.
+  * Any attempt to override a non-singleton bean will result in an exception. When
+  * overriding a bean created by a {@link org.springframework.beans.factory.FactoryBean
+@@ -164,6 +174,19 @@
+ 	 */
+ 	String methodName() default "";
+ 
++	/**
++	 * The name of the context hierarchy level in which this {@code @TestBean}
++	 * should be applied.
++	 * <p>Defaults to an empty string which indicates that this {@code @TestBean}
++	 * should be applied to all application contexts.
++	 * <p>If a context name is configured, it must match a name configured via
++	 * {@code @ContextConfiguration(name=...)}.
++	 * @since 6.2.6
++	 * @see org.springframework.test.context.ContextHierarchy @ContextHierarchy
++	 * @see org.springframework.test.context.ContextConfiguration#name() @ContextConfiguration(name=...)
++	 */
++	String contextName() default "";
++
+ 	/**
+ 	 * Whether to require the existence of the bean being overridden.
+ 	 * <p>Defaults to {@code false} which means that a bean will be created if a
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandler.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandler.java
+index 20df24ea8850..b372fdcf52a4 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandler.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandler.java
+@@ -43,9 +43,9 @@ final class TestBeanOverrideHandler extends BeanOverrideHandler {
+ 
+ 
+ 	TestBeanOverrideHandler(Field field, ResolvableType beanType, @Nullable String beanName,
+-			BeanOverrideStrategy strategy, Method factoryMethod) {
++			String contextName, BeanOverrideStrategy strategy, Method factoryMethod) {
+ 
+-		super(field, beanType, beanName, strategy);
++		super(field, beanType, beanName, contextName, strategy);
+ 		this.factoryMethod = factoryMethod;
+ 	}
+ 
+@@ -90,6 +90,7 @@ public String toString() {
+ 				.append("field", getField())
+ 				.append("beanType", getBeanType())
+ 				.append("beanName", getBeanName())
++				.append("contextName", getContextName())
+ 				.append("strategy", getStrategy())
+ 				.append("factoryMethod", this.factoryMethod)
+ 				.toString();
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideProcessor.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideProcessor.java
+index a47d491b8452..601afcec098f 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideProcessor.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideProcessor.java
+@@ -82,7 +82,7 @@ public TestBeanOverrideHandler createHandler(Annotation overrideAnnotation, Clas
+ 		}
+ 
+ 		return new TestBeanOverrideHandler(
+-				field, ResolvableType.forField(field, testClass), beanName, strategy, factoryMethod);
++				field, ResolvableType.forField(field, testClass), beanName, testBean.contextName(), strategy, factoryMethod);
+ 	}
+ 
+ 	/**
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/AbstractMockitoBeanOverrideHandler.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/AbstractMockitoBeanOverrideHandler.java
+index 061a3bff4343..4a89a321268b 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/AbstractMockitoBeanOverrideHandler.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/AbstractMockitoBeanOverrideHandler.java
+@@ -39,9 +39,10 @@ abstract class AbstractMockitoBeanOverrideHandler extends BeanOverrideHandler {
+ 
+ 
+ 	protected AbstractMockitoBeanOverrideHandler(@Nullable Field field, ResolvableType beanType,
+-			@Nullable String beanName, BeanOverrideStrategy strategy, MockReset reset) {
++			@Nullable String beanName, String contextName, BeanOverrideStrategy strategy,
++			MockReset reset) {
+ 
+-		super(field, beanType, beanName, strategy);
++		super(field, beanType, beanName, contextName, strategy);
+ 		this.reset = (reset != null ? reset : MockReset.AFTER);
+ 	}
+ 
+@@ -92,6 +93,7 @@ public String toString() {
+ 				.append("field", getField())
+ 				.append("beanType", getBeanType())
+ 				.append("beanName", getBeanName())
++				.append("contextName", getContextName())
+ 				.append("strategy", getStrategy())
+ 				.append("reset", getReset())
+ 				.toString();
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBean.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBean.java
+index 46d5c0917f9c..4c95a21518fa 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBean.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBean.java
+@@ -74,6 +74,16 @@
+  * registered directly}) will not be found, and a mocked bean will be added to
+  * the context alongside the existing dependency.
+  *
++ * <p><strong>WARNING</strong>: Using {@code @MockitoBean} in conjunction with
++ * {@code @ContextHierarchy} can lead to undesirable results since each
++ * {@code @MockitoBean} will be applied to all context hierarchy levels by default.
++ * To ensure that a particular {@code @MockitoBean} is applied to a single context
++ * hierarchy level, set the {@link #contextName() contextName} to match a
++ * configured {@code @ContextConfiguration}
++ * {@link org.springframework.test.context.ContextConfiguration#name() name}.
++ * See the Javadoc for {@link org.springframework.test.context.ContextHierarchy @ContextHierarchy}
++ * for further details and examples.
++ *
+  * <p><strong>NOTE</strong>: Only <em>singleton</em> beans can be mocked.
+  * Any attempt to mock a non-singleton bean will result in an exception. When
+  * mocking a bean created by a {@link org.springframework.beans.factory.FactoryBean
+@@ -144,6 +154,19 @@
+ 	 */
+ 	Class<?>[] types() default {};
+ 
++	/**
++	 * The name of the context hierarchy level in which this {@code @MockitoBean}
++	 * should be applied.
++	 * <p>Defaults to an empty string which indicates that this {@code @MockitoBean}
++	 * should be applied to all application contexts.
++	 * <p>If a context name is configured, it must match a name configured via
++	 * {@code @ContextConfiguration(name=...)}.
++	 * @since 6.2.6
++	 * @see org.springframework.test.context.ContextHierarchy @ContextHierarchy
++	 * @see org.springframework.test.context.ContextConfiguration#name() @ContextConfiguration(name=...)
++	 */
++	String contextName() default "";
++
+ 	/**
+ 	 * Extra interfaces that should also be declared by the mock.
+ 	 * <p>Defaults to none.
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBeanOverrideHandler.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBeanOverrideHandler.java
+index 449e487e88ba..e76c193fa53c 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBeanOverrideHandler.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoBeanOverrideHandler.java
+@@ -63,15 +63,15 @@ class MockitoBeanOverrideHandler extends AbstractMockitoBeanOverrideHandler {
+ 
+ 	MockitoBeanOverrideHandler(@Nullable Field field, ResolvableType typeToMock, MockitoBean mockitoBean) {
+ 		this(field, typeToMock, (!mockitoBean.name().isBlank() ? mockitoBean.name() : null),
+-			(mockitoBean.enforceOverride() ? REPLACE : REPLACE_OR_CREATE),
+-			mockitoBean.reset(), mockitoBean.extraInterfaces(), mockitoBean.answers(), mockitoBean.serializable());
++				mockitoBean.contextName(), (mockitoBean.enforceOverride() ? REPLACE : REPLACE_OR_CREATE),
++				mockitoBean.reset(), mockitoBean.extraInterfaces(), mockitoBean.answers(), mockitoBean.serializable());
+ 	}
+ 
+ 	private MockitoBeanOverrideHandler(@Nullable Field field, ResolvableType typeToMock, @Nullable String beanName,
+-			BeanOverrideStrategy strategy, MockReset reset, Class<?>[] extraInterfaces, Answers answers,
+-			boolean serializable) {
++			String contextName, BeanOverrideStrategy strategy, MockReset reset, Class<?>[] extraInterfaces,
++			Answers answers, boolean serializable) {
+ 
+-		super(field, typeToMock, beanName, strategy, reset);
++		super(field, typeToMock, beanName, contextName, strategy, reset);
+ 		Assert.notNull(typeToMock, "'typeToMock' must not be null");
+ 		this.extraInterfaces = asClassSet(extraInterfaces);
+ 		this.answers = answers;
+@@ -160,6 +160,7 @@ public String toString() {
+ 				.append("field", getField())
+ 				.append("beanType", getBeanType())
+ 				.append("beanName", getBeanName())
++				.append("contextName", getContextName())
+ 				.append("strategy", getStrategy())
+ 				.append("reset", getReset())
+ 				.append("extraInterfaces", getExtraInterfaces())
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBean.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBean.java
+index e42c0b4563ba..aa2d8cbb59e0 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBean.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBean.java
+@@ -67,6 +67,16 @@
+  * {@link org.springframework.beans.factory.config.ConfigurableListableBeanFactory#registerResolvableDependency(Class, Object)
+  * registered directly} as resolvable dependencies.
+  *
++ * <p><strong>WARNING</strong>: Using {@code @MockitoSpyBean} in conjunction with
++ * {@code @ContextHierarchy} can lead to undesirable results since each
++ * {@code @MockitoSpyBean} will be applied to all context hierarchy levels by default.
++ * To ensure that a particular {@code @MockitoSpyBean} is applied to a single context
++ * hierarchy level, set the {@link #contextName() contextName} to match a
++ * configured {@code @ContextConfiguration}
++ * {@link org.springframework.test.context.ContextConfiguration#name() name}.
++ * See the Javadoc for {@link org.springframework.test.context.ContextHierarchy @ContextHierarchy}
++ * for further details and examples.
++ *
+  * <p><strong>NOTE</strong>: Only <em>singleton</em> beans can be spied. Any attempt
+  * to create a spy for a non-singleton bean will result in an exception. When
+  * creating a spy for a {@link org.springframework.beans.factory.FactoryBean FactoryBean},
+@@ -136,6 +146,19 @@
+ 	 */
+ 	Class<?>[] types() default {};
+ 
++	/**
++	 * The name of the context hierarchy level in which this {@code @MockitoSpyBean}
++	 * should be applied.
++	 * <p>Defaults to an empty string which indicates that this {@code @MockitoSpyBean}
++	 * should be applied to all application contexts.
++	 * <p>If a context name is configured, it must match a name configured via
++	 * {@code @ContextConfiguration(name=...)}.
++	 * @since 6.2.6
++	 * @see org.springframework.test.context.ContextHierarchy @ContextHierarchy
++	 * @see org.springframework.test.context.ContextConfiguration#name() @ContextConfiguration(name=...)
++	 */
++	String contextName() default "";
++
+ 	/**
+ 	 * The reset mode to apply to the spied bean.
+ 	 * <p>The default is {@link MockReset#AFTER} meaning that spies are automatically
+diff --git a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBeanOverrideHandler.java b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBeanOverrideHandler.java
+index ce3f11cbe204..5ec896fe0cd3 100644
+--- a/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBeanOverrideHandler.java
++++ b/spring-test/src/main/java/org/springframework/test/context/bean/override/mockito/MockitoSpyBeanOverrideHandler.java
+@@ -54,7 +54,7 @@ class MockitoSpyBeanOverrideHandler extends AbstractMockitoBeanOverrideHandler {
+ 
+ 	MockitoSpyBeanOverrideHandler(@Nullable Field field, ResolvableType typeToSpy, MockitoSpyBean spyBean) {
+ 		super(field, typeToSpy, (StringUtils.hasText(spyBean.name()) ? spyBean.name() : null),
+-				BeanOverrideStrategy.WRAP, spyBean.reset());
++				spyBean.contextName(), BeanOverrideStrategy.WRAP, spyBean.reset());
+ 		Assert.notNull(typeToSpy, "typeToSpy must not be null");
+ 	}
+ 
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactoryTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactoryTests.java
+index 2ed2498993e2..7bc3ce87a36d 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactoryTests.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerFactoryTests.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -16,12 +16,13 @@
+ 
+ package org.springframework.test.context.bean.override;
+ 
+-import java.util.Collections;
++import java.util.List;
+ import java.util.function.Consumer;
+ 
+ import org.junit.jupiter.api.Test;
+ 
+ import org.springframework.lang.Nullable;
++import org.springframework.test.context.ContextConfigurationAttributes;
+ import org.springframework.test.context.bean.override.DummyBean.DummyBeanOverrideProcessor.DummyBeanOverrideHandler;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
+@@ -92,7 +93,7 @@ private Consumer<BeanOverrideHandler> dummyHandler(@Nullable String beanName, Cl
+ 
+ 	@Nullable
+ 	private BeanOverrideContextCustomizer createContextCustomizer(Class<?> testClass) {
+-		return this.factory.createContextCustomizer(testClass, Collections.emptyList());
++		return this.factory.createContextCustomizer(testClass, List.of(new ContextConfigurationAttributes(testClass)));
+ 	}
+ 
+ 
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTestUtils.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTestUtils.java
+index 9e01f72ca87e..e99ac7363ae2 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTestUtils.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTestUtils.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -16,10 +16,11 @@
+ 
+ package org.springframework.test.context.bean.override;
+ 
+-import java.util.Collections;
++import java.util.List;
+ 
+ import org.springframework.context.ConfigurableApplicationContext;
+ import org.springframework.lang.Nullable;
++import org.springframework.test.context.ContextConfigurationAttributes;
+ import org.springframework.test.context.ContextCustomizer;
+ import org.springframework.test.context.MergedContextConfiguration;
+ 
+@@ -44,7 +45,7 @@ public abstract class BeanOverrideContextCustomizerTestUtils {
+ 	 */
+ 	@Nullable
+ 	public static ContextCustomizer createContextCustomizer(Class<?> testClass) {
+-		return factory.createContextCustomizer(testClass, Collections.emptyList());
++		return factory.createContextCustomizer(testClass, List.of(new ContextConfigurationAttributes(testClass)));
+ 	}
+ 
+ 	/**
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTests.java
+index 8944aeb2be3f..57fc29c8ff15 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTests.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideContextCustomizerTests.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -72,7 +72,7 @@ private static class DummyBeanOverrideHandler extends BeanOverrideHandler {
+ 
+ 		public DummyBeanOverrideHandler(String key) {
+ 			super(ReflectionUtils.findField(DummyBeanOverrideHandler.class, "key"),
+-					ResolvableType.forClass(Object.class), null, BeanOverrideStrategy.REPLACE);
++					ResolvableType.forClass(Object.class), null, "", BeanOverrideStrategy.REPLACE);
+ 			this.key = key;
+ 		}
+ 
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideHandlerTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideHandlerTests.java
+index 5229cf5b44dd..2ed874f460e1 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideHandlerTests.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideHandlerTests.java
+@@ -30,6 +30,7 @@
+ 
+ import org.springframework.beans.factory.annotation.Qualifier;
+ import org.springframework.lang.Nullable;
++import org.springframework.test.context.bean.override.DummyBean.DummyBeanOverrideProcessor;
+ import org.springframework.test.context.bean.override.DummyBean.DummyBeanOverrideProcessor.DummyBeanOverrideHandler;
+ import org.springframework.test.context.bean.override.example.CustomQualifier;
+ import org.springframework.test.context.bean.override.example.ExampleService;
+@@ -116,7 +117,7 @@ void isEqualToWithSameMetadata() {
+ 	}
+ 
+ 	@Test
+-	void isEqualToWithSameMetadataAndBeanNames() {
++	void isEqualToWithSameMetadataAndSameBeanNames() {
+ 		BeanOverrideHandler handler1 = createBeanOverrideHandler(field(ConfigA.class, "noQualifier"), "testBean");
+ 		BeanOverrideHandler handler2 = createBeanOverrideHandler(field(ConfigA.class, "noQualifier"), "testBean");
+ 		assertThat(handler1).isEqualTo(handler2);
+@@ -124,10 +125,29 @@ void isEqualToWithSameMetadataAndBeanNames() {
+ 	}
+ 
+ 	@Test
+-	void isNotEqualToWithSameMetadataAndDifferentBeaName() {
++	void isNotEqualToWithSameMetadataButDifferentBeanNames() {
+ 		BeanOverrideHandler handler1 = createBeanOverrideHandler(field(ConfigA.class, "noQualifier"), "testBean");
+ 		BeanOverrideHandler handler2 = createBeanOverrideHandler(field(ConfigA.class, "noQualifier"), "testBean2");
+ 		assertThat(handler1).isNotEqualTo(handler2);
++		assertThat(handler1).doesNotHaveSameHashCodeAs(handler2);
++	}
++
++	@Test
++	void isEqualToWithSameMetadataSameBeanNamesAndSameContextNames() {
++		Class<?> testClass = MultipleAnnotationsWithSameNameInDifferentContext.class;
++		BeanOverrideHandler handler1 = createBeanOverrideHandler(testClass, field(testClass, "parentMessageBean"));
++		BeanOverrideHandler handler2 = createBeanOverrideHandler(testClass, field(testClass, "parentMessageBean2"));
++		assertThat(handler1).isEqualTo(handler2);
++		assertThat(handler1).hasSameHashCodeAs(handler2);
++	}
++
++	@Test
++	void isEqualToWithSameMetadataAndSameBeanNamesButDifferentContextNames() {
++		Class<?> testClass = MultipleAnnotationsWithSameNameInDifferentContext.class;
++		BeanOverrideHandler handler1 = createBeanOverrideHandler(testClass, field(testClass, "parentMessageBean"));
++		BeanOverrideHandler handler2 = createBeanOverrideHandler(testClass, field(testClass, "childMessageBean"));
++		assertThat(handler1).isNotEqualTo(handler2);
++		assertThat(handler1).doesNotHaveSameHashCodeAs(handler2);
+ 	}
+ 
+ 	@Test
+@@ -173,6 +193,7 @@ void isNotEqualToWithSameMetadataAndDifferentQualifierValues() {
+ 		BeanOverrideHandler handler1 = createBeanOverrideHandler(field(ConfigA.class, "directQualifier"));
+ 		BeanOverrideHandler handler2 = createBeanOverrideHandler(field(ConfigA.class, "differentDirectQualifier"));
+ 		assertThat(handler1).isNotEqualTo(handler2);
++		assertThat(handler1).doesNotHaveSameHashCodeAs(handler2);
+ 	}
+ 
+ 	@Test
+@@ -180,6 +201,7 @@ void isNotEqualToWithSameMetadataAndDifferentQualifiers() {
+ 		BeanOverrideHandler handler1 = createBeanOverrideHandler(field(ConfigA.class, "directQualifier"));
+ 		BeanOverrideHandler handler2 = createBeanOverrideHandler(field(ConfigA.class, "customQualifier"));
+ 		assertThat(handler1).isNotEqualTo(handler2);
++		assertThat(handler1).doesNotHaveSameHashCodeAs(handler2);
+ 	}
+ 
+ 	@Test
+@@ -187,6 +209,7 @@ void isNotEqualToWithByTypeLookupAndDifferentFieldNames() {
+ 		BeanOverrideHandler handler1 = createBeanOverrideHandler(field(ConfigA.class, "noQualifier"));
+ 		BeanOverrideHandler handler2 = createBeanOverrideHandler(field(ConfigB.class, "example"));
+ 		assertThat(handler1).isNotEqualTo(handler2);
++		assertThat(handler1).doesNotHaveSameHashCodeAs(handler2);
+ 	}
+ 
+ 	private static BeanOverrideHandler createBeanOverrideHandler(Field field) {
+@@ -194,7 +217,11 @@ private static BeanOverrideHandler createBeanOverrideHandler(Field field) {
+ 	}
+ 
+ 	private static BeanOverrideHandler createBeanOverrideHandler(Field field, @Nullable String name) {
+-		return new DummyBeanOverrideHandler(field, field.getType(), name, BeanOverrideStrategy.REPLACE);
++		return new DummyBeanOverrideHandler(field, field.getType(), name, "", BeanOverrideStrategy.REPLACE);
++	}
++
++	private static BeanOverrideHandler createBeanOverrideHandler(Class<?> testClass, Field field) {
++		return new DummyBeanOverrideProcessor().createHandler(field.getAnnotation(DummyBean.class), testClass, field);
+ 	}
+ 
+ 	private static Field field(Class<?> target, String fieldName) {
+@@ -234,6 +261,18 @@ static class MultipleAnnotations {
+ 		Integer counter;
+ 	}
+ 
++	static class MultipleAnnotationsWithSameNameInDifferentContext {
++
++		@DummyBean(beanName = "messageBean", contextName = "parent")
++		String parentMessageBean;
++
++		@DummyBean(beanName = "messageBean", contextName = "parent")
++		String parentMessageBean2;
++
++		@DummyBean(beanName = "messageBean", contextName = "child")
++		String childMessageBean;
++	}
++
+ 	static class MultipleAnnotationsDuplicate {
+ 
+ 		@DummyBean(beanName = "messageBean")
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListenerTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListenerTests.java
+new file mode 100644
+index 000000000000..cb0018d3a208
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/BeanOverrideTestExecutionListenerTests.java
+@@ -0,0 +1,143 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++import org.junit.platform.testkit.engine.EngineTestKit;
++import org.junit.platform.testkit.engine.Events;
++
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.junit.platform.engine.discovery.DiscoverySelectors.selectClass;
++import static org.junit.platform.testkit.engine.EventConditions.event;
++import static org.junit.platform.testkit.engine.EventConditions.finishedWithFailure;
++import static org.junit.platform.testkit.engine.EventConditions.test;
++import static org.junit.platform.testkit.engine.TestExecutionResultConditions.instanceOf;
++import static org.junit.platform.testkit.engine.TestExecutionResultConditions.message;
++
++/**
++ * Integration tests for {@link BeanOverrideTestExecutionListener}.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++class BeanOverrideTestExecutionListenerTests {
++
++	@Test
++	void beanOverrideWithNoMatchingContextName() {
++		executeTests(BeanOverrideWithNoMatchingContextNameTestCase.class)
++			.assertThatEvents().haveExactly(1, event(test("test"),
++				finishedWithFailure(
++					instanceOf(IllegalStateException.class),
++					message("""
++						Test class BeanOverrideWithNoMatchingContextNameTestCase declares @BeanOverride \
++						fields [message, number], but no BeanOverrideHandler has been registered. \
++						If you are using @ContextHierarchy, ensure that context names for bean overrides match \
++						configured @ContextConfiguration names."""))));
++	}
++
++	@Test
++	void beanOverrideWithInvalidContextName() {
++		executeTests(BeanOverrideWithInvalidContextNameTestCase.class)
++			.assertThatEvents().haveExactly(1, event(test("test"),
++				finishedWithFailure(
++					instanceOf(IllegalStateException.class),
++					message(msg ->
++						msg.startsWith("No bean override instance found for BeanOverrideHandler") &&
++						msg.contains("DummyBeanOverrideHandler") &&
++						msg.contains("BeanOverrideWithInvalidContextNameTestCase.message2") &&
++						msg.contains("contextName = 'BOGUS'") &&
++						msg.endsWith("""
++							If you are using @ContextHierarchy, ensure that context names for bean overrides match \
++							configured @ContextConfiguration names.""")))));
++	}
++
++
++	private static Events executeTests(Class<?> testClass) {
++		return EngineTestKit.engine("junit-jupiter")
++				.selectors(selectClass(testClass))
++				.execute()
++				.testEvents()
++				.assertStatistics(stats -> stats.started(1).failed(1));
++	}
++
++
++	@ExtendWith(SpringExtension.class)
++	@ContextHierarchy({
++		@ContextConfiguration(classes = Config1.class),
++		@ContextConfiguration(classes = Config2.class, name = "child")
++	})
++	@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++	static class BeanOverrideWithNoMatchingContextNameTestCase {
++
++		@DummyBean(contextName = "BOGUS")
++		String message;
++
++		@DummyBean(contextName = "BOGUS")
++		Integer number;
++
++		@Test
++		void test() {
++			// no-op
++		}
++	}
++
++	@ExtendWith(SpringExtension.class)
++	@ContextHierarchy({
++		@ContextConfiguration(classes = Config1.class),
++		@ContextConfiguration(classes = Config2.class, name = "child")
++	})
++	@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++	static class BeanOverrideWithInvalidContextNameTestCase {
++
++		@DummyBean(contextName = "child")
++		String message1;
++
++		@DummyBean(contextName = "BOGUS")
++		String message2;
++
++		@Test
++		void test() {
++			// no-op
++		}
++	}
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		String message() {
++			return "Message 1";
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		String message() {
++			return "Message 2";
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/DummyBean.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/DummyBean.java
+index d6beaf4ba306..ef2e1f45cc6b 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/DummyBean.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/DummyBean.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -32,7 +32,7 @@
+ 
+ /**
+  * A dummy {@link BeanOverride} implementation that only handles {@link CharSequence}
+- * and {@link Integer} and replace them with {@code "overridden"} and {@code 42},
++ * and {@link Integer} and replaces them with {@code "overridden"} and {@code 42},
+  * respectively.
+  *
+  * @author Stephane Nicoll
+@@ -45,6 +45,8 @@
+ 
+ 	String beanName() default "";
+ 
++	String contextName() default "";
++
+ 	BeanOverrideStrategy strategy() default BeanOverrideStrategy.REPLACE;
+ 
+ 	class DummyBeanOverrideProcessor implements BeanOverrideProcessor {
+@@ -54,7 +56,7 @@ public BeanOverrideHandler createHandler(Annotation annotation, Class<?> testCla
+ 			DummyBean dummyBean = (DummyBean) annotation;
+ 			String beanName = (StringUtils.hasText(dummyBean.beanName()) ? dummyBean.beanName() : null);
+ 			return new DummyBeanOverrideProcessor.DummyBeanOverrideHandler(field, field.getType(), beanName,
+-					dummyBean.strategy());
++					dummyBean.contextName(), dummyBean.strategy());
+ 		}
+ 
+ 		// Bare bone, "dummy", implementation that should not override anything
+@@ -62,9 +64,9 @@ public BeanOverrideHandler createHandler(Annotation annotation, Class<?> testCla
+ 		static class DummyBeanOverrideHandler extends BeanOverrideHandler {
+ 
+ 			DummyBeanOverrideHandler(Field field, Class<?> typeToOverride, @Nullable String beanName,
+-					BeanOverrideStrategy strategy) {
++					String contextName, BeanOverrideStrategy strategy) {
+ 
+-				super(field, ResolvableType.forClass(typeToOverride), beanName, strategy);
++				super(field, ResolvableType.forClass(typeToOverride), beanName, contextName, strategy);
+ 			}
+ 
+ 			@Override
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandlerTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandlerTests.java
+index f95fe62912a7..b47ea30c1305 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandlerTests.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/TestBeanOverrideHandlerTests.java
+@@ -130,7 +130,7 @@ private static TestBeanOverrideHandler handlerFor(Field field, Method overrideMe
+ 		TestBean annotation = field.getAnnotation(TestBean.class);
+ 		String beanName = (StringUtils.hasText(annotation.name()) ? annotation.name() : null);
+ 		return new TestBeanOverrideHandler(
+-				field, ResolvableType.forClass(field.getType()), beanName, BeanOverrideStrategy.REPLACE, overrideMethod);
++				field, ResolvableType.forClass(field.getType()), beanName, "", BeanOverrideStrategy.REPLACE, overrideMethod);
+ 	}
+ 
+ 	static class SampleOneOverride {
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..a59c59bfa0e0
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInChildContextHierarchyTests.java
+@@ -0,0 +1,109 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.convention.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByNameInChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByNameInChildContextHierarchyTests.Config2;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Verifies that {@link TestBean @TestBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only overridden "by name" in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class TestBeanByNameInChildContextHierarchyTests {
++
++	@TestBean(name = "service", contextName = "child")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	static ExampleService service() {
++		return () -> "@TestBean 2";
++	}
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertThat(service.greeting()).isEqualTo("@TestBean 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say @TestBean 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 1";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 2";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..8df069273a40
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,114 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.convention.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByNameInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByNameInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Verifies that {@link TestBean @TestBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are overridden "by name" in the parent and in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class TestBeanByNameInParentAndChildContextHierarchyTests {
++
++	@TestBean(name = "service", contextName = "parent")
++	ExampleService serviceInParent;
++
++	@TestBean(name = "service", contextName = "child")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	static ExampleService serviceInParent() {
++		return () -> "@TestBean 1";
++	}
++
++	static ExampleService serviceInChild() {
++		return () -> "@TestBean 2";
++	}
++
++
++	@Test
++	void test() {
++		assertThat(serviceInParent.greeting()).isEqualTo("@TestBean 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("@TestBean 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say @TestBean 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say @TestBean 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 1";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 2";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInParentContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInParentContextHierarchyTests.java
+new file mode 100644
+index 000000000000..e2f3ec516c60
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByNameInParentContextHierarchyTests.java
+@@ -0,0 +1,101 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.convention.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByNameInParentContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByNameInParentContextHierarchyTests.Config2;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Verifies that {@link TestBean @TestBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only overridden "by name" in the parent.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class)
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class TestBeanByNameInParentContextHierarchyTests {
++
++	@TestBean(name = "service", contextName = "parent")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	static ExampleService service() {
++		return () -> "@TestBean 1";
++	}
++
++
++	@Test
++	void test() {
++		assertThat(service.greeting()).isEqualTo("@TestBean 1");
++		assertThat(serviceCaller1.getService()).isSameAs(service);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say @TestBean 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say @TestBean 1");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 1";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..b1e8461fe032
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInChildContextHierarchyTests.java
+@@ -0,0 +1,109 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.convention.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByTypeInChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByTypeInChildContextHierarchyTests.Config2;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Verifies that {@link TestBean @TestBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only overridden "by type" in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class TestBeanByTypeInChildContextHierarchyTests {
++
++	@TestBean(contextName = "child")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	static ExampleService service() {
++		return () -> "@TestBean 2";
++	}
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertThat(service.greeting()).isEqualTo("@TestBean 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say @TestBean 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 1";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 2";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..b7e021528eb9
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,114 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.convention.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByTypeInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByTypeInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Verifies that {@link TestBean @TestBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are overridden "by type" in the parent and in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class TestBeanByTypeInParentAndChildContextHierarchyTests {
++
++	@TestBean(contextName = "parent")
++	ExampleService serviceInParent;
++
++	@TestBean(contextName = "child")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	static ExampleService serviceInParent() {
++		return () -> "@TestBean 1";
++	}
++
++	static ExampleService serviceInChild() {
++		return () -> "@TestBean 2";
++	}
++
++
++	@Test
++	void test() {
++		assertThat(serviceInParent.greeting()).isEqualTo("@TestBean 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("@TestBean 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say @TestBean 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say @TestBean 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 1";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 2";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInParentContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInParentContextHierarchyTests.java
+new file mode 100644
+index 000000000000..5fb01297c768
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/convention/hierarchies/TestBeanByTypeInParentContextHierarchyTests.java
+@@ -0,0 +1,101 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.convention.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.convention.TestBean;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByTypeInParentContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.convention.hierarchies.TestBeanByTypeInParentContextHierarchyTests.Config2;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++
++/**
++ * Verifies that {@link TestBean @TestBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only overridden "by type" in the parent.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class)
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class TestBeanByTypeInParentContextHierarchyTests {
++
++	@TestBean(contextName = "parent")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	static ExampleService service() {
++		return () -> "@TestBean 1";
++	}
++
++
++	@Test
++	void test() {
++		assertThat(service.greeting()).isEqualTo("@TestBean 1");
++		assertThat(serviceCaller1.getService()).isSameAs(service);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say @TestBean 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say @TestBean 1");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return () -> "Service 1";
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/easymock/EasyMockBeanOverrideHandler.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/easymock/EasyMockBeanOverrideHandler.java
+index d93fafb7837d..6c0352c5317a 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/easymock/EasyMockBeanOverrideHandler.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/easymock/EasyMockBeanOverrideHandler.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -43,7 +43,7 @@ class EasyMockBeanOverrideHandler extends BeanOverrideHandler {
+ 	EasyMockBeanOverrideHandler(Field field, Class<?> typeToOverride, @Nullable String beanName,
+ 			MockType mockType) {
+ 
+-		super(field, ResolvableType.forClass(typeToOverride), beanName, REPLACE_OR_CREATE);
++		super(field, ResolvableType.forClass(typeToOverride), beanName, "", REPLACE_OR_CREATE);
+ 		this.mockType = mockType;
+ 	}
+ 
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/BarService.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/BarService.java
+new file mode 100644
+index 000000000000..1b71868b4bbe
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/BarService.java
+@@ -0,0 +1,24 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++class BarService {
++
++	String bar() {
++		return "bar";
++	}
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ErrorIfContextReloadedConfig.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ErrorIfContextReloadedConfig.java
+new file mode 100644
+index 000000000000..5877553e1acf
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ErrorIfContextReloadedConfig.java
+@@ -0,0 +1,37 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import jakarta.annotation.PostConstruct;
++
++import org.springframework.context.annotation.Configuration;
++
++@Configuration
++class ErrorIfContextReloadedConfig {
++
++	private static boolean loaded = false;
++
++
++	@PostConstruct
++	public void postConstruct() {
++		if (loaded) {
++			throw new RuntimeException("Context loaded multiple times");
++		}
++		loaded = true;
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/FooService.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/FooService.java
+new file mode 100644
+index 000000000000..ab2ee99fc965
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/FooService.java
+@@ -0,0 +1,24 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++class FooService {
++
++	String foo() {
++		return "foo";
++	}
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/integration/MockitoBeanAndContextHierarchyParentIntegrationTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanAndContextHierarchyParentIntegrationTests.java
+similarity index 90%
+rename from spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/integration/MockitoBeanAndContextHierarchyParentIntegrationTests.java
+rename to spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanAndContextHierarchyParentIntegrationTests.java
+index 00950dcd03fd..98d633a12b70 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/integration/MockitoBeanAndContextHierarchyParentIntegrationTests.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanAndContextHierarchyParentIntegrationTests.java
+@@ -14,12 +14,11 @@
+  * limitations under the License.
+  */
+ 
+-package org.springframework.test.context.bean.override.mockito.integration;
++package org.springframework.test.context.bean.override.mockito.hierarchies;
+ 
+ import org.junit.jupiter.api.BeforeEach;
+ import org.junit.jupiter.api.Test;
+ 
+-import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.test.context.ContextHierarchy;
+ import org.springframework.test.context.bean.override.example.ExampleService;
+@@ -45,8 +44,6 @@ public class MockitoBeanAndContextHierarchyParentIntegrationTests {
+ 	@MockitoBean
+ 	ExampleService service;
+ 
+-	@Autowired
+-	ApplicationContext context;
+ 
+ 	@BeforeEach
+ 	void configureServiceMock() {
+@@ -54,7 +51,7 @@ void configureServiceMock() {
+ 	}
+ 
+ 	@Test
+-	void test() {
++	void test(ApplicationContext context) {
+ 		assertThat(context.getBeanNamesForType(ExampleService.class)).hasSize(1);
+ 		assertThat(context.getBeanNamesForType(ExampleServiceCaller.class)).isEmpty();
+ 
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..e452b50830f6
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInChildContextHierarchyTests.java
+@@ -0,0 +1,111 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByNameInChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByNameInChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.when;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsNotMock;
++
++/**
++ * Verifies that {@link MockitoBean @MockitoBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only mocked "by name" in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoBeanByNameInChildContextHierarchyTests {
++
++	@MockitoBean(name = "service", contextName = "child")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertIsNotMock(serviceInParent);
++
++		when(service.greeting()).thenReturn("Mock 2");
++
++		assertThat(service.greeting()).isEqualTo("Mock 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Mock 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..539611a27f4b
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,110 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByNameInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByNameInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.when;
++
++/**
++ * Verifies that {@link MockitoBean @MockitoBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are mocked "by name" in the parent and in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoBeanByNameInParentAndChildContextHierarchyTests {
++
++	@MockitoBean(name = "service", contextName = "parent")
++	ExampleService serviceInParent;
++
++	@MockitoBean(name = "service", contextName = "child")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		when(serviceInParent.greeting()).thenReturn("Mock 1");
++		when(serviceInChild.greeting()).thenReturn("Mock 2");
++
++		assertThat(serviceInParent.greeting()).isEqualTo("Mock 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("Mock 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Mock 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Mock 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInParentContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInParentContextHierarchyTests.java
+new file mode 100644
+index 000000000000..01832db8fd23
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByNameInParentContextHierarchyTests.java
+@@ -0,0 +1,100 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByNameInParentContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByNameInParentContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.when;
++
++/**
++ * Verifies that {@link MockitoBean @MockitoBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only mocked "by name" in the parent.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class)
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoBeanByNameInParentContextHierarchyTests {
++
++	@MockitoBean(name = "service", contextName = "parent")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		when(service.greeting()).thenReturn("Mock 1");
++
++		assertThat(service.greeting()).isEqualTo("Mock 1");
++		assertThat(serviceCaller1.getService()).isSameAs(service);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Mock 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Mock 1");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..d6421b208146
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInChildContextHierarchyTests.java
+@@ -0,0 +1,111 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByTypeInChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByTypeInChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.when;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsNotMock;
++
++/**
++ * Verifies that {@link MockitoBean @MockitoBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only mocked "by type" in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoBeanByTypeInChildContextHierarchyTests {
++
++	@MockitoBean(contextName = "child")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertIsNotMock(serviceInParent);
++
++		when(service.greeting()).thenReturn("Mock 2");
++
++		assertThat(service.greeting()).isEqualTo("Mock 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Mock 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..f212d309a803
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,110 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByTypeInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByTypeInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.when;
++
++/**
++ * Verifies that {@link MockitoBean @MockitoBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are mocked "by type" in the parent and in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoBeanByTypeInParentAndChildContextHierarchyTests {
++
++	@MockitoBean(contextName = "parent")
++	ExampleService serviceInParent;
++
++	@MockitoBean(contextName = "child")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		when(serviceInParent.greeting()).thenReturn("Mock 1");
++		when(serviceInChild.greeting()).thenReturn("Mock 2");
++
++		assertThat(serviceInParent.greeting()).isEqualTo("Mock 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("Mock 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Mock 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Mock 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInParentContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInParentContextHierarchyTests.java
+new file mode 100644
+index 000000000000..6a1f281cf2da
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoBeanByTypeInParentContextHierarchyTests.java
+@@ -0,0 +1,100 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByTypeInParentContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoBeanByTypeInParentContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.Mockito.when;
++
++/**
++ * Verifies that {@link MockitoBean @MockitoBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only mocked "by type" in the parent.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class)
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoBeanByTypeInParentContextHierarchyTests {
++
++	@MockitoBean(contextName = "parent")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		when(service.greeting()).thenReturn("Mock 1");
++
++		assertThat(service.greeting()).isEqualTo("Mock 1");
++		assertThat(serviceCaller1.getService()).isSameAs(service);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Mock 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Mock 1");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/integration/MockitoSpyBeanAndContextHierarchyChildIntegrationTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanAndContextHierarchyChildIntegrationTests.java
+similarity index 84%
+rename from spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/integration/MockitoSpyBeanAndContextHierarchyChildIntegrationTests.java
+rename to spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanAndContextHierarchyChildIntegrationTests.java
+index b5f02fa893f0..aef8cd39cbd4 100644
+--- a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/integration/MockitoSpyBeanAndContextHierarchyChildIntegrationTests.java
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanAndContextHierarchyChildIntegrationTests.java
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright 2002-2024 the original author or authors.
++ * Copyright 2002-2025 the original author or authors.
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -14,11 +14,10 @@
+  * limitations under the License.
+  */
+ 
+-package org.springframework.test.context.bean.override.mockito.integration;
++package org.springframework.test.context.bean.override.mockito.hierarchies;
+ 
+ import org.junit.jupiter.api.Test;
+ 
+-import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.context.ApplicationContext;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+@@ -50,18 +49,14 @@ public class MockitoSpyBeanAndContextHierarchyChildIntegrationTests extends
+ 	@MockitoSpyBean
+ 	ExampleServiceCaller serviceCaller;
+ 
+-	@Autowired
+-	ApplicationContext context;
+-
+ 
+ 	@Test
+ 	@Override
+-	void test() {
+-		assertThat(context).as("child ApplicationContext").isNotNull();
+-		assertThat(context.getParent()).as("parent ApplicationContext").isNotNull();
+-		assertThat(context.getParent().getParent()).as("grandparent ApplicationContext").isNull();
+-
++	void test(ApplicationContext context) {
+ 		ApplicationContext parentContext = context.getParent();
++		assertThat(parentContext).as("parent ApplicationContext").isNotNull();
++		assertThat(parentContext.getParent()).as("grandparent ApplicationContext").isNull();
++
+ 		assertThat(parentContext.getBeanNamesForType(ExampleService.class)).hasSize(1);
+ 		assertThat(parentContext.getBeanNamesForType(ExampleServiceCaller.class)).isEmpty();
+ 
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..63c3561d0881
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInChildContextHierarchyTests.java
+@@ -0,0 +1,110 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByNameInChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByNameInChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsNotSpy;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only spied on "by name" in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByNameInChildContextHierarchyTests {
++
++	@MockitoSpyBean(name = "service", contextName = "child")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertIsNotSpy(serviceInParent);
++		assertIsSpy(service);
++
++		assertThat(service.greeting()).isEqualTo("Service 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..255f3630beac
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,110 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are spied on "by name" in the parent and in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByNameInParentAndChildContextHierarchyTests {
++
++	@MockitoSpyBean(name = "service", contextName = "parent")
++	ExampleService serviceInParent;
++
++	@MockitoSpyBean(name = "service", contextName = "child")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		assertIsSpy(serviceInParent);
++		assertIsSpy(serviceInChild);
++
++		assertThat(serviceInParent.greeting()).isEqualTo("Service 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("Service 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentAndChildContextHierarchyV2Tests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentAndChildContextHierarchyV2Tests.java
+new file mode 100644
+index 000000000000..951d37b96215
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentAndChildContextHierarchyV2Tests.java
+@@ -0,0 +1,82 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * This is effectively a one-to-one copy of
++ * {@link MockitoSpyBeanByNameInParentAndChildContextHierarchyTests}, except
++ * that this test class uses different names for the context hierarchy levels:
++ * level-1 and level-2 instead of parent and child.
++ *
++ * <p>If the context cache is broken, either this test class or
++ * {@code MockitoSpyBeanByNameInParentAndChildContextHierarchyTests} will fail
++ * when run within the same test suite.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ * @see MockitoSpyBeanByNameInParentAndChildContextHierarchyTests
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.Config1.class, name = "level-1"),
++	@ContextConfiguration(classes = MockitoSpyBeanByNameInParentAndChildContextHierarchyTests.Config2.class, name = "level-2")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByNameInParentAndChildContextHierarchyV2Tests {
++
++	@MockitoSpyBean(name = "service", contextName = "level-1")
++	ExampleService serviceInParent;
++
++	@MockitoSpyBean(name = "service", contextName = "level-2")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		assertIsSpy(serviceInParent);
++		assertIsSpy(serviceInChild);
++
++		assertThat(serviceInParent.greeting()).isEqualTo("Service 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("Service 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 2");
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentContextHierarchyTests.java
+new file mode 100644
+index 000000000000..13e1eba1b12f
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByNameInParentContextHierarchyTests.java
+@@ -0,0 +1,100 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByNameInParentContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByNameInParentContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only spied on "by name" in the parent.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class)
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByNameInParentContextHierarchyTests {
++
++	@MockitoSpyBean(name = "service", contextName = "parent")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		assertIsSpy(service);
++
++		assertThat(service.greeting()).isEqualTo("Service 1");
++		assertThat(serviceCaller1.getService()).isSameAs(service);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 1");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..1f71a5e674f1
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInChildContextHierarchyTests.java
+@@ -0,0 +1,110 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByTypeInChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByTypeInChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsNotSpy;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only spied on "by type" in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByTypeInChildContextHierarchyTests {
++
++	@MockitoSpyBean(contextName = "child")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertIsNotSpy(serviceInParent);
++		assertIsSpy(service);
++
++		assertThat(service.greeting()).isEqualTo("Service 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..90cf7d285699
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,110 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByTypeInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByTypeInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are spied on "by type" in the parent and in the child.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByTypeInParentAndChildContextHierarchyTests {
++
++	@MockitoSpyBean(contextName = "parent")
++	ExampleService serviceInParent;
++
++	@MockitoSpyBean(contextName = "child")
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		assertIsSpy(serviceInParent);
++		assertIsSpy(serviceInChild);
++
++		assertThat(serviceInParent.greeting()).isEqualTo("Service 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("Service 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInParentContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInParentContextHierarchyTests.java
+new file mode 100644
+index 000000000000..3d0d841c8f1e
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeanByTypeInParentContextHierarchyTests.java
+@@ -0,0 +1,100 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByTypeInParentContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeanByTypeInParentContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * a bean is only spied on "by type" in the parent.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class)
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class MockitoSpyBeanByTypeInParentContextHierarchyTests {
++
++	@MockitoSpyBean(contextName = "parent")
++	ExampleService service;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test() {
++		assertIsSpy(service);
++
++		assertThat(service.greeting()).isEqualTo("Service 1");
++		assertThat(serviceCaller1.getService()).isSameAs(service);
++		assertThat(serviceCaller2.getService()).isSameAs(service);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 1");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeansByTypeInParentAndChildContextHierarchyTests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeansByTypeInParentAndChildContextHierarchyTests.java
+new file mode 100644
+index 000000000000..e4fb4d16c3e0
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/MockitoSpyBeansByTypeInParentAndChildContextHierarchyTests.java
+@@ -0,0 +1,113 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.annotation.Bean;
++import org.springframework.context.annotation.Configuration;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.example.ExampleService;
++import org.springframework.test.context.bean.override.example.ExampleServiceCaller;
++import org.springframework.test.context.bean.override.example.RealExampleService;
++import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeansByTypeInParentAndChildContextHierarchyTests.Config1;
++import org.springframework.test.context.bean.override.mockito.hierarchies.MockitoSpyBeansByTypeInParentAndChildContextHierarchyTests.Config2;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.springframework.test.mockito.MockitoAssertions.assertIsSpy;
++
++/**
++ * Verifies that {@link MockitoSpyBean @MockitoSpyBean} can be used within a
++ * {@link ContextHierarchy @ContextHierarchy} with named context levels, when
++ * identical beans are spied on "by type" in the parent and in the child and
++ * configured via class-level {@code @MockitoSpyBean} declarations.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = Config1.class, name = "parent"),
++	@ContextConfiguration(classes = Config2.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++@MockitoSpyBean(types = ExampleService.class, contextName = "parent")
++@MockitoSpyBean(types = ExampleService.class, contextName = "child")
++class MockitoSpyBeansByTypeInParentAndChildContextHierarchyTests {
++
++	@Autowired
++	ExampleService serviceInChild;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller1;
++
++	@Autowired
++	ExampleServiceCaller serviceCaller2;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		ExampleService serviceInParent = context.getParent().getBean(ExampleService.class);
++
++		assertIsSpy(serviceInParent);
++		assertIsSpy(serviceInChild);
++
++		assertThat(serviceInParent.greeting()).isEqualTo("Service 1");
++		assertThat(serviceInChild.greeting()).isEqualTo("Service 2");
++		assertThat(serviceCaller1.getService()).isSameAs(serviceInParent);
++		assertThat(serviceCaller2.getService()).isSameAs(serviceInChild);
++		assertThat(serviceCaller1.sayGreeting()).isEqualTo("I say Service 1");
++		assertThat(serviceCaller2.sayGreeting()).isEqualTo("I say Service 2");
++	}
++
++
++	@Configuration
++	static class Config1 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 1");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller1(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++	@Configuration
++	static class Config2 {
++
++		@Bean
++		ExampleService service() {
++			return new RealExampleService("Service 2");
++		}
++
++		@Bean
++		ExampleServiceCaller serviceCaller2(ExampleService service) {
++			return new ExampleServiceCaller(service);
++		}
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ReusedParentConfigV1Tests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ReusedParentConfigV1Tests.java
+new file mode 100644
+index 000000000000..b5dc403a727b
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ReusedParentConfigV1Tests.java
+@@ -0,0 +1,66 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.BDDMockito.given;
++
++/**
++ * If the {@link ApplicationContext} for {@link ErrorIfContextReloadedConfig} is
++ * loaded twice (i.e., not properly cached), either this test class or
++ * {@link ReusedParentConfigV2Tests} will fail when both test classes are run
++ * within the same test suite.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = ErrorIfContextReloadedConfig.class),
++	@ContextConfiguration(classes = FooService.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class ReusedParentConfigV1Tests {
++
++	@Autowired
++	ErrorIfContextReloadedConfig sharedConfig;
++
++	@MockitoBean(contextName = "child")
++	FooService fooService;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		assertThat(context.getParent().getBeanNamesForType(FooService.class)).isEmpty();
++		assertThat(context.getBeanNamesForType(FooService.class)).hasSize(1);
++
++		given(fooService.foo()).willReturn("mock");
++		assertThat(fooService.foo()).isEqualTo("mock");
++	}
++
++}
+diff --git a/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ReusedParentConfigV2Tests.java b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ReusedParentConfigV2Tests.java
+new file mode 100644
+index 000000000000..009d85e16353
+--- /dev/null
++++ b/spring-test/src/test/java/org/springframework/test/context/bean/override/mockito/hierarchies/ReusedParentConfigV2Tests.java
+@@ -0,0 +1,66 @@
++/*
++ * Copyright 2002-2025 the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.test.context.bean.override.mockito.hierarchies;
++
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.extension.ExtendWith;
++
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.context.ApplicationContext;
++import org.springframework.test.context.ContextConfiguration;
++import org.springframework.test.context.ContextHierarchy;
++import org.springframework.test.context.aot.DisabledInAotMode;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import org.springframework.test.context.junit.jupiter.SpringExtension;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.BDDMockito.given;
++
++/**
++ * If the {@link ApplicationContext} for {@link ErrorIfContextReloadedConfig} is
++ * loaded twice (i.e., not properly cached), either this test class or
++ * {@link ReusedParentConfigV1Tests} will fail when both test classes are run
++ * within the same test suite.
++ *
++ * @author Sam Brannen
++ * @since 6.2.6
++ */
++@ExtendWith(SpringExtension.class)
++@ContextHierarchy({
++	@ContextConfiguration(classes = ErrorIfContextReloadedConfig.class),
++	@ContextConfiguration(classes = BarService.class, name = "child")
++})
++@DisabledInAotMode("@ContextHierarchy is not supported in AOT")
++class ReusedParentConfigV2Tests {
++
++	@Autowired
++	ErrorIfContextReloadedConfig sharedConfig;
++
++	@MockitoBean(contextName = "child")
++	BarService barService;
++
++
++	@Test
++	void test(ApplicationContext context) {
++		assertThat(context.getParent().getBeanNamesForType(BarService.class)).isEmpty();
++		assertThat(context.getBeanNamesForType(BarService.class)).hasSize(1);
++
++		given(barService.bar()).willReturn("mock");
++		assertThat(barService.bar()).isEqualTo("mock");
++	}
++
++}

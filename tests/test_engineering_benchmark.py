@@ -29,7 +29,7 @@ class EngineeringBenchmarkTests(unittest.TestCase):
             {item["scenario"] for item in report["case_results"]},
         )
 
-    def test_context_stress_runs_30_large_diffs_and_preserves_risk_lines(self):
+    def test_context_stress_compacts_then_batches_without_losing_changed_lines(self):
         report = run_context_stress_benchmark()
 
         self.assertEqual(30, report["cases"])
@@ -37,15 +37,23 @@ class EngineeringBenchmarkTests(unittest.TestCase):
         self.assertEqual(1.0, report["budget_compliance_rate"])
         self.assertEqual(1.0, report["contract_retention_rate"])
         self.assertEqual(1.0, report["compression_activation_rate"])
-        self.assertGreater(report["average_token_reduction_rate"], 0.7)
+        self.assertEqual(1.0, report["batch_activation_rate"])
+        self.assertEqual(1.0, report["changed_line_coverage_rate"])
+        self.assertGreater(
+            report["average_single_call_token_reduction_rate"], 0.7
+        )
+        self.assertGreater(report["average_cumulative_token_ratio"], 0.0)
         self.assertEqual(30, len(report["case_results"]))
         self.assertEqual(
             {"medium", "large", "xlarge"},
             {item["size_tier"] for item in report["case_results"]},
         )
         self.assertTrue(all(
-            item["manifest"]["included"]["skills"] == 1
-            and item["manifest"]["included"]["tools"] == 2
+            all(
+                manifest["included"]["skills"] == 1
+                and manifest["included"]["tools"] == 2
+                for manifest in item["manifests"]
+            )
             for item in report["case_results"]
         ))
 

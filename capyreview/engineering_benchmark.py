@@ -444,9 +444,15 @@ def run_fine_grained_recovery_benchmark() -> Dict[str, Any]:
 
 def _large_diff(index: int, line_count: int, position: int) -> tuple:
     marker = "eval(untrusted_payload_marker_%02d)" % index
-    risk_index = (0, line_count // 2, line_count - 1)[position]
+    change_count = max(1, line_count // 5)
+    risk_index = (0, change_count // 2, change_count - 1)[position]
     added = []
-    for line_index in range(line_count):
+    for line_index in range(change_count):
+        for context_index in range(4):
+            added.append(
+                " stable_%05d_%d = existing_behavior(payload_%05d)\n"
+                % (line_index, context_index, line_index)
+            )
         if line_index == risk_index:
             added.append("+result = %s\n" % marker)
         else:
@@ -456,14 +462,17 @@ def _large_diff(index: int, line_count: int, position: int) -> tuple:
             )
     diff = (
         "--- a/src/stress_%02d.py\n+++ b/src/stress_%02d.py\n"
-        "@@ -1 +1,%d @@\n-result = safe_parse(payload)\n%s"
-        % (index, index, line_count, "".join(added))
+        "@@ -1,%d +1,%d @@\n-result = safe_parse(payload)\n%s"
+        % (
+            index, index, change_count * 4 + 1,
+            change_count * 5, "".join(added),
+        )
     )
     return diff, marker
 
 
 def run_context_stress_benchmark() -> Dict[str, Any]:
-    """Bound 30 complete model requests and verify contract/risk retention."""
+    """Verify conditional compaction, Hunk batching and changed-line coverage."""
     manager = ContextManager(max_tokens=1024, reserved_tokens=256)
     unbounded = ContextManager(max_tokens=50000, reserved_tokens=2000)
     system_prompt = (
@@ -498,7 +507,7 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
         "recall_score": 0.9,
     }]
     results = []
-    tiers = (("medium", 500), ("large", 1000), ("xlarge", 2000))
+    tiers = (("medium", 600), ("large", 1200), ("xlarge", 2400))
     case_index = 0
     for tier, lines in tiers:
         for offset in range(10):
@@ -515,17 +524,24 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
             }
             fixed_tokens = manager.contract_tokens(
                 system_prompt, assignment, skills, tools
+            ) + manager.runtime_tokens(
+                observations=observations, memories=memories
             ) + manager.estimate_tokens("DIFF_CONTEXT:\n")
-            bundle = manager.build(
+            bundles = manager.build_batches(
                 diff, assignment, fixed_tokens=fixed_tokens
             )
-            managed = manager.compose(
-                bundle, assignment, system_prompt=system_prompt,
-                skills=skills, tools=tools,
-                observations=observations, memories=memories,
-            )
+            managed_batches = [
+                manager.compose(
+                    bundle, assignment, system_prompt=system_prompt,
+                    skills=skills, tools=tools,
+                    observations=observations, memories=memories,
+                )
+                for bundle in bundles
+            ]
             original_fixed = unbounded.contract_tokens(
                 system_prompt, assignment, skills, tools
+            ) + unbounded.runtime_tokens(
+                observations=observations, memories=memories
             ) + unbounded.estimate_tokens("DIFF_CONTEXT:\n")
             original_bundle = unbounded.build(
                 diff, assignment, fixed_tokens=original_fixed
@@ -535,27 +551,45 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
                 skills=skills, tools=tools,
                 observations=observations, memories=memories,
             )
-            reduction = 1.0 - managed.estimated_tokens / original.estimated_tokens
-            contract_retained = (
+            batch_tokens = [item.estimated_tokens for item in managed_batches]
+            average_batch_tokens = sum(batch_tokens) / len(batch_tokens)
+            reduction = 1.0 - average_batch_tokens / original.estimated_tokens
+            contract_retained = all(
                 managed.system_prompt == system_prompt
                 and managed.manifest["included"]["skills"] == len(skills)
                 and managed.manifest["included"]["tools"] == len(tools)
+                for managed in managed_batches
+            )
+            rendered = "".join(bundle.text for bundle in bundles)
+            changed_line_coverage = _ratio(
+                sum(item.content in rendered for item in parsed.added_lines),
+                len(parsed.added_lines),
             )
             results.append({
                 "id": "context-%02d" % case_index,
                 "size_tier": tier, "added_lines": lines,
                 "risk_position": ("start", "middle", "end")[offset % 3],
                 "original_tokens": original.estimated_tokens,
-                "final_tokens": managed.estimated_tokens,
-                "original_diff_tokens": bundle.original_tokens,
-                "final_diff_tokens": bundle.final_tokens,
-                "token_reduction_rate": round(reduction, 4),
-                "compressed": bundle.compressed,
-                "within_budget": managed.estimated_tokens <= manager.max_tokens,
+                "average_batch_tokens": round(average_batch_tokens),
+                "max_batch_tokens": max(batch_tokens),
+                "total_batch_tokens": sum(batch_tokens),
+                "original_diff_tokens": bundles[0].original_tokens,
+                "single_call_token_reduction_rate": round(reduction, 4),
+                "cumulative_token_ratio": round(
+                    sum(batch_tokens) / original.estimated_tokens, 4
+                ),
+                "compressed": any(bundle.compressed for bundle in bundles),
+                "batched": len(bundles) > 1,
+                "batch_count": len(bundles),
+                "within_budget": all(
+                    item.estimated_tokens <= manager.max_tokens
+                    for item in managed_batches
+                ),
                 "contract_retained": contract_retained,
-                "risk_evidence_retained": marker in managed.text,
-                "strategy": bundle.strategy,
-                "manifest": managed.manifest,
+                "changed_line_coverage": changed_line_coverage,
+                "risk_evidence_retained": marker in rendered,
+                "strategies": sorted({bundle.strategy for bundle in bundles}),
+                "manifests": [item.manifest for item in managed_batches],
             })
     return {
         "schema_version": 1,
@@ -566,6 +600,9 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
         "compression_activation_rate": _ratio(
             sum(item["compressed"] for item in results), len(results)
         ),
+        "batch_activation_rate": _ratio(
+            sum(item["batched"] for item in results), len(results)
+        ),
         "budget_compliance_rate": _ratio(
             sum(item["within_budget"] for item in results), len(results)
         ),
@@ -575,8 +612,17 @@ def run_context_stress_benchmark() -> Dict[str, Any]:
         "contract_retention_rate": _ratio(
             sum(item["contract_retained"] for item in results), len(results)
         ),
-        "average_token_reduction_rate": round(
-            sum(item["token_reduction_rate"] for item in results) / len(results), 4
+        "changed_line_coverage_rate": round(
+            sum(item["changed_line_coverage"] for item in results) / len(results),
+            4,
+        ),
+        "average_single_call_token_reduction_rate": round(
+            sum(item["single_call_token_reduction_rate"] for item in results)
+            / len(results), 4
+        ),
+        "average_cumulative_token_ratio": round(
+            sum(item["cumulative_token_ratio"] for item in results)
+            / len(results), 4
         ),
         "case_results": results,
     }
@@ -622,7 +668,14 @@ def markdown_report(faults: dict, context: dict, fine_grained: dict) -> str:
         "- Token 预算满足率：%s" % percent(context["budget_compliance_rate"]),
         "- 规则层完整保留率：%s" % percent(context["contract_retention_rate"]),
         "- 风险证据保留率：%s" % percent(context["risk_evidence_retention_rate"]),
-        "- 平均 Token 缩减：%s" % percent(context["average_token_reduction_rate"]),
+        "- 平均单次输入 Token 缩减：%s" % percent(
+            context["average_single_call_token_reduction_rate"]
+        ),
+        "- 变更行覆盖率：%s" % percent(context["changed_line_coverage_rate"]),
+        "- Batch 触发率：%s" % percent(context["batch_activation_rate"]),
+        "- 所有 Batch 累计 Token / 原完整请求：%s" % percent(
+            context["average_cumulative_token_ratio"]
+        ),
         "",
         "所有结果均由 `scripts/run_engineering_benchmarks.py` 本地可复现生成。",
         "",

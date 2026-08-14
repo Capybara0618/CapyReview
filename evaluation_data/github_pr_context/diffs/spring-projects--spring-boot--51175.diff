@@ -1,0 +1,13 @@
+diff --git a/module/spring-boot-hazelcast/src/main/java/org/springframework/boot/hazelcast/autoconfigure/HazelcastProperties.java b/module/spring-boot-hazelcast/src/main/java/org/springframework/boot/hazelcast/autoconfigure/HazelcastProperties.java
+index 066ae54369e8..ade575c08992 100644
+--- a/module/spring-boot-hazelcast/src/main/java/org/springframework/boot/hazelcast/autoconfigure/HazelcastProperties.java
++++ b/module/spring-boot-hazelcast/src/main/java/org/springframework/boot/hazelcast/autoconfigure/HazelcastProperties.java
+@@ -47,8 +47,6 @@ public void setConfig(@Nullable Resource config) {
+ 	/**
+ 	 * Resolve the config location if set.
+ 	 * @return the location or {@code null} if it is not set
+-	 * @throws IllegalArgumentException if the config attribute is set to an unknown
+-	 * location
+ 	 */
+ 	public @Nullable Resource resolveConfigLocation() {
+ 		Resource config = this.config;

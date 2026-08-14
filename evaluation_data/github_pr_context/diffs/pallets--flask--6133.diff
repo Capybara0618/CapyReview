@@ -1,0 +1,58 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 42c41e6ad7..129b58e7b5 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -29,6 +29,7 @@ Unreleased
+ -   ``Flask.select_jinja_autoescape`` uses case-insensitive comparison instead
+     of only lower case file extensions. :pr:`6012`
+ -   Fix parsing IPv6 with port in ``run`` and the test client. :pr:`6096`
++-   Add ``app.query`` route decorator for the HTTP QUERY method.
+ 
+ 
+ Version 3.1.3
+diff --git a/src/flask/sansio/scaffold.py b/src/flask/sansio/scaffold.py
+index a04c38adc6..fbe9c661ad 100644
+--- a/src/flask/sansio/scaffold.py
++++ b/src/flask/sansio/scaffold.py
+@@ -300,6 +300,14 @@ def get(self, rule: str, **options: t.Any) -> t.Callable[[T_route], T_route]:
+         """
+         return self._method_route("GET", rule, options)
+ 
++    @setupmethod
++    def query(self, rule: str, **options: t.Any) -> t.Callable[[T_route], T_route]:
++        """Shortcut for :meth:`route` with ``methods=["QUERY"]``.
++
++        .. versionadded:: 3.2
++        """
++        return self._method_route("QUERY", rule, options)
++
+     @setupmethod
+     def post(self, rule: str, **options: t.Any) -> t.Callable[[T_route], T_route]:
+         """Shortcut for :meth:`route` with ``methods=["POST"]``.
+diff --git a/tests/test_basic.py b/tests/test_basic.py
+index 3d2f3baa66..b370f4f7e1 100644
+--- a/tests/test_basic.py
++++ b/tests/test_basic.py
+@@ -7,6 +7,7 @@
+ from contextlib import nullcontext
+ from datetime import datetime
+ from datetime import timezone
++from functools import partial
+ from platform import python_implementation
+ 
+ import pytest
+@@ -52,10 +53,12 @@ def index_put():
+     assert sorted(rv.allow) == ["GET", "HEAD", "OPTIONS", "POST", "PUT"]
+ 
+ 
+-@pytest.mark.parametrize("method", ["get", "post", "put", "delete", "patch"])
++@pytest.mark.parametrize("method", ["get", "query", "post", "put", "delete", "patch"])
+ def test_method_route(app, client, method):
+     method_route = getattr(app, method)
+-    client_method = getattr(client, method)
++    client_method = getattr(
++        client, method, partial(client.open, method=method.capitalize())
++    )
+ 
+     @method_route("/")
+     def hello():

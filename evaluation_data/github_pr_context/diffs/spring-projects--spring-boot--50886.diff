@@ -1,0 +1,587 @@
+diff --git a/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryCloser.java b/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryCloser.java
+new file mode 100644
+index 000000000000..0e0dd488c138
+--- /dev/null
++++ b/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryCloser.java
+@@ -0,0 +1,75 @@
++/*
++ * Copyright 2012-present the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.boot.micrometer.metrics.autoconfigure;
++
++import java.util.Set;
++import java.util.concurrent.CopyOnWriteArraySet;
++
++import io.micrometer.core.instrument.MeterRegistry;
++import io.micrometer.core.instrument.Metrics;
++
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.ApplicationListener;
++import org.springframework.context.event.ContextClosedEvent;
++
++/**
++ * Ensures that {@link MeterRegistry meter registries} are closed early in the shutdown
++ * process. Also unregisters the registries from the global registry if needed.
++ *
++ * @author Jon Schneider
++ * @author Stephane Nicoll
++ * @author Moritz Halbritter
++ * @author Michael Berry
++ * @author Phillip Webb
++ * @author Lordwill Kandiro
++ */
++class MeterRegistryCloser implements ApplicationListener<ContextClosedEvent> {
++
++	private final ApplicationContext context;
++
++	private final Set<MeterRegistry> registriesToClose = new CopyOnWriteArraySet<>();
++
++	private final Set<MeterRegistry> registriesToRemoveFromGlobalRegistry = new CopyOnWriteArraySet<>();
++
++	MeterRegistryCloser(ApplicationContext context) {
++		this.context = context;
++	}
++
++	void track(MeterRegistry meterRegistry) {
++		this.registriesToClose.add(meterRegistry);
++	}
++
++	void trackAddedToGlobalRegistry(MeterRegistry meterRegistry) {
++		this.registriesToRemoveFromGlobalRegistry.add(meterRegistry);
++	}
++
++	@Override
++	public void onApplicationEvent(ContextClosedEvent event) {
++		if (!this.context.equals(event.getApplicationContext())) {
++			return;
++		}
++		for (MeterRegistry meterRegistry : this.registriesToRemoveFromGlobalRegistry) {
++			Metrics.removeRegistry(meterRegistry);
++		}
++		for (MeterRegistry meterRegistry : this.registriesToClose) {
++			if (!meterRegistry.isClosed()) {
++				meterRegistry.close();
++			}
++		}
++	}
++
++}
+diff --git a/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessor.java b/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessor.java
+index e3be67195b30..549b0d3bac81 100644
+--- a/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessor.java
++++ b/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessor.java
+@@ -54,25 +54,30 @@ class MeterRegistryPostProcessor implements BeanPostProcessor, SmartInitializing
+ 
+ 	private final ObjectProvider<MeterBinder> binders;
+ 
++	private final ObjectProvider<MeterRegistryCloser> meterRegistryCloser;
++
+ 	private volatile boolean deferBinding = true;
+ 
+ 	private final Set<MeterRegistry> deferredBindings = new LinkedHashSet<>();
+ 
+ 	MeterRegistryPostProcessor(ApplicationContext applicationContext,
+ 			ObjectProvider<MetricsProperties> metricsProperties, ObjectProvider<MeterRegistryCustomizer<?>> customizers,
+-			ObjectProvider<MeterFilter> filters, ObjectProvider<MeterBinder> binders) {
+-		this(CompositeMeterRegistries.of(applicationContext), metricsProperties, customizers, filters, binders);
++			ObjectProvider<MeterFilter> filters, ObjectProvider<MeterBinder> binders,
++			ObjectProvider<MeterRegistryCloser> meterRegistryCloser) {
++		this(CompositeMeterRegistries.of(applicationContext), metricsProperties, customizers, filters, binders,
++				meterRegistryCloser);
+ 	}
+ 
+ 	MeterRegistryPostProcessor(CompositeMeterRegistries compositeMeterRegistries,
+ 			ObjectProvider<MetricsProperties> properties, ObjectProvider<MeterRegistryCustomizer<?>> customizers,
+-			ObjectProvider<MeterFilter> filters, ObjectProvider<MeterBinder> binders) {
++			ObjectProvider<MeterFilter> filters, ObjectProvider<MeterBinder> binders,
++			ObjectProvider<MeterRegistryCloser> meterRegistryCloser) {
+ 		this.compositeMeterRegistries = compositeMeterRegistries;
+ 		this.properties = properties;
+ 		this.customizers = customizers;
+ 		this.filters = filters;
+ 		this.binders = binders;
+-
++		this.meterRegistryCloser = meterRegistryCloser;
+ 	}
+ 
+ 	@Override
+@@ -92,6 +97,7 @@ public void afterSingletonsInstantiated() {
+ 	}
+ 
+ 	private void postProcessMeterRegistry(MeterRegistry meterRegistry) {
++		this.meterRegistryCloser.getObject().track(meterRegistry);
+ 		// Customizers must be applied before binders, as they may add custom tags or
+ 		// alter timer or summary configuration.
+ 		applyCustomizers(meterRegistry);
+@@ -123,6 +129,7 @@ private void applyFilters(MeterRegistry meterRegistry) {
+ 	private void addToGlobalRegistryIfNecessary(MeterRegistry meterRegistry) {
+ 		if (this.properties.getObject().isUseGlobalRegistry() && !isGlobalRegistry(meterRegistry)) {
+ 			Metrics.addRegistry(meterRegistry);
++			this.meterRegistryCloser.getObject().trackAddedToGlobalRegistry(meterRegistry);
+ 		}
+ 	}
+ 
+diff --git a/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfiguration.java b/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfiguration.java
+index 7a4d06b7fee7..9f8ee142a053 100644
+--- a/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfiguration.java
++++ b/module/spring-boot-micrometer-metrics/src/main/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfiguration.java
+@@ -19,7 +19,6 @@
+ import io.micrometer.core.annotation.Timed;
+ import io.micrometer.core.instrument.Clock;
+ import io.micrometer.core.instrument.MeterRegistry;
+-import io.micrometer.core.instrument.Metrics;
+ import io.micrometer.core.instrument.binder.MeterBinder;
+ import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
+ import io.micrometer.core.instrument.config.MeterFilter;
+@@ -35,9 +34,7 @@
+ import org.springframework.boot.context.properties.EnableConfigurationProperties;
+ import org.springframework.boot.micrometer.observation.autoconfigure.ObservationHandlerGroup;
+ import org.springframework.context.ApplicationContext;
+-import org.springframework.context.ApplicationListener;
+ import org.springframework.context.annotation.Bean;
+-import org.springframework.context.event.ContextClosedEvent;
+ import org.springframework.core.annotation.Order;
+ 
+ /**
+@@ -65,9 +62,10 @@ Clock micrometerClock() {
+ 	static MeterRegistryPostProcessor meterRegistryPostProcessor(ApplicationContext applicationContext,
+ 			ObjectProvider<MetricsProperties> metricsProperties,
+ 			ObjectProvider<MeterRegistryCustomizer<?>> meterRegistryCustomizers,
+-			ObjectProvider<MeterFilter> meterFilters, ObjectProvider<MeterBinder> meterBinders) {
++			ObjectProvider<MeterFilter> meterFilters, ObjectProvider<MeterBinder> meterBinders,
++			ObjectProvider<MeterRegistryCloser> meterRegistryCloser) {
+ 		return new MeterRegistryPostProcessor(applicationContext, metricsProperties, meterRegistryCustomizers,
+-				meterFilters, meterBinders);
++				meterFilters, meterBinders, meterRegistryCloser);
+ 	}
+ 
+ 	@Bean
+@@ -77,8 +75,8 @@ PropertiesMeterFilter propertiesMeterFilter(MetricsProperties properties) {
+ 	}
+ 
+ 	@Bean
+-	MeterRegistryCloser meterRegistryCloser(ApplicationContext context, MetricsProperties properties) {
+-		return new MeterRegistryCloser(context, properties.isUseGlobalRegistry());
++	MeterRegistryCloser meterRegistryCloser(ApplicationContext context) {
++		return new MeterRegistryCloser(context);
+ 	}
+ 
+ 	@Bean
+@@ -94,38 +92,4 @@ DefaultMeterObservationHandler defaultMeterObservationHandler(ObjectProvider<Met
+ 				properties.getObservations().getIgnoredMeters().toArray(IgnoredMeters[]::new));
+ 	}
+ 
+-	/**
+-	 * Ensures that {@link MeterRegistry meter registries} are closed early in the
+-	 * shutdown process.
+-	 */
+-	static class MeterRegistryCloser implements ApplicationListener<ContextClosedEvent> {
+-
+-		private final ApplicationContext context;
+-
+-		private final Iterable<MeterRegistry> meterRegistries;
+-
+-		private final boolean useGlobalRegistry;
+-
+-		MeterRegistryCloser(ApplicationContext context, boolean useGlobalRegistry) {
+-			this.meterRegistries = context.getBeansOfType(MeterRegistry.class).values();
+-			this.context = context;
+-			this.useGlobalRegistry = useGlobalRegistry;
+-		}
+-
+-		@Override
+-		public void onApplicationEvent(ContextClosedEvent event) {
+-			if (this.context.equals(event.getApplicationContext())) {
+-				for (MeterRegistry meterRegistry : this.meterRegistries) {
+-					if (this.useGlobalRegistry) {
+-						Metrics.globalRegistry.remove(meterRegistry);
+-					}
+-					if (!meterRegistry.isClosed()) {
+-						meterRegistry.close();
+-					}
+-				}
+-			}
+-		}
+-
+-	}
+-
+ }
+diff --git a/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryCloserTests.java b/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryCloserTests.java
+new file mode 100644
+index 000000000000..53c92be6e4a2
+--- /dev/null
++++ b/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryCloserTests.java
+@@ -0,0 +1,113 @@
++/*
++ * Copyright 2012-present the original author or authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.springframework.boot.micrometer.metrics.autoconfigure;
++
++import io.micrometer.core.instrument.MeterRegistry;
++import io.micrometer.core.instrument.Metrics;
++import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
++import org.junit.jupiter.api.Test;
++import org.mockito.InOrder;
++
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.event.ContextClosedEvent;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.mockito.BDDMockito.given;
++import static org.mockito.BDDMockito.then;
++import static org.mockito.Mockito.inOrder;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++
++/**
++ * Tests for {@link MeterRegistryCloser}.
++ *
++ * @author Lordwill Kandiro
++ * @author Moritz Halbritter
++ */
++class MeterRegistryCloserTests {
++
++	private final ApplicationContext context = mock(ApplicationContext.class);
++
++	@Test
++	void trackedRegistryIsRemovedFromGlobalRegistryOnContextClosedEvent() {
++		MeterRegistry meterRegistry = new SimpleMeterRegistry();
++		MeterRegistryCloser closer = new MeterRegistryCloser(this.context);
++		try {
++			Metrics.addRegistry(meterRegistry);
++			closer.trackAddedToGlobalRegistry(meterRegistry);
++			closer.onApplicationEvent(new ContextClosedEvent(this.context));
++			assertThat(Metrics.globalRegistry.getRegistries()).doesNotContain(meterRegistry);
++		}
++		finally {
++			Metrics.removeRegistry(meterRegistry);
++		}
++	}
++
++	@Test
++	void trackedRegistryIsClosedOnContextClosedEvent() {
++		MeterRegistry meterRegistry = new SimpleMeterRegistry();
++		MeterRegistryCloser closer = new MeterRegistryCloser(this.context);
++		closer.track(meterRegistry);
++		closer.onApplicationEvent(new ContextClosedEvent(this.context));
++		assertThat(meterRegistry.isClosed()).isTrue();
++	}
++
++	@Test
++	void trackedRegistriesAreClosedInTheOrderThatTheyWereTracked() {
++		MeterRegistry first = mock(MeterRegistry.class);
++		MeterRegistry second = mock(MeterRegistry.class);
++		MeterRegistry third = mock(MeterRegistry.class);
++		MeterRegistryCloser closer = new MeterRegistryCloser(this.context);
++		closer.track(first);
++		closer.track(second);
++		closer.track(third);
++		closer.onApplicationEvent(new ContextClosedEvent(this.context));
++		InOrder ordered = inOrder(first, second, third);
++		then(first).should(ordered).close();
++		then(second).should(ordered).close();
++		then(third).should(ordered).close();
++	}
++
++	@Test
++	void alreadyClosedRegistryIsNotClosedAgain() {
++		MeterRegistry meterRegistry = mock(MeterRegistry.class);
++		given(meterRegistry.isClosed()).willReturn(true);
++		MeterRegistryCloser closer = new MeterRegistryCloser(this.context);
++		closer.track(meterRegistry);
++		closer.onApplicationEvent(new ContextClosedEvent(this.context));
++		then(meterRegistry).should(never()).close();
++	}
++
++	@Test
++	void onApplicationEventIgnoresEventsFromOtherContexts() {
++		MeterRegistry meterRegistry = new SimpleMeterRegistry();
++		MeterRegistryCloser closer = new MeterRegistryCloser(this.context);
++		try {
++			Metrics.addRegistry(meterRegistry);
++			closer.track(meterRegistry);
++			closer.trackAddedToGlobalRegistry(meterRegistry);
++			ApplicationContext otherContext = mock(ApplicationContext.class);
++			closer.onApplicationEvent(new ContextClosedEvent(otherContext));
++			assertThat(Metrics.globalRegistry.getRegistries()).contains(meterRegistry);
++			assertThat(meterRegistry.isClosed()).isFalse();
++		}
++		finally {
++			Metrics.removeRegistry(meterRegistry);
++		}
++	}
++
++}
+diff --git a/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessorTests.java b/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessorTests.java
+index 0cf3e28d21c2..d0a5f1178f89 100644
+--- a/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessorTests.java
++++ b/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MeterRegistryPostProcessorTests.java
+@@ -40,6 +40,8 @@
+ import org.springframework.beans.factory.ObjectProvider;
+ import org.springframework.boot.micrometer.metrics.MaximumAllowableTagsMeterFilter;
+ import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryPostProcessor.CompositeMeterRegistries;
++import org.springframework.context.ApplicationContext;
++import org.springframework.context.event.ContextClosedEvent;
+ 
+ import static org.assertj.core.api.Assertions.assertThat;
+ import static org.mockito.BDDMockito.given;
+@@ -84,8 +86,13 @@ class MeterRegistryPostProcessorTests {
+ 	@SuppressWarnings("NullAway.Init")
+ 	private Config mockConfig;
+ 
++	private final ApplicationContext meterRegistryCloserContext = mock(ApplicationContext.class);
++
++	private final MeterRegistryCloser meterRegistryCloser;
++
+ 	MeterRegistryPostProcessorTests() {
+ 		this.properties.setUseGlobalRegistry(false);
++		this.meterRegistryCloser = new MeterRegistryCloser(this.meterRegistryCloserContext);
+ 	}
+ 
+ 	@Test
+@@ -94,7 +101,7 @@ void postProcessAndInitializeWhenUserDefinedCompositeAppliesCustomizer() {
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(
+ 				CompositeMeterRegistries.ONLY_USER_DEFINED, createObjectProvider(this.properties),
+ 				createObjectProvider(this.customizers), createObjectProvider(this.filters),
+-				createObjectProvider(this.binders));
++				createObjectProvider(this.binders), createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		CompositeMeterRegistry composite = new CompositeMeterRegistry();
+ 		postProcessAndInitialize(processor, composite);
+ 		then(this.mockCustomizer).should().customize(composite);
+@@ -105,7 +112,8 @@ void postProcessAndInitializeWhenAutoConfiguredCompositeAppliesCustomizer() {
+ 		this.customizers.add(this.mockCustomizer);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.AUTO_CONFIGURED,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createEmptyObjectProvider(), createObjectProvider(this.binders));
++				createEmptyObjectProvider(), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		AutoConfiguredCompositeMeterRegistry composite = new AutoConfiguredCompositeMeterRegistry(Clock.SYSTEM,
+ 				Collections.emptyList());
+ 		postProcessAndInitialize(processor, composite);
+@@ -118,7 +126,8 @@ void postProcessAndInitializeAppliesCustomizer() {
+ 		this.customizers.add(this.mockCustomizer);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		then(this.mockCustomizer).should().customize(this.mockRegistry);
+ 	}
+@@ -129,7 +138,8 @@ void postProcessAndInitializeAppliesFilter() {
+ 		this.filters.add(this.mockFilter);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		then(this.mockConfig).should().meterFilter(this.mockFilter);
+ 	}
+@@ -141,7 +151,8 @@ void postProcessAndInitializeOnlyAppliesLmiitedFiltersToAutoConfigured() {
+ 		this.filters.add(onlyOnceFilter);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.AUTO_CONFIGURED,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		AutoConfiguredCompositeMeterRegistry composite = new AutoConfiguredCompositeMeterRegistry(Clock.SYSTEM,
+ 				Collections.emptyList());
+ 		postProcessAndInitialize(processor, composite);
+@@ -156,7 +167,8 @@ void postProcessAndInitializeBindsTo() {
+ 		this.binders.add(this.mockBinder);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		then(this.mockBinder).should().bindTo(this.mockRegistry);
+ 	}
+@@ -167,7 +179,7 @@ void whenUserDefinedCompositeThenPostProcessAndInitializeCompositeBindsTo() {
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(
+ 				CompositeMeterRegistries.ONLY_USER_DEFINED, createObjectProvider(this.properties),
+ 				createObjectProvider(this.customizers), createObjectProvider(this.filters),
+-				createObjectProvider(this.binders));
++				createObjectProvider(this.binders), createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		CompositeMeterRegistry composite = new CompositeMeterRegistry();
+ 		postProcessAndInitialize(processor, composite);
+ 		then(this.mockBinder).should().bindTo(composite);
+@@ -178,8 +190,8 @@ void whenUserDefinedCompositeThenPostProcessAndInitializeStandardRegistryDoesNot
+ 		given(this.mockRegistry.config()).willReturn(this.mockConfig);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(
+ 				CompositeMeterRegistries.ONLY_USER_DEFINED, createObjectProvider(this.properties),
+-				createObjectProvider(this.customizers), createObjectProvider(this.filters),
+-				createEmptyObjectProvider());
++				createObjectProvider(this.customizers), createObjectProvider(this.filters), createEmptyObjectProvider(),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		then(this.mockBinder).shouldHaveNoInteractions();
+ 	}
+@@ -189,7 +201,8 @@ void whenAutoConfiguredCompositeThenPostProcessAndInitializeAutoConfiguredCompos
+ 		this.binders.add(this.mockBinder);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.AUTO_CONFIGURED,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createEmptyObjectProvider(), createObjectProvider(this.binders));
++				createEmptyObjectProvider(), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		AutoConfiguredCompositeMeterRegistry composite = new AutoConfiguredCompositeMeterRegistry(Clock.SYSTEM,
+ 				Collections.emptyList());
+ 		postProcessAndInitialize(processor, composite);
+@@ -201,7 +214,8 @@ void whenAutoConfiguredCompositeThenPostProcessAndInitializeCompositeDoesNotBind
+ 		this.binders.add(this.mockBinder);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.AUTO_CONFIGURED,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createEmptyObjectProvider());
++				createObjectProvider(this.filters), createEmptyObjectProvider(),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		CompositeMeterRegistry composite = new CompositeMeterRegistry();
+ 		postProcessAndInitialize(processor, composite);
+ 		then(this.mockBinder).shouldHaveNoInteractions();
+@@ -212,7 +226,8 @@ void whenAutoConfiguredCompositeThenPostProcessAndInitializeStandardRegistryDoes
+ 		given(this.mockRegistry.config()).willReturn(this.mockConfig);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.AUTO_CONFIGURED,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createEmptyObjectProvider());
++				createObjectProvider(this.filters), createEmptyObjectProvider(),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		then(this.mockBinder).shouldHaveNoInteractions();
+ 	}
+@@ -225,7 +240,8 @@ void postProcessAndInitializeIsOrderedCustomizerThenFilterThenBindTo() {
+ 		this.binders.add(this.mockBinder);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		InOrder ordered = inOrder(this.mockBinder, this.mockConfig, this.mockCustomizer);
+ 		then(this.mockCustomizer).should(ordered).customize(this.mockRegistry);
+@@ -239,7 +255,8 @@ void postProcessAndInitializeWhenUseGlobalRegistryTrueAddsToGlobalRegistry() {
+ 		this.properties.setUseGlobalRegistry(true);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		try {
+ 			postProcessAndInitialize(processor, this.mockRegistry);
+ 			assertThat(Metrics.globalRegistry.getRegistries()).contains(this.mockRegistry);
+@@ -249,23 +266,55 @@ void postProcessAndInitializeWhenUseGlobalRegistryTrueAddsToGlobalRegistry() {
+ 		}
+ 	}
+ 
++	@Test
++	void addToGlobalRegistryIfNecessaryTracksRegistryWithMeterRegistryCloser() {
++		given(this.mockRegistry.config()).willReturn(this.mockConfig);
++		this.properties.setUseGlobalRegistry(true);
++		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
++				createObjectProvider(this.properties), createObjectProvider(this.customizers),
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
++		try {
++			postProcessAndInitialize(processor, this.mockRegistry);
++			this.meterRegistryCloser.onApplicationEvent(new ContextClosedEvent(this.meterRegistryCloserContext));
++			assertThat(Metrics.globalRegistry.getRegistries()).doesNotContain(this.mockRegistry);
++		}
++		finally {
++			Metrics.removeRegistry(this.mockRegistry);
++		}
++	}
++
+ 	@Test
+ 	void postProcessAndInitializeWhenUseGlobalRegistryFalseDoesNotAddToGlobalRegistry() {
+ 		given(this.mockRegistry.config()).willReturn(this.mockConfig);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		postProcessAndInitialize(processor, this.mockRegistry);
+ 		assertThat(Metrics.globalRegistry.getRegistries()).doesNotContain(this.mockRegistry);
+ 	}
+ 
++	@Test
++	void postProcessMeterRegistryTracksRegistryForClosingWithMeterRegistryCloser() {
++		given(this.mockRegistry.config()).willReturn(this.mockConfig);
++		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
++				createObjectProvider(this.properties), createObjectProvider(this.customizers),
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
++		postProcessAndInitialize(processor, this.mockRegistry);
++		this.meterRegistryCloser.onApplicationEvent(new ContextClosedEvent(this.meterRegistryCloserContext));
++		then(this.mockRegistry).should().close();
++	}
++
+ 	@Test
+ 	void postProcessDoesNotBindToUntilSingletonsInitialized() {
+ 		given(this.mockRegistry.config()).willReturn(this.mockConfig);
+ 		this.binders.add(this.mockBinder);
+ 		MeterRegistryPostProcessor processor = new MeterRegistryPostProcessor(CompositeMeterRegistries.NONE,
+ 				createObjectProvider(this.properties), createObjectProvider(this.customizers),
+-				createObjectProvider(this.filters), createObjectProvider(this.binders));
++				createObjectProvider(this.filters), createObjectProvider(this.binders),
++				createMeterRegistryCloserProvider(this.meterRegistryCloser));
+ 		processor.postProcessAfterInitialization(this.mockRegistry, "meterRegistry");
+ 		then(this.mockBinder).shouldHaveNoInteractions();
+ 		processor.afterSingletonsInstantiated();
+@@ -307,4 +356,20 @@ public Stream<T> orderedStream() {
+ 		};
+ 	}
+ 
++	private ObjectProvider<MeterRegistryCloser> createMeterRegistryCloserProvider(MeterRegistryCloser closer) {
++		return new ObjectProvider<>() {
++
++			@Override
++			public MeterRegistryCloser getObject() {
++				return closer;
++			}
++
++			@Override
++			public Stream<MeterRegistryCloser> orderedStream() {
++				return Stream.of(closer);
++			}
++
++		};
++	}
++
+ }
+diff --git a/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfigurationTests.java b/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfigurationTests.java
+index 5146b80fb4a2..03d42a8657f0 100644
+--- a/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfigurationTests.java
++++ b/module/spring-boot-micrometer-metrics/src/test/java/org/springframework/boot/micrometer/metrics/autoconfigure/MetricsAutoConfigurationTests.java
+@@ -30,7 +30,6 @@
+ import org.junit.jupiter.api.Test;
+ 
+ import org.springframework.boot.autoconfigure.AutoConfigurations;
+-import org.springframework.boot.micrometer.metrics.autoconfigure.MetricsAutoConfiguration.MeterRegistryCloser;
+ import org.springframework.boot.micrometer.observation.autoconfigure.ObservationHandlerGroup;
+ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+ import org.springframework.context.annotation.Bean;

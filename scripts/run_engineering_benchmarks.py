@@ -63,11 +63,13 @@ def main() -> None:
         )
     )
     print(
-        "risk retention=%.1f%% budget compliance=%.1f%% token reduction=%.1f%%"
+        "changed-line coverage=%.1f%% budget compliance=%.1f%% "
+        "single-call reduction=%.1f%% cumulative ratio=%.1f%%"
         % (
-            context["risk_evidence_retention_rate"] * 100,
+            context["changed_line_coverage_rate"] * 100,
             context["budget_compliance_rate"] * 100,
-            context["average_token_reduction_rate"] * 100,
+            context["average_single_call_token_reduction_rate"] * 100,
+            context["average_cumulative_token_ratio"] * 100,
         )
     )
 
