@@ -153,6 +153,21 @@ Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗�
 每个 Tool Observation 使用任务内顺序编号 `O1/O2/...`。Reviewer 只能通过 `evidence_refs`
 显式引用成功的 GitHub MCP 结果；Skill 加载、失败调用和未引用结果不会进入 Judge 证据包。
 
+### 分层上下文预算
+
+每次 Reviewer 模型调用都按三层构造完整输入：
+
+1. **规则层不可裁剪：** System Prompt、Assignment、输出契约、已选 `SKILL.md` 与当前 Tool
+   Schema 先计入总预算；若规则层本身无法容纳则调用前明确失败，不静默删除契约。
+2. **当前证据优先：** Diff 按精确风险行、文件覆盖与原始顺序选择 Hunk；最新 Tool
+   Observation 与 Critic 反馈优先于普通剩余 Hunk。
+3. **历史经验按需：** Memory 只在当前仓库召回相关 Episodic/Semantic Top-K，并使用动态内容
+   的剩余空间，不参与 Diff Hunk 排序。
+
+Agent Loop 最后一轮移除 Tool Schema 并强制 Final-only。每轮 `context_window_prepared` Trace
+都携带 Context Manifest，记录 System、Skill、Tool、Diff、Observation 与 Memory 的估算 Token，
+以及各类内容的保留/丢弃数量。
+
 ## Formal Review Skill Evolution
 
 项目将认证安全、数据库迁移和异步可靠性等专业流程组织成符合 Agent Skills 规范的
@@ -196,9 +211,9 @@ python scripts/run_engineering_benchmarks.py
 该命令生成三组 JSON/Markdown 证据：50 轮任务级 Runtime 故障注入、30 轮细粒度 Agent
 恢复测试，以及 30 条大 Diff 上下文压力测试。细粒度测试分别覆盖 Agent Loop
 Observation、Reviewer Final 和 Judge Decision；当前报告中恢复成功率、状态一致率与
-Trace 完整率均为 100%，重复 LLM 调用为 0。上下文测试按精确风险行、文件覆盖与原始顺序
-分层选择 Diff Hunk；风险行保留率与 Token 预算满足率均为 100%，平均输入 Token 缩减
-95.7%。以上均为受控工程测试，不代表线上 SLA
+Trace 完整率均为 100%，重复 LLM 调用为 0。上下文测试按完整模型请求计入规则层、Diff、
+Observation 与 Memory；规则层完整保留率、风险行保留率与 Token 预算满足率均为 100%，
+平均输入 Token 缩减 95.0%。以上均为受控工程测试，不代表线上 SLA
 或真实 PR 检出效果。
 
 ### 100 条单系统 LLM 评测

@@ -1,0 +1,3992 @@
+{
+  "context_stress": {
+    "average_token_reduction_rate": 0.9503,
+    "budget_compliance_rate": 1.0,
+    "case_results": [
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 418,
+        "final_tokens": 679,
+        "id": "context-01",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 418,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 679
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.918,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 452,
+        "final_tokens": 713,
+        "id": "context-02",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 452,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 713
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9139,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 452,
+        "final_tokens": 713,
+        "id": "context-03",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 452,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 713
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9139,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 418,
+        "final_tokens": 679,
+        "id": "context-04",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 418,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 679
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.918,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 452,
+        "final_tokens": 713,
+        "id": "context-05",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 452,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 713
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9139,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 452,
+        "final_tokens": 713,
+        "id": "context-06",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 452,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 713
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9139,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 418,
+        "final_tokens": 679,
+        "id": "context-07",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 418,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 679
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.918,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 452,
+        "final_tokens": 713,
+        "id": "context-08",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 452,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 713
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9139,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 452,
+        "final_tokens": 713,
+        "id": "context-09",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 452,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 713
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9139,
+        "within_budget": true
+      },
+      {
+        "added_lines": 500,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 418,
+        "final_tokens": 679,
+        "id": "context-10",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 418,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 679
+        },
+        "original_diff_tokens": 8018,
+        "original_tokens": 8279,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "medium",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.918,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-11",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9582,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-12",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9561,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-13",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9561,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-14",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9582,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-15",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9561,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-16",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9561,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-17",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9582,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-18",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9561,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-19",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9561,
+        "within_budget": true
+      },
+      {
+        "added_lines": 1000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-20",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 16019,
+        "original_tokens": 16280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "large",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9582,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-21",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9789,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-22",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9779,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-23",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9779,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-24",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9789,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-25",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9779,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-26",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9779,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-27",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9789,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-28",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "middle",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9779,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 453,
+        "final_tokens": 714,
+        "id": "context-29",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 453,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 714
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "end",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9779,
+        "within_budget": true
+      },
+      {
+        "added_lines": 2000,
+        "compressed": true,
+        "contract_retained": true,
+        "final_diff_tokens": 419,
+        "final_tokens": 680,
+        "id": "context-30",
+        "manifest": {
+          "budget_tokens": 1024,
+          "dropped": {
+            "feedback": 0,
+            "memories": 0,
+            "observations": 0,
+            "skills": 0,
+            "tools": 0
+          },
+          "included": {
+            "feedback": 0,
+            "memories": 1,
+            "observations": 1,
+            "skills": 1,
+            "tools": 2
+          },
+          "sections": {
+            "assignment": 37,
+            "collaboration": 0,
+            "diff": 419,
+            "feedback": 0,
+            "memories": 34,
+            "observations": 34,
+            "skills": 34,
+            "system": 30,
+            "tools": 91
+          },
+          "total_input_tokens": 680
+        },
+        "original_diff_tokens": 32019,
+        "original_tokens": 32280,
+        "risk_evidence_retained": true,
+        "risk_position": "start",
+        "size_tier": "xlarge",
+        "strategy": "priority-tier-hunk-compression",
+        "token_reduction_rate": 0.9789,
+        "within_budget": true
+      }
+    ],
+    "cases": 30,
+    "compression_activation_rate": 1.0,
+    "context_max_tokens": 1024,
+    "contract_retention_rate": 1.0,
+    "generated_at": "2026-08-14T05:02:55.212686+00:00",
+    "reserved_tokens": 256,
+    "risk_evidence_retention_rate": 1.0,
+    "schema_version": 1
+  },
+  "fault_injection": {
+    "case_results": [
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-01",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-02",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-03",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-04",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-05",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-06",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-07",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-08",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-09",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected transient dependency failure",
+              "will_retry": true
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 2
+          }
+        ],
+        "id": "transient-10",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "transient_node_retry",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-01",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-01",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-02",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-02",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-03",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-03",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-04",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-04",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-05",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-05",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-06",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-06",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-07",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-07",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-08",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-08",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-09",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-09",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 1
+          },
+          {
+            "error": "tool argument key must be string",
+            "id": "O1",
+            "kind": "agent_loop_observation",
+            "ok": false,
+            "step": 1,
+            "tool": "lookup"
+          },
+          {
+            "action": "tool",
+            "kind": "agent_loop_action",
+            "step": 2
+          },
+          {
+            "id": "O2",
+            "kind": "agent_loop_observation",
+            "ok": true,
+            "result": "value:item-10",
+            "step": 2,
+            "tool": "lookup"
+          },
+          {
+            "action": "final",
+            "kind": "agent_loop_action",
+            "step": 3
+          }
+        ],
+        "id": "tool-10",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "tool_argument_recovery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-01",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-02",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-03",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-04",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-05",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-06",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-07",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-08",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-09",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "prepared"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "prepare",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "error": "injected worker interruption",
+              "will_retry": false
+            },
+            "kind": "node_failed",
+            "node": "review",
+            "step": 2
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "prepare",
+            "step": 0
+          },
+          {
+            "attempt": 2,
+            "detail": {},
+            "kind": "node_started",
+            "node": "review",
+            "step": 1
+          },
+          {
+            "attempt": 2,
+            "detail": {
+              "output_keys": [
+                "result"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "review",
+            "step": 1
+          }
+        ],
+        "id": "resume-10",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "checkpoint_resume",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-01",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-02",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-03",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-04",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-05",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-06",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-07",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-08",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-09",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "publication_id"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "publish",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "checkpoint_restored",
+            "node": "publish",
+            "step": 0
+          }
+        ],
+        "id": "duplicate-10",
+        "recoverable": true,
+        "recovered": true,
+        "scenario": "duplicate_delivery",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-01",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-02",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-03",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-04",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-05",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-06",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-07",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-08",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-09",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "contained": true,
+        "duplicate_side_effects": 0,
+        "events": [
+          {
+            "attempt": 1,
+            "detail": {},
+            "kind": "node_started",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 1,
+            "detail": {
+              "output_keys": [
+                "safe"
+              ]
+            },
+            "kind": "node_completed",
+            "node": "bounded-step",
+            "step": 1
+          },
+          {
+            "attempt": 0,
+            "detail": {},
+            "kind": "budget_exhausted",
+            "node": "forbidden-step",
+            "step": 1
+          }
+        ],
+        "id": "budget-10",
+        "recoverable": false,
+        "recovered": false,
+        "scenario": "budget_containment",
+        "state_consistent": true,
+        "trace_complete": true
+      }
+    ],
+    "cases": 50,
+    "duplicate_side_effects": 0,
+    "expected_terminal_cases": 10,
+    "fault_containment_rate": 1.0,
+    "fault_recovery_rate": 1.0,
+    "generated_at": "2026-08-14T05:02:55.118012+00:00",
+    "recoverable_cases": 40,
+    "schema_version": 1,
+    "state_consistency_rate": 1.0,
+    "trace_completeness_rate": 1.0
+  },
+  "fine_grained_recovery": {
+    "case_results": [
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-01",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-02",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-03",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-04",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-05",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-06",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-07",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-08",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-09",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "loop-observation-10",
+        "recovered": true,
+        "scenario": "agent_loop_observation",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-01",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-02",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-03",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-04",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-05",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-06",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-07",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-08",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-09",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "reviewer-final-10",
+        "recovered": true,
+        "scenario": "reviewer_final",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-01",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-02",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-03",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-04",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-05",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-06",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-07",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-08",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-09",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      },
+      {
+        "duplicate_llm_calls": 0,
+        "id": "judge-decision-10",
+        "recovered": true,
+        "scenario": "judge_decision",
+        "state_consistent": true,
+        "trace_complete": true
+      }
+    ],
+    "cases": 30,
+    "duplicate_llm_calls": 0,
+    "generated_at": "2026-08-14T05:02:55.136145+00:00",
+    "recovery_rate": 1.0,
+    "schema_version": 1,
+    "state_consistency_rate": 1.0,
+    "trace_completeness_rate": 1.0
+  },
+  "schema_version": 2
+}
