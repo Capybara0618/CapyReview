@@ -51,12 +51,35 @@ class RealPullRequestContextBenchmarkTests(unittest.TestCase):
                 write_case(root, "natural", "natural", small),
                 write_case(root, "stress", "stress", large, "8k"),
             ]
-            (root / "manifest.jsonl").write_text(
-                "".join(json.dumps(row) + "\n" for row in rows),
+            cases = []
+            for row in rows:
+                cases.append({
+                    "id": row["id"],
+                    "repository": row["repository"],
+                    "pull_request": row["pull_number"],
+                    "url": row["url"],
+                    "base_commit": row["base_sha"],
+                    "head_commit": row["head_sha"],
+                    "split": "development",
+                    "title": row["id"],
+                    "language": row["language"],
+                    "diff_file": row["diff_path"],
+                    "golden_comments": [{
+                        "comment": "A real defect.",
+                        "severity": "high",
+                        "category": "bug",
+                    }],
+                })
+            (root / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 2,
+                    "source": {"name": "test", "commit": "pinned"},
+                    "cases": cases,
+                }),
                 encoding="utf-8",
             )
             report = run_real_pr_context_benchmark(
-                root, max_tokens=1_024, reserved_tokens=256
+                root / "manifest.json", max_tokens=1_024, reserved_tokens=256
             )
 
         self.assertEqual(2, report["cases"])
@@ -66,6 +89,7 @@ class RealPullRequestContextBenchmarkTests(unittest.TestCase):
         self.assertEqual(1, report["subsets"]["natural"]["cases"])
         self.assertEqual(1, report["subsets"]["stress"]["cases"])
         self.assertTrue(any(item["batch_count"] > 1 for item in report["case_results"]))
+        self.assertEqual("pinned", report["dataset_source_commit"])
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ from capyreview.models import Finding, Severity
 
 
 class RealPRQualityDatasetTests(unittest.TestCase):
-    def test_selects_two_development_and_four_test_cases_per_repository(self):
+    def test_selects_two_development_and_eight_test_cases_per_repository(self):
         records = {}
         for repository in ("alpha", "bravo", "charlie", "delta", "echo"):
             records[repository] = [
@@ -39,43 +39,50 @@ class RealPRQualityDatasetTests(unittest.TestCase):
                         },
                     ],
                 }
-                for number in range(1, 8)
+                for number in range(1, 11)
             ]
 
         selected = select_quality_cases(records)
 
-        self.assertEqual(30, len(selected))
+        self.assertEqual(50, len(selected))
         for repository in records:
             repository_cases = [
                 case for case in selected if case["source_repository"] == repository
             ]
             self.assertEqual(
-                ["development", "development", "test", "test", "test", "test"],
+                ["development", "development"] + ["test"] * 8,
                 [case["split"] for case in repository_cases],
             )
             self.assertTrue(all(
-                len(case["golden_comments"]) == 1
-                and case["golden_comments"][0]["category"] in CORE_CATEGORIES
+                len(case["golden_comments"]) == 2
+                and len(case["scored_golden_comments"]) == 1
+                and case["scored_golden_comments"][0]["category"] in CORE_CATEGORIES
                 for case in repository_cases
             ))
 
-    def test_skips_prs_without_core_defect_comments(self):
+    def test_keeps_non_core_only_pr_as_negative_control(self):
         records = {
             "alpha": [
                 {
-                    "pr_title": "style only",
-                    "url": "https://github.com/example/alpha/pull/1",
+                    "pr_title": "PR %d" % number,
+                    "url": "https://github.com/example/alpha/pull/%d" % number,
                     "comments": [{
                         "comment": "Rename this variable",
                         "severity": "Low",
                         "category": "style",
                     }],
                 }
+                for number in range(1, 11)
             ]
         }
 
-        with self.assertRaisesRegex(ValueError, "six eligible PRs"):
-            select_quality_cases(records)
+        selected = select_quality_cases(
+            records, development_per_repository=2, test_per_repository=8
+        )
+
+        self.assertEqual(10, len(selected))
+        self.assertTrue(all(case["negative_control"] for case in selected))
+        self.assertTrue(all(not case["scored_golden_comments"] for case in selected))
 
     def test_loads_cached_diff_and_filters_split(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,6 +112,10 @@ class RealPRQualityDatasetTests(unittest.TestCase):
                         "comment": "The new line crashes.",
                         "severity": "high",
                         "category": "bug",
+                    }, {
+                        "comment": "Rename the variable.",
+                        "severity": "low",
+                        "category": "style",
                     }],
                 }],
             }
@@ -119,6 +130,9 @@ class RealPRQualityDatasetTests(unittest.TestCase):
             self.assertEqual("pinned", source["commit"])
             self.assertEqual(1, len(cases))
             self.assertIn("+print('changed')", cases[0]["diff"])
+            self.assertEqual(2, len(cases[0]["all_golden_comments"]))
+            self.assertEqual(1, len(cases[0]["golden_comments"]))
+            self.assertFalse(cases[0]["negative_control"])
 
     def test_rejects_diff_paths_outside_dataset(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -389,6 +403,22 @@ class RealPRQualityRunnerTests(unittest.TestCase):
         self.assertEqual(first["metrics"], resumed["metrics"])
         self.assertEqual(0.5, first["metrics"]["precision"])
         self.assertEqual(1.0, first["metrics"]["recall"])
+
+    def test_negative_control_counts_candidates_as_false_positives_without_matcher(self):
+        reviewer = _FakeQualityReviewer()
+        judge = _FakeSemanticJudge()
+        case = self._case("negative-control")
+        case["golden_comments"] = []
+        case["negative_control"] = True
+
+        result = evaluate_quality_case(reviewer, judge, case)
+        metrics = score_quality_results([result])
+
+        self.assertEqual(0, judge.calls)
+        self.assertEqual(0, metrics["tp"])
+        self.assertEqual(2, metrics["fp"])
+        self.assertEqual(0, metrics["fn"])
+        self.assertEqual(0.0, metrics["precision"])
 
 
 if __name__ == "__main__":

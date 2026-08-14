@@ -15,14 +15,14 @@ CORE_CATEGORIES = frozenset({
 HIGH_SEVERITIES = frozenset({"high", "critical"})
 
 
-def _core_comments(comments: Iterable[dict]) -> List[dict]:
+def _all_comments(comments: Iterable[dict]) -> List[dict]:
     selected = []
     for value in comments:
         category = str(value.get("category", "")).strip().lower()
         comment = str(value.get("comment", "")).strip()
         severity = str(value.get("severity", "")).strip().lower()
-        if category not in CORE_CATEGORIES or not comment:
-            continue
+        if not category or not comment:
+            raise ValueError("golden comment requires category and text")
         if severity not in {"low", "medium", "high", "critical"}:
             raise ValueError("golden comment has an invalid severity")
         selected.append({
@@ -31,6 +31,13 @@ def _core_comments(comments: Iterable[dict]) -> List[dict]:
             "category": category,
         })
     return selected
+
+
+def _core_comments(comments: Iterable[dict]) -> List[dict]:
+    return [
+        value for value in _all_comments(comments)
+        if value["category"] in CORE_CATEGORIES
+    ]
 
 
 def _pull_request_number(url: str) -> int:
@@ -43,17 +50,21 @@ def _pull_request_number(url: str) -> int:
 def select_quality_cases(
     records_by_repository: Mapping[str, Iterable[dict]],
     development_per_repository: int = 2,
-    test_per_repository: int = 4,
+    test_per_repository: int = 8,
 ) -> List[dict]:
-    """Create a small, deterministic repository-balanced benchmark split."""
+    """Create the deterministic repository-balanced official benchmark split."""
     required = development_per_repository + test_per_repository
     selected = []
     for source_repository in sorted(records_by_repository):
         eligible = []
         for record in records_by_repository[source_repository]:
-            golden_comments = _core_comments(record.get("comments") or [])
+            golden_comments = _all_comments(record.get("comments") or [])
             if not golden_comments:
                 continue
+            scored_golden_comments = [
+                value for value in golden_comments
+                if value["category"] in CORE_CATEGORIES
+            ]
             url = str(record.get("url", "")).strip()
             eligible.append({
                 "source_repository": str(source_repository),
@@ -61,12 +72,14 @@ def select_quality_cases(
                 "url": url,
                 "pull_request": _pull_request_number(url),
                 "golden_comments": golden_comments,
+                "scored_golden_comments": scored_golden_comments,
+                "negative_control": not scored_golden_comments,
             })
         eligible.sort(key=lambda item: (item["pull_request"], item["url"]))
         if len(eligible) < required:
             raise ValueError(
-                "%s requires six eligible PRs but only %d were available"
-                % (source_repository, len(eligible))
+                "%s requires %d eligible PRs but only %d were available"
+                % (source_repository, required, len(eligible))
             )
         for index, case in enumerate(eligible[:required]):
             selected.append({
@@ -84,7 +97,7 @@ def load_quality_dataset(path: str, split: str = "") -> tuple[List[dict], dict]:
     manifest_path = Path(path).resolve()
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = json.load(handle)
-    if manifest.get("schema_version") != 1 or not isinstance(
+    if manifest.get("schema_version") not in {1, 2} or not isinstance(
         manifest.get("cases"), list
     ):
         raise ValueError("unsupported real PR quality dataset manifest")
@@ -118,9 +131,13 @@ def load_quality_dataset(path: str, split: str = "") -> tuple[List[dict], dict]:
         parsed = parse_unified_diff(diff)
         if not parsed.files or not parsed.added_lines:
             raise ValueError("quality dataset diff is not a scoreable unified diff")
-        golden_comments = _core_comments(raw.get("golden_comments") or [])
-        if not golden_comments:
-            raise ValueError("quality dataset case requires a core golden comment")
+        all_golden_comments = _all_comments(raw.get("golden_comments") or [])
+        if not all_golden_comments:
+            raise ValueError("quality dataset case requires a human golden comment")
+        golden_comments = [
+            value for value in all_golden_comments
+            if value["category"] in CORE_CATEGORIES
+        ]
         seen.add(case_id)
         cases.append({
             **raw,
@@ -129,7 +146,9 @@ def load_quality_dataset(path: str, split: str = "") -> tuple[List[dict], dict]:
             "pull_request": int(raw.get("pull_request")),
             "split": case_split,
             "head_commit": str(raw.get("head_commit", "")).strip(),
+            "all_golden_comments": all_golden_comments,
             "golden_comments": golden_comments,
+            "negative_control": not golden_comments,
             "diff": diff,
         })
     return cases, dict(manifest.get("source") or {})
@@ -383,11 +402,14 @@ def evaluate_quality_case(reviewer: Any, semantic_judge: Any, case: dict) -> dic
         else:
             findings = reviewer.review(str(case["diff"]), parsed)
         candidates = [_finding_dict(finding) for finding in findings]
-        match_result = semantic_judge.match(
-            str(case.get("title", "")),
-            list(case["golden_comments"]),
-            candidates,
-        )
+        if case["golden_comments"]:
+            match_result = semantic_judge.match(
+                str(case.get("title", "")),
+                list(case["golden_comments"]),
+                candidates,
+            )
+        else:
+            match_result = {"matches": [], "usage": {}}
         matches = list(match_result.get("matches") or [])
         # The judge contract is normalized before this point; validate cardinality.
         used_golden = {int(item["golden_index"]) for item in matches}
