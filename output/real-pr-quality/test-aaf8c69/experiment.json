@@ -1,0 +1,17 @@
+{
+  "agent_loop_max_steps": 2,
+  "cases": 20,
+  "code_commit": "aaf8c69aff9c74a8c7822ea4566bff03b1bcb195",
+  "code_dirty": false,
+  "context_max_tokens": 12000,
+  "context_reserved_tokens": 2500,
+  "created_at": "2026-08-14T09:00:10.500354+00:00",
+  "dataset_source": "Code Review Bench",
+  "dataset_source_commit": "fbc5425c5eec52932aa1303708873d341968fa1c",
+  "github_mcp_enabled": false,
+  "golden_issues": 65,
+  "memory_mode": "cold-start",
+  "model": "deepseek-v4-flash",
+  "provider": "deepseek",
+  "split": "test"
+}
