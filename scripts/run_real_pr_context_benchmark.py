@@ -18,6 +18,7 @@ def percent(value):
 
 
 def markdown(report):
+    overall = report["overall"]
     natural = report["subsets"]["natural"]
     stress = report["subsets"]["stress"]
     lines = [
@@ -36,6 +37,14 @@ def markdown(report):
         "",
         "| Subset | Cases | Compression | Batching | Median batches | Max batches | Cumulative token ratio |",
         "|---|---:|---:|---:|---:|---:|---:|",
+        "| Overall | {cases} | {compression} | {batching} | {median} | {maximum} | {ratio} |".format(
+            cases=overall["cases"],
+            compression=percent(overall["compression_rate"]),
+            batching=percent(overall["batch_rate"]),
+            median=overall["median_batch_count"],
+            maximum=overall["max_batch_count"],
+            ratio=percent(overall["average_cumulative_token_ratio"]),
+        ),
         "| Natural | {cases} | {compression} | {batching} | {median} | {maximum} | {ratio} |".format(
             cases=natural["cases"],
             compression=percent(natural["compression_rate"]),
@@ -53,8 +62,9 @@ def markdown(report):
             ratio=percent(stress["average_cumulative_token_ratio"]),
         ),
         "",
-        "The dataset contains public merged PRs and has no defect labels. These metrics",
-        "validate context budgeting and changed-line transport, not review accuracy.",
+        "The shared dataset contains real pull requests and human Golden Issues. This",
+        "report validates context budgeting and changed-line transport; review quality",
+        "is reported separately by the quality Evaluation Harness.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -63,7 +73,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dataset",
-        default=str(ROOT / "evaluation_data" / "github_pr_context"),
+        default=str(
+            ROOT / "evaluation_data" / "real_pr_evaluation" / "manifest.json"
+        ),
     )
     parser.add_argument("--max-tokens", type=int, default=12_000)
     parser.add_argument("--reserved-tokens", type=int, default=2_500)
@@ -88,6 +100,7 @@ def main():
         "cases": report["cases"],
         "natural": report["subsets"]["natural"],
         "stress": report["subsets"]["stress"],
+        "overall": report["overall"],
         "changed_line_coverage_rate": report["changed_line_coverage_rate"],
         "budget_compliance_rate": report["budget_compliance_rate"],
     }, ensure_ascii=False, indent=2))

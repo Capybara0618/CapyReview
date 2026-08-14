@@ -1,12 +1,12 @@
 """Offline context-budget benchmark over pinned public GitHub PR diffs."""
 
 from collections import Counter
-import json
 from pathlib import Path
 from statistics import mean, median
 from typing import Dict, Iterable, List, Tuple
 
 from .context_manager import ContextManager
+from .real_pr_quality import load_quality_dataset
 
 
 SYSTEM_PROMPT = (
@@ -95,35 +95,41 @@ def _coverage(expected: Counter, actual: Counter) -> Tuple[float, int]:
 def _aggregate(items: Iterable[dict]) -> dict:
     items = list(items)
     if not items:
-        return {"cases": 0}
+        return {
+            "cases": 0,
+            "compression_rate": 0.0,
+            "batch_rate": 0.0,
+            "median_batch_count": 0,
+            "max_batch_count": 0,
+            "average_cumulative_token_ratio": 0.0,
+            "token_reduction_rate": 0.0,
+        }
+    average_ratio = round(mean(
+        item["cumulative_token_ratio"] for item in items
+    ), 4)
     return {
         "cases": len(items),
         "compression_rate": round(mean(item["compressed"] for item in items), 4),
         "batch_rate": round(mean(item["batch_count"] > 1 for item in items), 4),
         "median_batch_count": median(item["batch_count"] for item in items),
         "max_batch_count": max(item["batch_count"] for item in items),
-        "average_cumulative_token_ratio": round(mean(
-            item["cumulative_token_ratio"] for item in items
-        ), 4),
+        "average_cumulative_token_ratio": average_ratio,
+        "token_reduction_rate": round(max(0.0, 1.0 - average_ratio), 4),
     }
 
 
 def run_real_pr_context_benchmark(
-    dataset_directory: Path, max_tokens: int = 12_000,
+    dataset_path: Path, max_tokens: int = 12_000,
     reserved_tokens: int = 2_500,
 ) -> Dict[str, object]:
-    dataset_directory = Path(dataset_directory)
-    rows = [
-        json.loads(line)
-        for line in (dataset_directory / "manifest.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if line.strip()
-    ]
+    manifest_path = Path(dataset_path)
+    if manifest_path.is_dir():
+        manifest_path = manifest_path / "manifest.json"
+    rows, source = load_quality_dataset(str(manifest_path))
     manager = ContextManager(max_tokens=max_tokens, reserved_tokens=reserved_tokens)
     results: List[dict] = []
     for row in rows:
-        diff = (dataset_directory / row["diff_path"]).read_text(encoding="utf-8")
+        diff = str(row["diff"])
         assignment = {
             "agent": "correctness-reviewer",
             "objective": "review introduced correctness and reliability risks",
@@ -154,14 +160,24 @@ def run_real_pr_context_benchmark(
         coverage, duplicates = _coverage(expected, actual)
         original_tokens = fixed_tokens + manager.estimate_tokens(diff)
         total_batch_tokens = sum(item.estimated_tokens for item in managed)
+        subset = "stress" if original_tokens > max_tokens else "natural"
+        estimated_diff_tokens = manager.estimate_tokens(diff)
+        if estimated_diff_tokens >= 32_000:
+            size_tier = "32k"
+        elif estimated_diff_tokens >= 16_000:
+            size_tier = "16k"
+        elif estimated_diff_tokens >= 8_000:
+            size_tier = "8k"
+        else:
+            size_tier = "natural"
         results.append({
             "id": row["id"],
             "repository": row["repository"],
-            "pull_number": row["pull_number"],
+            "pull_number": row["pull_request"],
             "url": row["url"],
-            "language": row["language"],
-            "subset": row["subset"],
-            "size_tier": row["size_tier"],
+            "language": str(row.get("language", "unknown")),
+            "subset": subset,
+            "size_tier": size_tier,
             "original_complete_tokens": original_tokens,
             "compressed": any(bundle.compressed for bundle in bundles),
             "batch_count": len(bundles),
@@ -184,16 +200,15 @@ def run_real_pr_context_benchmark(
     }
     return {
         "schema_version": 1,
-        "dataset": "github-public-merged-pr-context",
+        "dataset": "code-review-bench-unified-real-pr",
+        "dataset_source_commit": str(source.get("commit", "")),
         "cases": len(results),
         "context_max_tokens": max_tokens,
         "reserved_tokens": reserved_tokens,
         "contract_tokens": (
             results[0]["original_complete_tokens"]
             - manager.estimate_tokens(
-                (dataset_directory / rows[0]["diff_path"]).read_text(
-                    encoding="utf-8"
-                )
+                str(rows[0]["diff"])
             ) if results else 0
         ),
         "budget_compliance_rate": round(mean(
@@ -205,6 +220,7 @@ def run_real_pr_context_benchmark(
         "duplicate_changed_lines": sum(
             item["duplicate_changed_lines"] for item in results
         ),
+        "overall": _aggregate(results),
         "subsets": subsets,
         "size_tiers": {
             tier: _aggregate(item for item in results if item["size_tier"] == tier)

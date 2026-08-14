@@ -90,6 +90,8 @@ class RealPullRequestContextBenchmarkTests(unittest.TestCase):
         self.assertEqual(1, report["subsets"]["stress"]["cases"])
         self.assertTrue(any(item["batch_count"] > 1 for item in report["case_results"]))
         self.assertEqual("pinned", report["dataset_source_commit"])
+        self.assertEqual(2, report["overall"]["cases"])
+        self.assertIn("token_reduction_rate", report["subsets"]["stress"])
 
 
 if __name__ == "__main__":

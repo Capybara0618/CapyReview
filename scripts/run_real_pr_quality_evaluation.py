@@ -173,7 +173,9 @@ def main() -> None:
     parser.add_argument("--split", required=True, choices=("development", "test"))
     parser.add_argument(
         "--dataset",
-        default=str(ROOT / "evaluation_data" / "real_pr_quality" / "manifest.json"),
+        default=str(
+            ROOT / "evaluation_data" / "real_pr_evaluation" / "manifest.json"
+        ),
     )
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--resume", action="store_true")
@@ -182,7 +184,7 @@ def main() -> None:
     settings = Settings.from_env()
     config = settings.resolved_llm()
     cases, source = load_quality_dataset(args.dataset, args.split)
-    expected = 10 if args.split == "development" else 20
+    expected = 10 if args.split == "development" else 40
     if len(cases) != expected:
         raise SystemExit("%s split must contain exactly %d cases" % (args.split, expected))
     revision = _git_revision()

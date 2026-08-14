@@ -19,7 +19,7 @@ class UnifiedRealPRDatasetContractTests(unittest.TestCase):
         self.assertEqual(5, len({case["source_repository"] for case in cases}))
         self.assertEqual(10, sum(case["split"] == "development" for case in cases))
         self.assertEqual(40, sum(case["split"] == "test" for case in cases))
-        self.assertEqual(144, sum(len(case["golden_comments"]) for case in cases))
+        self.assertEqual(173, sum(len(case["golden_comments"]) for case in cases))
 
         loaded, source = load_quality_dataset(str(manifest_path))
         self.assertEqual(50, len(loaded))

@@ -10,7 +10,7 @@ evaluation so resume claims share one reproducible source of truth.
 Success means:
 
 - exactly 50 real pull requests from the five official source repositories;
-- all 144 human-verified golden comments are preserved with provenance;
+- all 173 human-verified golden comments are preserved with provenance;
 - 139 core comments in `bug`, `security`, `concurrency`, `data`, and `api` are
   scored, while the three PRs containing only low-priority categories act as
   negative controls for the core-review scope;
@@ -116,7 +116,7 @@ quality_report = run_quality_evaluation_checkpointed(
 ## Testing Strategy
 
 - RED first: contracts initially require 50 cases, 10/40 split, five
-  repositories, 144 human comments, 139 scored comments, and three negative
+  repositories, 173 human comments, 139 scored comments, and three negative
   controls.
 - Unit tests validate selection, manifest path safety, deterministic splits,
   negative-control scoring, and shared dataset identity.
@@ -151,7 +151,7 @@ quality_report = run_quality_evaluation_checkpointed(
 
 ## Success Criteria
 
-- One manifest contains 50 unique PRs, 144 human Golden Issues, 139 scored core
+- One manifest contains 50 unique PRs, 173 human Golden Issues, 139 scored core
   issues, a 10/40 split, and three declared negative controls.
 - Context and quality loaders consume that manifest without schema adapters in
   the run scripts.
@@ -171,4 +171,3 @@ quality_report = run_quality_evaluation_checkpointed(
 - LLM semantic matching has judge-model variance.
 - Three negative controls are negative only for the declared core-risk scope;
   they still contain low-priority human comments.
-
