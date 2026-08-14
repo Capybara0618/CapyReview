@@ -10,6 +10,9 @@ from .diff_parser import ParsedDiff
 from .models import Finding, Severity
 
 
+MAX_STRUCTURED_OUTPUT_TOKENS = 2048
+
+
 class Reviewer(ABC):
     name = "reviewer"
 
@@ -76,6 +79,8 @@ class OpenAICompatibleReviewer(Reviewer):
         payload = {
             "model": self.model,
             "temperature": 0,
+            "max_tokens": MAX_STRUCTURED_OUTPUT_TOKENS,
+            "thinking": {"type": "disabled"},
             "messages": [
                 {"role": "system", "content": system},
                 {
@@ -157,6 +162,8 @@ class OpenAICompatibleReviewer(Reviewer):
         payload = {
             "model": self.model,
             "temperature": 0,
+            "max_tokens": MAX_STRUCTURED_OUTPUT_TOKENS,
+            "thinking": {"type": "disabled"},
             "messages": [
                 {
                     "role": "system",
@@ -310,6 +317,8 @@ one decision for every candidate id."""
         payload = {
             "model": self.model,
             "temperature": 0,
+            "max_tokens": MAX_STRUCTURED_OUTPUT_TOKENS,
+            "thinking": {"type": "disabled"},
             "messages": [
                 {
                     "role": "system",

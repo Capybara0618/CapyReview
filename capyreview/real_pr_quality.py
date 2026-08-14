@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, Iterable, List, Mapping
 
 from .diff_parser import parse_unified_diff
+from .reviewer import MAX_STRUCTURED_OUTPUT_TOKENS
 
 
 CORE_CATEGORIES = frozenset({
@@ -141,9 +142,7 @@ def normalize_match_decisions(
     raw_matches = response.get("matches")
     if not isinstance(raw_matches, list):
         raise ValueError("semantic judge response must contain a matches array")
-    accepted = []
-    used_golden = set()
-    used_candidates = set()
+    proposed = []
     for raw in raw_matches:
         if not isinstance(raw, dict) or not bool(raw.get("same_issue", False)):
             continue
@@ -156,17 +155,30 @@ def normalize_match_decisions(
             raise ValueError("semantic match golden index is out of range")
         if not 0 <= candidate_index < candidate_count:
             raise ValueError("semantic match candidate index is out of range")
-        if golden_index in used_golden or candidate_index in used_candidates:
-            raise ValueError("semantic matches must be one-to-one")
-        used_golden.add(golden_index)
-        used_candidates.add(candidate_index)
         confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.0))))
-        accepted.append({
+        proposed.append({
             "golden_index": golden_index,
             "candidate_index": candidate_index,
             "confidence": confidence,
             "reason": str(raw.get("reason", "")).strip()[:1000],
         })
+    accepted = []
+    used_golden = set()
+    used_candidates = set()
+    for match in sorted(
+        proposed,
+        key=lambda item: (
+            -item["confidence"], item["golden_index"], item["candidate_index"]
+        ),
+    ):
+        if (
+            match["golden_index"] in used_golden
+            or match["candidate_index"] in used_candidates
+        ):
+            continue
+        used_golden.add(match["golden_index"])
+        used_candidates.add(match["candidate_index"])
+        accepted.append(match)
     return sorted(accepted, key=lambda item: (
         item["golden_index"], item["candidate_index"]
     ))
@@ -181,7 +193,7 @@ to a golden issue only when both describe the same underlying defect and failure
 mechanism. Different wording is allowed. Related topics, shared files, or similar
 severity are not enough. Return a one-to-one matches array. Include unmatched pairs
 nowhere. For every proposed pair return golden_index, candidate_index, same_issue,
-confidence, and a brief reason."""
+confidence, and a brief reason. Return JSON only as {"matches": [...]} ."""
 
     def __init__(self, request_json: Any, consume_usage: Any = None, model: str = ""):
         self.request_json = request_json
@@ -208,6 +220,8 @@ confidence, and a brief reason."""
         response = self.request_json({
             "model": self.model,
             "temperature": 0,
+            "max_tokens": MAX_STRUCTURED_OUTPUT_TOKENS,
+            "thinking": {"type": "disabled"},
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": self.SYSTEM_PROMPT},

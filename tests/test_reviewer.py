@@ -79,6 +79,29 @@ class OpenAICompatibleReviewerTests(unittest.TestCase):
         self.assertGreaterEqual(usage["latency_ms"], 0)
         self.assertEqual({}, reviewer.consume_usage())
 
+    def test_agent_output_is_bounded_for_structured_review(self):
+        class CapturingReviewer(OpenAICompatibleReviewer):
+            def __init__(self):
+                super().__init__("https://example.invalid", "key", "model")
+                self.payload = {}
+
+            def _request_json(self, payload):
+                self.payload = payload
+                return {"action": "final", "findings": []}
+
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -0,0 +1 @@\n+safe = True\n"
+        parsed = parse_unified_diff(diff)
+        reviewer = CapturingReviewer()
+
+        reviewer.agent_step({
+            "parsed": parsed,
+            "managed_context": "DIFF_CONTEXT:\n" + diff,
+            "available_tools": [],
+        })
+
+        self.assertEqual(2048, reviewer.payload["max_tokens"])
+        self.assertEqual({"type": "disabled"}, reviewer.payload["thinking"])
+
 
 if __name__ == "__main__":
     unittest.main()

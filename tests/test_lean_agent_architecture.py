@@ -148,6 +148,8 @@ class LeanAgentArchitectureTests(unittest.TestCase):
         judge.judge(diff, parsed, [finding], {finding_key(finding): report})
         user_content = judge.payload["messages"][1]["content"]
 
+        self.assertEqual(2048, judge.payload["max_tokens"])
+        self.assertEqual({"type": "disabled"}, judge.payload["thinking"])
         self.assertIn('"evidence_packet"', user_content)
         self.assertIn('"supporting_evidence"', user_content)
         self.assertNotIn('"grounded_evidence"', user_content)

@@ -179,26 +179,30 @@ class RealPRQualityMatchingTests(unittest.TestCase):
         self.assertEqual(0, decisions[0]["golden_index"])
         self.assertEqual(1, decisions[0]["candidate_index"])
 
-    def test_rejects_duplicate_candidate_matches(self):
-        with self.assertRaisesRegex(ValueError, "one-to-one"):
-            normalize_match_decisions(
-                {
-                    "matches": [
-                        {
-                            "golden_index": 0,
-                            "candidate_index": 0,
-                            "same_issue": True,
-                        },
-                        {
-                            "golden_index": 1,
-                            "candidate_index": 0,
-                            "same_issue": True,
-                        },
-                    ]
-                },
-                golden_count=2,
-                candidate_count=1,
-            )
+    def test_duplicate_candidate_matches_keep_highest_confidence_pair(self):
+        matches = normalize_match_decisions(
+            {
+                "matches": [
+                    {
+                        "golden_index": 0,
+                        "candidate_index": 0,
+                        "same_issue": True,
+                        "confidence": 0.6,
+                    },
+                    {
+                        "golden_index": 1,
+                        "candidate_index": 0,
+                        "same_issue": True,
+                        "confidence": 0.9,
+                    },
+                ]
+            },
+            golden_count=2,
+            candidate_count=1,
+        )
+
+        self.assertEqual(1, len(matches))
+        self.assertEqual(1, matches[0]["golden_index"])
 
     def test_scores_absolute_quality_and_high_severity_recall(self):
         results = [
@@ -272,6 +276,9 @@ class RealPRQualityMatchingTests(unittest.TestCase):
         )
 
         self.assertEqual("judge-model", requests[0]["model"])
+        self.assertEqual(2048, requests[0]["max_tokens"])
+        self.assertEqual({"type": "disabled"}, requests[0]["thinking"])
+        self.assertIn("JSON", requests[0]["messages"][0]["content"])
         self.assertNotIn("diff", requests[0]["messages"][1]["content"].lower())
         self.assertEqual(1, len(result["matches"]))
         self.assertEqual(25, result["usage"]["prompt_tokens"])
