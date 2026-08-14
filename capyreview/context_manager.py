@@ -29,9 +29,11 @@ class ManagedContext:
     """The complete dynamic context presented to one agent-loop iteration."""
 
     text: str
+    system_prompt: str
     estimated_tokens: int
     compressed: bool
     diff: Dict[str, Any]
+    manifest: Dict[str, Any] = field(default_factory=dict)
     kept_feedback: int = 0
     kept_memories: int = 0
     kept_observations: int = 0
@@ -42,6 +44,7 @@ class ManagedContext:
     def metadata(self) -> Dict[str, Any]:
         value = asdict(self)
         value.pop("text", None)
+        value.pop("system_prompt", None)
         return value
 
 
@@ -84,12 +87,69 @@ class ContextManager:
         # A conservative dependency-free estimate for mixed source code and text.
         return max(1, (len(text.encode("utf-8")) + 3) // 4)
 
+    @staticmethod
+    def _compact_assignment(assignment: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            key: assignment.get(key) for key in (
+                "agent", "objective", "files", "risk_domains", "round", "reason"
+            ) if assignment.get(key) not in (None, "", [])
+        }
+
+    @staticmethod
+    def _render_line(label: str, value: Any) -> str:
+        rendered = value if isinstance(value, str) else json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return "%s: %s\n" % (label, rendered.replace("\x00", ""))
+
+    def _contract_entries(
+        self, assignment: Dict[str, Any], skills: Sequence[Dict[str, Any]],
+        tools: Sequence[Dict[str, Any]],
+    ) -> List[Tuple[str, Any, str]]:
+        entries = [(
+            "ASSIGNMENT", self._compact_assignment(assignment), "assignment"
+        )]
+        entries.extend((
+            "SKILL", {
+                "name": skill.get("name"),
+                "version": skill.get("version"),
+                "instructions": str(skill.get("body", ""))[:6000],
+            }, "skills"
+        ) for skill in skills)
+        entries.extend((
+            "TOOL", {
+                "name": tool.get("name"),
+                "description": str(tool.get("description", ""))[:240],
+                "parameters": tool.get("parameters") or {},
+            }, "tools"
+        ) for tool in tools)
+        return entries
+
+    def contract_tokens(
+        self, system_prompt: str, assignment: Dict[str, Any],
+        skills: Sequence[Dict[str, Any]] = (),
+        tools: Sequence[Dict[str, Any]] = (),
+    ) -> int:
+        """Estimate the immutable model contract before allocating Diff space."""
+        rendered = system_prompt + "\n" + "".join(
+            self._render_line(label, value)
+            for label, value, _section in self._contract_entries(
+                assignment, skills, tools
+            )
+        )
+        return self.estimate_tokens(rendered)
+
     def build(
         self, diff: str, assignment: Dict[str, Any] = None,
         memories: Sequence[Dict[str, Any]] = (),
+        fixed_tokens: int = 0,
     ) -> ContextBundle:
         original_tokens = self.estimate_tokens(diff)
-        available_tokens = self.max_tokens - self.reserved_tokens
+        available_tokens = self.max_tokens - self.reserved_tokens - max(
+            0, int(fixed_tokens)
+        )
+        if available_tokens < 32:
+            raise ValueError("fixed context leaves no room for diff evidence")
         if original_tokens <= available_tokens:
             return ContextBundle(
                 diff, False, original_tokens, original_tokens,
@@ -101,7 +161,7 @@ class ContextManager:
         # whether current PR code is visible to the reviewer.
         _ = memories
         file_headers, hunks = self._parse(diff)
-        byte_budget = max(1024, available_tokens * 4)
+        byte_budget = max(128, available_tokens * 4)
         selected: List[_Hunk] = []
         selected_ids = set()
         used = 0
@@ -200,11 +260,13 @@ class ContextManager:
             add_hunk(hunk, byte_budget - used)
 
         if not selected and hunks:
-            first = max(hunks, key=lambda item: (item.score, -item.index))
+            first = (p0 or p1 or hunks)[0]
             selected = [_Hunk(
                 first.index, first.path, first.header,
-                self._compact_hunk(first, byte_budget, terms) or first.text[:byte_budget],
-                first.score,
+                self._compact_hunk(
+                    first, byte_budget, focus_by_path.get(first.path, set())
+                ) or first.text[:byte_budget],
+                first.new_start, first.new_count,
             )]
             included_headers.add(first.path)
 
@@ -233,6 +295,7 @@ class ContextManager:
         observations: Sequence[Dict[str, Any]] = (),
         tools: Sequence[Dict[str, Any]] = (),
         skills: Sequence[Dict[str, Any]] = (),
+        system_prompt: str = "",
     ) -> ManagedContext:
         """Fit all changing loop state into one deterministic token budget.
 
@@ -241,51 +304,44 @@ class ContextManager:
         portion. Lower-priority records are dropped instead of silently growing
         the model request on every loop iteration.
         """
-        runtime_bytes = max(128, self.reserved_tokens * 4)
+        optional_bytes = max(0, self.reserved_tokens * 4)
         parts: List[str] = []
-        used = 0
+        optional_used = 0
         was_truncated = False
+        section_bytes = {
+            "system": len(system_prompt.encode("utf-8")),
+            "assignment": 0, "skills": 0, "tools": 0,
+            "collaboration": 0, "observations": 0,
+            "feedback": 0, "memories": 0,
+            "diff": len(diff_bundle.text.encode("utf-8")),
+        }
 
-        def append(label: str, value: Any, optional: bool = False) -> bool:
-            nonlocal used, was_truncated
-            rendered = value if isinstance(value, str) else json.dumps(
-                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
-            line = "%s: %s\n" % (label, rendered.replace("\x00", ""))
+        def append(
+            label: str, value: Any, section: str, required: bool = False,
+        ) -> bool:
+            nonlocal optional_used, was_truncated
+            line = self._render_line(label, value)
             encoded = line.encode("utf-8")
-            remaining = runtime_bytes - used
+            if required:
+                parts.append(line)
+                section_bytes[section] += len(encoded)
+                return True
+            remaining = optional_bytes - optional_used
             if len(encoded) <= remaining:
                 parts.append(line)
-                used += len(encoded)
+                optional_used += len(encoded)
+                section_bytes[section] += len(encoded)
                 return True
-            if optional or remaining < 48:
-                was_truncated = True
-                return False
-            clipped = self._truncate_utf8(encoded, remaining)
-            if clipped:
-                parts.append(clipped.decode("utf-8", errors="ignore") + "\n")
-                used += len(clipped) + 1
             was_truncated = True
-            return bool(clipped)
+            return False
 
-        compact_assignment = {
-            key: assignment.get(key) for key in (
-                "agent", "objective", "files", "risk_domains", "round", "reason"
-            ) if assignment.get(key) not in (None, "", [])
-        }
-        append("ASSIGNMENT", compact_assignment)
-        for skill in skills:
-            append("SKILL", {
-                "name": skill.get("name"),
-                "version": skill.get("version"),
-                "instructions": str(skill.get("body", ""))[:6000],
-            }, optional=True)
-        for tool in tools:
-            append("TOOL", {
-                "name": tool.get("name"),
-                "description": str(tool.get("description", ""))[:240],
-                "parameters": tool.get("parameters") or {},
-            }, optional=True)
+        contract_entries = self._contract_entries(assignment, skills, tools)
+        kept_skills = 0
+        kept_tools = 0
+        for label, value, section in contract_entries:
+            append(label, value, section, required=True)
+            kept_skills += int(section == "skills")
+            kept_tools += int(section == "tools")
 
         # Keep only mailbox routing metadata. Message bodies are represented by
         # critique and observations, avoiding duplicated prompt content.
@@ -294,7 +350,7 @@ class ContextManager:
                 "count": len(inbox),
                 "kinds": sorted({str(item.get("kind", "")) for item in inbox}),
                 "senders": sorted({str(item.get("sender", "")) for item in inbox}),
-            }, optional=True)
+            }, "collaboration")
 
         kept_observations = 0
         for item in reversed(observations):
@@ -303,12 +359,12 @@ class ContextManager:
                 for key in ("id", "step", "tool", "ok", "result", "error")
                 if item.get(key) is not None
             }
-            if append("OBSERVATION", compact, optional=True):
+            if append("OBSERVATION", compact, "observations"):
                 kept_observations += 1
 
         kept_feedback = 0
         for item in feedback:
-            if append("CRITIC_FEEDBACK", str(item)[:1200], optional=True):
+            if append("CRITIC_FEEDBACK", str(item)[:1200], "feedback"):
                 kept_feedback += 1
 
         kept_memories = 0
@@ -318,25 +374,46 @@ class ContextManager:
                 "content": str(item.get("content", ""))[:1200],
                 "score": item.get("recall_score"),
             }
-            if append("MEMORY", compact, optional=True):
+            if append("MEMORY", compact, "memories"):
                 kept_memories += 1
 
         runtime_text = "".join(parts)
         text = runtime_text + "DIFF_CONTEXT:\n" + diff_bundle.text
-        # ``build`` and the reserved budget should already guarantee this. The
-        # final guard protects callers that construct ContextBundle themselves.
+        # ``build`` receives the fixed system cost and ``compose`` owns the
+        # reserved runtime portion. Never repair an overflow by clipping the
+        # contract: callers must rebuild the diff with the correct fixed cost.
         maximum_bytes = self.max_tokens * 4
-        encoded = text.encode("utf-8")
+        encoded = (system_prompt + "\n" + text).encode("utf-8")
         if len(encoded) > maximum_bytes:
-            text = self._truncate_utf8(encoded, maximum_bytes).decode(
-                "utf-8", errors="ignore"
+            raise ValueError(
+                "managed model context exceeds the complete input budget; "
+                "rebuild diff context with the fixed system cost"
             )
-            was_truncated = True
-        final_tokens = self.estimate_tokens(text)
+        final_tokens = self.estimate_tokens(system_prompt + "\n" + text)
+        to_tokens = lambda value: (value + 3) // 4 if value else 0
+        manifest = {
+            "budget_tokens": self.max_tokens,
+            "total_input_tokens": final_tokens,
+            "sections": {
+                key: to_tokens(value) for key, value in section_bytes.items()
+            },
+            "included": {
+                "skills": kept_skills, "tools": kept_tools,
+                "observations": kept_observations,
+                "feedback": kept_feedback, "memories": kept_memories,
+            },
+            "dropped": {
+                "skills": 0, "tools": 0,
+                "observations": max(0, len(observations) - kept_observations),
+                "feedback": max(0, len(feedback) - kept_feedback),
+                "memories": max(0, len(memories) - kept_memories),
+            },
+        }
         return ManagedContext(
-            text=text, estimated_tokens=final_tokens,
+            text=text, system_prompt=system_prompt,
+            estimated_tokens=final_tokens,
             compressed=bool(diff_bundle.compressed or was_truncated),
-            diff=diff_bundle.metadata(),
+            diff=diff_bundle.metadata(), manifest=manifest,
             kept_feedback=kept_feedback, kept_memories=kept_memories,
             kept_observations=kept_observations,
             dropped_feedback=max(0, len(feedback) - kept_feedback),

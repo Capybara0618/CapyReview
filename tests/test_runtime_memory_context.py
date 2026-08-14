@@ -285,6 +285,94 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertGreater(managed.dropped_feedback + managed.dropped_memories, 0)
         self.assertIn("DIFF_CONTEXT", managed.text)
 
+    def test_context_window_counts_system_and_never_drops_the_contract(self):
+        manager = ContextManager(max_tokens=512, reserved_tokens=256)
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"
+        system_prompt = "SYSTEM CONTRACT " + ("s" * 240)
+        assignment = {"agent": "security", "objective": "review risky additions"}
+        skills = [{
+            "name": "review-auth-security", "version": 1,
+            "body": "Inspect authentication trust boundaries.",
+        }]
+        tools = [{
+            "name": "read_code_context", "description": "Read source context.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        }]
+        fixed_tokens = manager.contract_tokens(
+            system_prompt, assignment, skills, tools
+        )
+        bundle = manager.build(diff, assignment, fixed_tokens=fixed_tokens)
+        memories = [{
+            "scope": "semantic", "kind": "review_feedback",
+            "content": "memory-%02d %s" % (index, "m" * 240),
+        } for index in range(10)]
+
+        managed = manager.compose(
+            bundle, assignment,
+            system_prompt=system_prompt,
+            skills=skills, tools=tools,
+            memories=memories,
+        )
+
+        self.assertEqual(system_prompt, managed.system_prompt)
+        self.assertIn("SKILL", managed.text)
+        self.assertIn("TOOL", managed.text)
+        self.assertLessEqual(
+            manager.estimate_tokens(managed.system_prompt + "\n" + managed.text),
+            512,
+        )
+        self.assertEqual(512, managed.manifest["budget_tokens"])
+        self.assertGreater(managed.manifest["sections"]["system"], 0)
+        self.assertEqual(1, managed.manifest["included"]["skills"])
+        self.assertEqual(1, managed.manifest["included"]["tools"])
+        self.assertGreater(managed.manifest["dropped"]["memories"], 0)
+
+    def test_context_window_rejects_a_contract_that_cannot_fit(self):
+        manager = ContextManager(max_tokens=512, reserved_tokens=64)
+        diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+        assignment = {"agent": "correctness", "objective": "review"}
+        skills = [{
+            "name": "oversized-skill", "version": 1,
+            "body": "x" * 2000,
+        }]
+        fixed_tokens = manager.contract_tokens(
+            "fixed system", assignment, skills, ()
+        )
+
+        with self.assertRaisesRegex(ValueError, "fixed context"):
+            manager.build(diff, assignment, fixed_tokens=fixed_tokens)
+
+    def test_reviewer_uses_the_context_managed_system_prompt(self):
+        parsed = parse_unified_diff(
+            "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+
+        class CapturingReviewer(OpenAICompatibleReviewer):
+            def __init__(self):
+                super().__init__("https://example.invalid", "key", "model")
+                self.payload = {}
+
+            def _request_json(self, payload):
+                self.payload = payload
+                return {"action": "final", "findings": []}
+
+        reviewer = CapturingReviewer()
+        reviewer.agent_step({
+            "parsed": parsed,
+            "managed_context": "bounded user context",
+            "managed_system_prompt": "bounded system contract",
+            "available_tools": [],
+        })
+
+        self.assertEqual(
+            "bounded system contract",
+            reviewer.payload["messages"][0]["content"],
+        )
+
     def test_judge_receives_bounded_diff_context_with_candidate_evidence(self):
         added = ["+value_%04d = %d\n" % (index, index) for index in range(900)]
         added[820] = "+result = eval(user_input)\n"
@@ -441,11 +529,16 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         class LoopSpecialist:
             name = "loop-specialist"
             domains = ("security",)
+            managed_calls = []
 
             def review(self, _diff, _parsed):
                 return []
 
             def agent_step(self, state):
+                self.managed_calls.append({
+                    "system": state.get("managed_system_prompt", ""),
+                    "metadata": dict(state.get("context_metadata") or {}),
+                })
                 if not state.get("observations"):
                     return {
                         "action": "tool", "tool": "read_code_context",
@@ -465,6 +558,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
             context_manager=ContextManager(max_tokens=1024, reserved_tokens=128),
             judge=ApprovingJudge(),
             tool_provider=GitHubMcpToolProvider(FakeGitHubMcpClient()),
+            agent_loop_max_steps=2,
         )
         findings = coordinator.review_with_context(
             "loop-task", diff, parsed, repository="org/repo", head_commit="abc123"
@@ -475,6 +569,14 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual({"SEC-EVAL"}, {item.rule_id for item in findings})
         self.assertEqual(2, summary["agent_loop_steps"])
         self.assertEqual(1, summary["memories_recalled"])
+        self.assertTrue(all(item["system"] for item in LoopSpecialist.managed_calls))
+        manifests = [item["metadata"]["manifest"] for item in LoopSpecialist.managed_calls]
+        self.assertGreater(manifests[0]["included"]["tools"], 0)
+        self.assertEqual(0, manifests[-1]["included"]["tools"])
+        self.assertTrue(all(
+            item["total_input_tokens"] <= item["budget_tokens"]
+            for item in manifests
+        ))
         self.assertTrue({
             "memory_recalled", "context_prepared", "agent_loop_action",
             "agent_loop_observation",

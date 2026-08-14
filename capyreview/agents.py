@@ -632,16 +632,34 @@ class MultiAgentCoordinator(Reviewer):
             state.setdefault("activated_skills_by_agent", {})[agent.name] = [
                 item.name for item in activated_skills
             ]
-        bundle = self.context_manager.build(state["diff"], assignment.to_dict(), memories)
-        self._emit(
-            state, "context-manager", agent.name, "context_prepared",
-            bundle.metadata(), assignment.assignment_id,
-        )
         tools = self._agent_tools(state, assignment, activated_skills)
         skill_context = [
             {"name": item.name, "version": item.version, "body": item.body}
             for item in activated_skills
         ]
+        initial_tools = tools.catalog()
+        system_factory = getattr(agent, "agent_system_prompt", None)
+
+        def system_prompt(tool_catalog: List[dict]) -> str:
+            if callable(system_factory):
+                return str(system_factory(tool_catalog))
+            return str(getattr(agent, "system_prompt", "") or (
+                "You are a bounded PR review specialist. Follow the assignment, "
+                "use only the listed tools, and return exact changed-line evidence."
+            ))
+
+        initial_system = system_prompt(initial_tools)
+        fixed_tokens = self.context_manager.contract_tokens(
+            initial_system, assignment.to_dict(), skill_context, initial_tools
+        ) + self.context_manager.estimate_tokens("DIFF_CONTEXT:\n")
+        bundle = self.context_manager.build(
+            state["diff"], assignment.to_dict(), memories,
+            fixed_tokens=fixed_tokens,
+        )
+        self._emit(
+            state, "context-manager", agent.name, "context_prepared",
+            bundle.metadata(), assignment.assignment_id,
+        )
 
         def on_event(kind: str, detail: Dict[str, Any]) -> None:
             self._emit(
@@ -721,11 +739,13 @@ class MultiAgentCoordinator(Reviewer):
         def managed_step(loop_iteration: Dict[str, Any]) -> Dict[str, Any]:
             final_only = int(loop_iteration.get("loop_step", 1)) >= self.agent_loop.max_steps
             active_tools = [] if final_only else tools.catalog()
+            active_system = system_prompt(active_tools)
             managed = self.context_manager.compose(
                 bundle, assignment.to_dict(), feedback=list(feedback or []),
                 inbox=loop_iteration.get("inbox") or [], memories=memories,
                 observations=loop_iteration.get("observations") or [],
                 tools=active_tools, skills=skill_context,
+                system_prompt=active_system,
             )
             metadata = managed.metadata()
             last_context["metadata"] = metadata
@@ -739,6 +759,7 @@ class MultiAgentCoordinator(Reviewer):
             prepared["context_metadata"] = metadata
             prepared["available_tools"] = active_tools
             prepared["activated_skills"] = skill_context
+            prepared["managed_system_prompt"] = managed.system_prompt
             return getattr(agent, "agent_step")(prepared)
 
         result = self.agent_loop.run(
