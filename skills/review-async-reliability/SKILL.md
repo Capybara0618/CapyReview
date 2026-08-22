@@ -3,7 +3,6 @@ name: review-async-reliability
 description: Review asynchronous jobs, queues, retries, locks and concurrent state transitions. Use when a PR changes async execution, workers, Redis Streams, retries, leases, locks or idempotency.
 metadata:
   capyreview-domains: correctness reliability regression
-  capyreview-signals: async queue worker retry lease lock idempotency stream concurrent celery
 ---
 
 # Asynchronous Reliability Review

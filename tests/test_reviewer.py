@@ -102,6 +102,20 @@ class OpenAICompatibleReviewerTests(unittest.TestCase):
         self.assertEqual(2048, reviewer.payload["max_tokens"])
         self.assertEqual({"type": "disabled"}, reviewer.payload["thinking"])
 
+    def test_agent_prompt_tells_model_to_select_skill_semantically(self):
+        prompt = CannedLLMReviewer().agent_system_prompt([{
+            "name": "load_review_skill",
+            "description": "Load a review Skill.",
+            "parameters": {
+                "type": "object",
+                "properties": {"skill": {"type": "string"}},
+            },
+        }])
+
+        self.assertIn("name and description", prompt)
+        self.assertIn("load_review_skill", prompt)
+        self.assertIn("Do not select a Skill by keyword count", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

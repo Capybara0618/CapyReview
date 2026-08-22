@@ -695,7 +695,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         self.assertEqual("read_code_context", cases[0]["payload"]["tool"])
         self.assertFalse(cases[0]["payload"]["evolution_eligible"])
 
-    def test_security_reviewer_receives_selected_skill_before_agent_loop(self):
+    def test_security_reviewer_selects_and_loads_skill_inside_agent_loop(self):
         diff = "--- a/capyreview/github.py\n+++ b/capyreview/github.py\n@@ -10 +10,3 @@\n-old\n+if signature == 'bypass':\n+    return True\n"
         parsed = parse_unified_diff(diff)
 
@@ -705,8 +705,28 @@ class RuntimeMemoryContextTests(unittest.TestCase):
 
             def agent_step(self, state):
                 if not state.get("observations"):
+                    if "# Authentication Security Review" in state["managed_context"]:
+                        raise AssertionError("SKILL.md loaded before the model selected it")
+                    if "Review authentication, HMAC" not in state["managed_context"]:
+                        raise AssertionError("Skill metadata was not advertised")
+                    names = {item["name"] for item in state["available_tools"]}
+                    if "load_review_skill" not in names:
+                        raise AssertionError("Skill loader is unavailable")
+                    if "read_skill_reference" in names:
+                        raise AssertionError("reference tool requires an active Skill")
+                    return {
+                        "action": "tool", "tool": "load_review_skill",
+                        "arguments": {
+                            "skill": "review-auth-security",
+                        },
+                    }
+                if len(state["observations"]) == 1:
                     if "# Authentication Security Review" not in state["managed_context"]:
-                        raise AssertionError("selected SKILL.md was not loaded before the loop")
+                        raise AssertionError("selected SKILL.md was not loaded")
+                    if "# Authentication Security Review" not in str(
+                        state["observations"][0].get("result", "")
+                    ):
+                        raise AssertionError("Skill loader did not return its instructions")
                     names = {item["name"] for item in state["available_tools"]}
                     if "load_review_skill" in names:
                         raise AssertionError("Skill must not be selected twice")
@@ -739,7 +759,7 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         summary = coordinator.collaboration_summary("")
 
         self.assertEqual(1, len(findings))
-        self.assertEqual(1, summary["tool_calls"])
+        self.assertEqual(2, summary["tool_calls"])
         self.assertEqual(
             ["review-auth-security@1"], summary["activated_skills"]
         )
@@ -769,6 +789,70 @@ class RuntimeMemoryContextTests(unittest.TestCase):
         coordinator.review(diff, parsed)
 
         self.assertEqual([], coordinator.collaboration_summary("")["activated_skills"])
+
+    def test_selected_skill_is_restored_without_reloading_after_interruption(self):
+        diff = "--- a/webhook.py\n+++ b/webhook.py\n@@ -1 +1 @@\n-old\n+if signature == 'bypass':\n"
+        parsed = parse_unified_diff(diff)
+        self.store.create("skill-resume", "org/repo", 11, {})
+
+        class InterruptedSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if not state.get("observations"):
+                    return {
+                        "action": "tool", "tool": "load_review_skill",
+                        "arguments": {"skill": "review-auth-security"},
+                    }
+                raise RuntimeError("provider interrupted after Skill activation")
+
+        first = MultiAgentCoordinator(
+            [InterruptedSpecialist()], store=self.store, agent_retries=0,
+            judge=ApprovingJudge(),
+            skill_registry=ReviewSkillRegistry("skills"),
+            skill_selector=ReviewSkillSelector(),
+        )
+        with self.assertRaisesRegex(RuntimeError, "after Skill activation"):
+            first.review_with_context("skill-resume", diff, parsed)
+
+        checkpoint = self.store.load_checkpoints("skill-resume")["loop:A01"]
+        self.assertEqual(
+            ["review-auth-security"],
+            checkpoint["state"]["activated_skills"],
+        )
+
+        class ResumedSpecialist:
+            name = "security-specialist"
+            domains = ("security",)
+
+            def agent_step(self, state):
+                if "# Authentication Security Review" not in state["managed_context"]:
+                    raise AssertionError("active Skill was not restored")
+                names = {item["name"] for item in state["available_tools"]}
+                if "load_review_skill" in names:
+                    raise AssertionError("restored Skill was offered for loading again")
+                line = state["parsed"].added_lines[0]
+                return {"action": "final", "findings": [Finding(
+                    "SEC-AUTH", Severity.CRITICAL, "Signature bypass",
+                    "A fixed value bypasses signature verification.",
+                    line.path, line.line, line.content,
+                    "Remove the bypass.", "Add a forged-signature test.", 0.99,
+                )]}
+
+        second = MultiAgentCoordinator(
+            [ResumedSpecialist()], store=self.store, agent_retries=0,
+            judge=ApprovingJudge(),
+            skill_registry=ReviewSkillRegistry("skills"),
+            skill_selector=ReviewSkillSelector(),
+        )
+        findings = second.review_with_context("skill-resume", diff, parsed)
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual(
+            ["review-auth-security@1"],
+            second.collaboration_summary("skill-resume")["activated_skills"],
+        )
 
     def test_coordinator_reserves_the_last_loop_step_for_final_output(self):
         diff = "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+eval(data)\n"

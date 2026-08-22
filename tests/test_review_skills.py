@@ -9,7 +9,7 @@ from capyreview.skill_evolution import validate_skill_package
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def write_skill(root: Path, name: str, description: str, domains: str, signals: str):
+def write_skill(root: Path, name: str, description: str, domains: str):
     skill = root / name
     (skill / "references").mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text(
@@ -18,7 +18,6 @@ def write_skill(root: Path, name: str, description: str, domains: str, signals: 
         f"description: {description}\n"
         "metadata:\n"
         f"  capyreview-domains: {domains}\n"
-        f"  capyreview-signals: {signals}\n"
         "---\n\n"
         f"# {name}\n\n"
         "Inspect the trust boundary and gather exact changed-line evidence.\n\n"
@@ -48,14 +47,13 @@ class ReviewSkillRegistryTests(unittest.TestCase):
             write_skill(
                 root, "review-auth-security",
                 "Review authentication and HMAC changes. Use for signature code.",
-                "security", "auth signature hmac",
+                "security",
             )
 
             discovered = ReviewSkillRegistry(root).discover()
 
             self.assertEqual(["review-auth-security"], [item.name for item in discovered])
             self.assertEqual(("security",), discovered[0].domains)
-            self.assertEqual(("auth", "signature", "hmac"), discovered[0].signals)
             self.assertFalse(hasattr(discovered[0], "body"))
 
     def test_activation_and_reference_loading_are_separate(self):
@@ -64,7 +62,7 @@ class ReviewSkillRegistryTests(unittest.TestCase):
             write_skill(
                 root, "review-auth-security",
                 "Review authentication and HMAC changes. Use for signature code.",
-                "security", "auth signature hmac",
+                "security",
             )
             registry = ReviewSkillRegistry(root)
 
@@ -84,7 +82,7 @@ class ReviewSkillRegistryTests(unittest.TestCase):
             write_skill(
                 root, "review-auth-security",
                 "Review authentication and HMAC changes. Use for signature code.",
-                "security", "auth signature hmac",
+                "security",
             )
             path = root / "review-auth-security" / "SKILL.md"
             path.write_text(
@@ -99,7 +97,7 @@ class ReviewSkillRegistryTests(unittest.TestCase):
             write_skill(
                 root, "review-auth-security",
                 "Review authentication and HMAC changes. Use for signature code.",
-                "security", "auth signature hmac",
+                "security",
             )
             path.write_text(
                 path.read_text(encoding="utf-8").replace(
@@ -167,18 +165,18 @@ Read [authorization cases](references/authorization.md) when permissions change.
 
 
 class ReviewSkillSelectorTests(unittest.TestCase):
-    def test_selects_auth_skill_only_for_security_reviewer(self):
+    def test_returns_only_skills_in_the_reviewer_domain(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_skill(
                 root, "review-auth-security",
                 "Review authentication and HMAC changes. Use for signature code.",
-                "security", "auth signature hmac webhook",
+                "security",
             )
             write_skill(
                 root, "review-async-reliability",
                 "Review asynchronous execution and retry changes.",
-                "correctness reliability", "async retry lock queue",
+                "correctness reliability",
             )
             metadata = ReviewSkillRegistry(root).discover()
 
@@ -193,9 +191,12 @@ class ReviewSkillSelectorTests(unittest.TestCase):
             )
 
             self.assertEqual(["review-auth-security"], [item.name for item in security])
-            self.assertEqual([], correctness)
+            self.assertEqual(
+                ["review-async-reliability"],
+                [item.name for item in correctness],
+            )
 
-    def test_does_not_activate_a_skill_for_unrelated_documentation(self):
+    def test_candidate_discovery_does_not_depend_on_diff_keywords(self):
         registry = ReviewSkillRegistry(ROOT / "skills")
 
         selected = ReviewSkillSelector().select(
@@ -203,7 +204,10 @@ class ReviewSkillSelectorTests(unittest.TestCase):
             "+Clarify the installation instructions.\n",
         )
 
-        self.assertEqual([], selected)
+        self.assertEqual(
+            ["review-async-reliability", "review-database-migration"],
+            [item.name for item in selected],
+        )
 
 
 if __name__ == "__main__":

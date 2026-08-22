@@ -3,7 +3,6 @@ name: review-auth-security
 description: Review authentication, HMAC, webhook signature, token and authorization changes. Use when a PR changes trust boundaries or contains auth, signature, hmac, webhook, token or permission signals.
 metadata:
   capyreview-domains: security
-  capyreview-signals: auth signature hmac webhook token permission credential secret
 ---
 
 # Authentication Security Review

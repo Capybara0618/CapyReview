@@ -14,7 +14,9 @@ from .mcp import GitHubMcpClient, GitHubMcpToolProvider
 from .models import TaskState, TraceEvent
 from .postgres_store import create_store
 from .report import to_markdown
-from .reviewer import OpenAICompatibleJudge, OpenAICompatibleReviewer
+from .reviewer import (
+    OpenAIAgentsSDKReviewer, OpenAICompatibleJudge, OpenAICompatibleReviewer,
+)
 from .review_skills import ReviewSkillRegistry, ReviewSkillSelector
 from .skill_evolution import ReviewSkillCandidateProposer
 from .store import utc_now
@@ -107,9 +109,9 @@ class ReviewService:
     def _build_llm_reviewer(
         self, prompt: str, name: str, domains: tuple,
         model: str = "",
-    ) -> OpenAICompatibleReviewer:
+    ) -> OpenAIAgentsSDKReviewer:
         config = self._llm_config()
-        reviewer = OpenAICompatibleReviewer(
+        reviewer = OpenAIAgentsSDKReviewer(
             str(config["base_url"]),
             str(config["api_key"]),
             model or str(config["model"]),

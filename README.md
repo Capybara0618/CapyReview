@@ -12,8 +12,8 @@ PR Diff / GitHub Webhook
           │
           ▼
       Risk Router
-       ├─ routine ───────► Correctness Reviewer
-       └─ high risk ─────► Security Reviewer + Correctness Reviewer
+       ├─ routine ───────► Correctness Reviewer (OpenAI Agents SDK)
+       └─ high risk ─────► Security Reviewer + Correctness Reviewer (OpenAI Agents SDK)
                                   │
                                   ├─ read-only GitHub MCP evidence
                                   │
@@ -26,6 +26,9 @@ PR Diff / GitHub Webhook
 
 核心模块包括：
 
+- 原生 Reviewer Loop：使用 OpenAI Agents SDK 的 `Agent + Runner + FunctionTool` 承担模型轮次
+  与 Tool Calling，并通过 OpenAI-compatible Chat Completions Model 连接 DeepSeek；业务 Harness
+  不交给 SDK，仍由本项目控制路由、工具权限、Evidence/Judge 和持久化恢复。
 - 有界 Agent Runtime：步骤与时间预算、节点重试、取消、续跑和 Run Trace；Checkpoint
   覆盖 Agent Loop Observation、Reviewer Final 与 Judge Decision 三个细粒度边界。
 - 风险路由：普通变更只调用 Correctness Reviewer；高风险或复杂变更才并行调用 Security
@@ -37,8 +40,9 @@ PR Diff / GitHub Webhook
 - Context 与 Memory：完整输入超预算时才压缩 Diff；压缩仅移除未修改上下文并保留全部增删行，
   仍超限则按 Hunk 分 Batch 审查；同时检索、沉淀仓库级 Episodic/Semantic 长期记忆；
   当前任务状态由 Agent Loop 与 Checkpoint 管理，不重复写入 Memory。
-- 正式 Review Skills：系统按 Reviewer 领域与 Diff 风险信号一次性选择并注入匹配的短
-  `SKILL.md`；Evidence/Judge 驳回会先回流原
+- 正式 Review Skills：Host 先按 Reviewer 领域限定候选，只向模型公开 Skill 的名称和描述；
+  Reviewer 在 Agent Loop 内按语义决定是否调用 `load_review_skill`，选中后才注入完整
+  `SKILL.md`。Evidence/Judge 驳回会先回流原
   Reviewer 一次，只有仍未解决的语义失败和人工误报/漏报才会推动对应 Skill 演化。
 - 可复现执行：任务创建时冻结模型名与 Skill 版本集合，并在结果中汇总真实 LLM 调用数、
   Prompt/Completion Token 和请求延迟。
@@ -149,7 +153,7 @@ Security Reviewer 获得代码上下文、仓库搜索、文件历史和扫描�
 扫描告警替换为 CI 失败。Memory 在 Reviewer 执行前自动召回，不是 Tool；`changed_line` 只属于
 Evidence Validator。MCP 参数错误、认证失败或上游错误会变成下一轮可见的失败 Observation，
 不会回退到本地规则或旧工具；Observation 保存后，任务恢复不会重复同一次外部调用。Agent
-Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗在连续取证上。
+Loop 由 SDK 原生轮次驱动，并受项目配置的最大轮数与超时预算约束，防止无限连续取证。
 
 每个 Tool Observation 使用任务内顺序编号 `O1/O2/...`。Reviewer 只能通过 `evidence_refs`
 显式引用成功的 GitHub MCP 结果；Skill 加载、失败调用和未引用结果不会进入 Judge 证据包。
@@ -158,8 +162,9 @@ Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗�
 
 每次 Reviewer 模型调用都按三层构造完整输入：
 
-1. **先完整组装：** System Prompt、Assignment、输出契约、已选 `SKILL.md`、Tool Schema、
-   完整 Diff、Observation、反馈和 Memory 一起计入输入预算；能够容纳时不压缩。
+1. **先完整组装：** System Prompt、Assignment、输出契约、候选 Skill 元数据或已加载的
+   `SKILL.md`、Tool Schema、完整 Diff、Observation、反馈和 Memory 一起计入输入预算；
+   能够容纳时不压缩。
 2. **超限才压缩：** 解析 Git Unified Diff，保留文件路径、Hunk Header 与全部增删行，只移除
    未修改上下文；缺失代码由 Reviewer 通过 GitHub MCP 按 Commit 和行号补取。
 3. **分 Batch 兜底：** 紧凑变更视图仍超限时，按原始 Hunk/变更块顺序生成多个预算内 Batch，
@@ -167,16 +172,18 @@ Loop 的最后一步固定为 Final-only，防止模型把全部步数预算耗�
 
 Memory 只在当前仓库召回相关 Episodic/Semantic Top-K；工具输出在调用源头限制返回窗口和数量。
 
-Agent Loop 最后一轮移除 Tool Schema 并强制 Final-only。每轮 `context_window_prepared` Trace
-都携带 Context Manifest，记录 System、Skill、Tool、Diff、Observation 与 Memory 的估算 Token，
-以及各类内容的保留/丢弃数量。
+每个 Reviewer Batch 进入 SDK 前都会生成 `context_window_prepared` Trace 和 Context Manifest，
+记录 System、Skill、Tool、Diff、Observation 与 Memory 的估算 Token，以及各类内容的
+保留/丢弃数量；每次原生工具调用后另存 Observation Checkpoint。
 
 ## Formal Review Skill Evolution
 
 项目将认证安全、数据库迁移和异步可靠性等专业流程组织成符合 Agent Skills 规范的
-`SKILL.md + references/` 包。系统根据当前 Diff 和 Reviewer 领域自动选择匹配的短
-`SKILL.md`，并在 Agent Loop 开始前注入上下文；较长参考资料由 Reviewer 通过
-`read_skill_reference` 渐进读取。
+`SKILL.md + references/` 包。Host 只负责领域权限边界，在 Agent Loop 开始时公开允许使用的
+Skill `name + description`。Reviewer 结合 Diff 语义自行决定是否调用
+`load_review_skill(skill)`；每个 Reviewer 最多加载一个，下一轮才会看到完整 `SKILL.md`。
+较长参考资料仅在 Skill 激活后开放，由 Reviewer 通过 `read_skill_reference` 渐进读取。
+选择过程不再维护或统计 Diff 关键词。
 
 Evidence Validator 或 Judge 驳回候选后，系统把结构化原因返回原 Reviewer 一次，并保存独立
 Reflection Checkpoint。修正成功不进入演化；仍未解决的反思失败与人工 `false_positive`、
@@ -198,8 +205,8 @@ Reflection Checkpoint。修正成功不进入演化；仍未解决的反思失�
 - `GET /v1/skills/{skill_name}/versions`
 - `POST /v1/skills/{skill_name}/versions/{version}/activate`
 
-激活版本作为可发现的正式 Skill 进入注册表；命中领域与信号后自动进入对应 Reviewer 上下文，
-Reference 仍由 Reviewer 按需读取。
+激活版本作为可发现的正式 Skill 进入注册表；领域匹配后，其名称和描述进入对应 Reviewer 的
+候选目录，是否加载由 Reviewer 在 Agent Loop 内作语义判断，Reference 仍按需读取。
 生成 Skill 不允许携带脚本、命令、工具定义或绕过 Evidence/Judge 的指令。任务创建时冻结
 Skill 版本集合，续跑不会静默切换版本。
 

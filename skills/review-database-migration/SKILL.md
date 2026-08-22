@@ -3,7 +3,6 @@ name: review-database-migration
 description: Review database migrations, SQL, schema changes and transaction behavior. Use when a PR changes migrations, queries, indexes, constraints or data backfills.
 metadata:
   capyreview-domains: correctness reliability
-  capyreview-signals: migration sql schema index constraint transaction backfill query
 ---
 
 # Database Migration Review

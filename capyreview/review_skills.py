@@ -1,4 +1,4 @@
-"""Formal Agent Skills discovery, validation and deterministic selection."""
+"""Formal Agent Skills discovery, validation and domain-scoped discovery."""
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -16,7 +16,6 @@ class ReviewSkillMetadata:
     name: str
     description: str
     domains: Tuple[str, ...]
-    signals: Tuple[str, ...]
     version: int = 1
 
 
@@ -155,11 +154,10 @@ class ReviewSkillRegistry:
         ):
             raise ValueError("SKILL.md metadata values must be strings")
         domains = self._words(metadata.get("capyreview-domains", ""))
-        signals = self._words(metadata.get("capyreview-signals", ""))
-        if not domains or not signals:
-            raise ValueError("review skills require domain and signal metadata")
+        if not domains:
+            raise ValueError("review skills require domain metadata")
         return ReviewSkillMetadata(
-            name, description, domains, signals, int(version)
+            name, description, domains, int(version)
         ), body.strip()
 
     def _normalize_package(self, value: dict) -> dict:
@@ -219,20 +217,20 @@ class ReviewSkillRegistry:
 
 
 class ReviewSkillSelector:
-    """Choose the smallest relevant skill set from trusted metadata."""
+    """Expose the skills allowed for a reviewer domain.
+
+    Semantic selection belongs to the reviewer agent.  The host keeps only the
+    trusted domain boundary here so a reviewer cannot load an unrelated Skill.
+    """
 
     def select(
         self, skills: Iterable[ReviewSkillMetadata], domains=(), paths=(), diff: str = "",
     ) -> list[ReviewSkillMetadata]:
         selected_domains = {str(item).strip().lower() for item in domains}
-        searchable = (" ".join(str(item) for item in paths) + "\n" + str(diff)).lower()
-        matches = []
-        for skill in skills:
-            if not selected_domains.intersection(skill.domains):
-                continue
-            hits = sum(bool(re.search(r"\b%s\b" % re.escape(signal), searchable))
-                       for signal in skill.signals)
-            if hits:
-                matches.append((hits, skill.name, skill))
-        matches.sort(key=lambda item: (-item[0], item[1]))
-        return [item[2] for item in matches]
+        return sorted(
+            (
+                skill for skill in skills
+                if selected_domains.intersection(skill.domains)
+            ),
+            key=lambda skill: skill.name,
+        )

@@ -109,6 +109,7 @@ class ContextManager:
             "SKILL", {
                 "name": skill.get("name"),
                 "version": skill.get("version"),
+                "description": str(skill.get("description", ""))[:1024],
                 "instructions": str(skill.get("body", ""))[:6000],
             }, "skills"
         ) for skill in skills)

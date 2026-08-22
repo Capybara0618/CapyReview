@@ -559,7 +559,8 @@ class MultiAgentCoordinator(Reviewer):
         return memories
 
     def _agent_tools(
-        self, state: CollaborationState, assignment: ReviewAssignment, skills=(),
+        self, state: CollaborationState, assignment: ReviewAssignment,
+        skill_candidates=(), activated_skills=None,
     ) -> ToolRegistry:
         if (
             self.tool_provider is None or not state.get("repository")
@@ -574,8 +575,54 @@ class MultiAgentCoordinator(Reviewer):
                 files=tuple(assignment.files),
                 domains=tuple(assignment.risk_domains),
             ))
-        activated = {item.name: item for item in skills}
-        if activated:
+        candidates = {item.name: item for item in skill_candidates}
+        activated = activated_skills if activated_skills is not None else {}
+        if candidates:
+            def load_review_skill(skill: str):
+                name = str(skill).strip()
+                if name not in candidates:
+                    raise ValueError("skill is not available for this reviewer domain")
+                if activated and name not in activated:
+                    raise ValueError("a reviewer may activate at most one review skill")
+                if name in activated:
+                    raise ValueError("review skill is already active")
+                value = self.skill_registry.activate(name)
+                activated[name] = value
+                with self._checkpoint_lock:
+                    state.setdefault("activated_skills_by_agent", {})[
+                        assignment.agent
+                    ] = [name]
+                self._emit(
+                    state, "skill-selector", assignment.agent, "skill_activated",
+                    {
+                        "name": value.name, "version": value.version,
+                        "references": list(value.references),
+                        "selection": "agent-loop",
+                    }, assignment.assignment_id,
+                )
+                return {
+                    "name": value.name, "version": value.version,
+                    "loaded": True, "instructions": value.body,
+                    "references": list(value.references),
+                }
+
+            tools.register(AgentTool(
+                "load_review_skill",
+                "Load one relevant review Skill from the advertised Skill catalog.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "skill": {
+                            "type": "string",
+                            "enum": sorted(candidates),
+                        },
+                    },
+                    "required": ["skill"],
+                    "additionalProperties": False,
+                },
+                load_review_skill,
+            ))
+
             def read_skill_reference(skill: str, path: str):
                 if skill not in activated:
                     raise ValueError("only an activated review skill may be read")
@@ -602,42 +649,59 @@ class MultiAgentCoordinator(Reviewer):
             ))
         return tools
 
-    def _activate_review_skills(
+    def _review_skill_candidates(
         self, state: CollaborationState, assignment: ReviewAssignment,
     ) -> list:
         if self.skill_registry is None:
             return []
-        selected = self.skill_selector.select(
+        return self.skill_selector.select(
             self.skill_registry.discover(), assignment.risk_domains,
             assignment.files, state["diff"],
         )
-        activated = [self.skill_registry.activate(item.name) for item in selected]
-        for skill in activated:
-            self._emit(
-                state, "skill-selector", assignment.agent, "skill_activated",
-                {
-                    "name": skill.name, "version": skill.version,
-                    "references": list(skill.references),
-                }, assignment.assignment_id,
-            )
-        return activated
 
     def _run_agent_loop(
         self, state: CollaborationState, agent: Reviewer,
         assignment: ReviewAssignment, feedback: Optional[List[str]],
     ) -> tuple:
         memories = self._recall_memories(state, assignment)
-        activated_skills = self._activate_review_skills(state, assignment)
+        skill_candidates = self._review_skill_candidates(state, assignment)
+        activated_skills = {}
         with self._checkpoint_lock:
-            state.setdefault("activated_skills_by_agent", {})[agent.name] = [
-                item.name for item in activated_skills
+            state.setdefault("activated_skills_by_agent", {})[agent.name] = []
+        tools = self._agent_tools(
+            state, assignment, skill_candidates, activated_skills,
+        )
+
+        def current_skill_context() -> list[dict]:
+            if activated_skills:
+                return [{
+                    "name": item.name,
+                    "version": item.version,
+                    "body": item.body,
+                } for item in activated_skills.values()]
+            values = []
+            for candidate in skill_candidates:
+                values.append({
+                    "name": candidate.name,
+                    "version": candidate.version,
+                    "description": candidate.description,
+                })
+            return values
+
+        def visible_tools(final_only: bool = False) -> list[dict]:
+            if final_only:
+                return []
+            hidden = (
+                {"load_review_skill"}
+                if activated_skills else {"read_skill_reference"}
+            )
+            return [
+                item for item in tools.catalog()
+                if item["name"] not in hidden
             ]
-        tools = self._agent_tools(state, assignment, activated_skills)
-        skill_context = [
-            {"name": item.name, "version": item.version, "body": item.body}
-            for item in activated_skills
-        ]
-        initial_tools = tools.catalog()
+
+        initial_tools = visible_tools()
+        initial_skill_context = current_skill_context()
         initial_inbox = self._bus(state).inbox(
             agent.name, assignment.assignment_id
         )
@@ -652,8 +716,30 @@ class MultiAgentCoordinator(Reviewer):
             ))
 
         initial_system = system_prompt(initial_tools)
-        fixed_tokens = self.context_manager.contract_tokens(
-            initial_system, assignment.to_dict(), skill_context, initial_tools
+        initial_contract_tokens = self.context_manager.contract_tokens(
+            initial_system, assignment.to_dict(), initial_skill_context,
+            initial_tools,
+        )
+        active_contract_tokens = initial_contract_tokens
+        if skill_candidates:
+            # Reserve the maximum serialized Skill body without reading any body
+            # before the model explicitly selects it.
+            longest_name = max(skill_candidates, key=lambda item: len(item.name))
+            largest_skill_context = [{
+                "name": longest_name.name,
+                "version": longest_name.version,
+                "body": "x" * 6000,
+            }]
+            post_load_tools = [
+                item for item in tools.catalog()
+                if item["name"] != "load_review_skill"
+            ]
+            active_contract_tokens = self.context_manager.contract_tokens(
+                system_prompt(post_load_tools), assignment.to_dict(),
+                largest_skill_context, post_load_tools,
+            )
+        fixed_tokens = max(
+            initial_contract_tokens, active_contract_tokens,
         ) + self.context_manager.runtime_tokens(
             feedback=list(feedback or []), inbox=initial_inbox,
             memories=memories,
@@ -691,6 +777,13 @@ class MultiAgentCoordinator(Reviewer):
                 and int(completed_batch.get("batch_count", 0))
                 == bundle.batch_count
             ):
+                for name in completed_batch.get("activated_skills", []):
+                    if name not in activated_skills:
+                        activated_skills[name] = self.skill_registry.activate(name)
+                with self._checkpoint_lock:
+                    state.setdefault("activated_skills_by_agent", {})[
+                        agent.name
+                    ] = sorted(activated_skills)
                 findings = [
                     self._finding_from_dict(item)
                     for item in completed_batch.get("findings", [])
@@ -758,8 +851,8 @@ class MultiAgentCoordinator(Reviewer):
                 "assignment": assignment.to_dict(),
                 "feedback": list(feedback or []),
                 "inbox": initial_inbox,
-                "memories": memories, "available_tools": tools.catalog(),
-                "activated_skills": skill_context,
+                "memories": memories, "available_tools": initial_tools,
+                "activated_skills": initial_skill_context,
                 "batch_index": bundle.batch_index,
                 "batch_count": bundle.batch_count,
             }
@@ -772,6 +865,13 @@ class MultiAgentCoordinator(Reviewer):
                 checkpoint.get("state"), dict
             ):
                 resume_state = dict(checkpoint["state"])
+                for name in resume_state.get("activated_skills", []):
+                    if name not in activated_skills:
+                        activated_skills[name] = self.skill_registry.activate(name)
+                with self._checkpoint_lock:
+                    state.setdefault("activated_skills_by_agent", {})[
+                        agent.name
+                    ] = sorted(activated_skills)
                 self._emit(
                     state, "agent-runtime", agent.name,
                     "agent_loop_checkpoint_restored",
@@ -795,6 +895,7 @@ class MultiAgentCoordinator(Reviewer):
                 saved["agent"] = agent.name
                 saved["batch_index"] = bundle.batch_index
                 saved["batch_count"] = bundle.batch_count
+                saved["activated_skills"] = sorted(activated_skills)
                 attempt = max(1, int(saved.get("next_step", 1)) - 1)
                 self.store.save_checkpoint(
                     task_id, checkpoint_node, saved,
@@ -822,7 +923,8 @@ class MultiAgentCoordinator(Reviewer):
                 final_only = int(
                     loop_iteration.get("loop_step", 1)
                 ) >= self.agent_loop.max_steps
-                active_tools = [] if final_only else tools.catalog()
+                active_tools = visible_tools(final_only)
+                skill_context = current_skill_context()
                 active_system = system_prompt(active_tools)
                 managed = self.context_manager.compose(
                     bundle, assignment.to_dict(),
@@ -848,11 +950,47 @@ class MultiAgentCoordinator(Reviewer):
                 prepared["managed_system_prompt"] = managed.system_prompt
                 return getattr(agent, "agent_step")(prepared)
 
-            result = self.agent_loop.run(
-                managed_step, tools, loop_state, on_event,
-                resume_state=resume_state,
-                checkpoint_sink=save_loop_checkpoint,
-            )
+            sdk_loop = getattr(agent, "run_agent_loop", None)
+            if callable(sdk_loop):
+                initial_iteration = dict(loop_state)
+                initial_iteration["observations"] = list(
+                    (resume_state or {}).get("observations", [])
+                )
+                prepared = dict(initial_iteration)
+                active_tools = visible_tools()
+                managed = self.context_manager.compose(
+                    bundle, assignment.to_dict(),
+                    feedback=list(feedback or []), inbox=initial_inbox,
+                    memories=memories,
+                    observations=initial_iteration["observations"],
+                    tools=active_tools, skills=current_skill_context(),
+                    system_prompt=system_prompt(active_tools),
+                )
+                last_context["metadata"] = managed.metadata()
+                self._emit(
+                    state, "context-manager", agent.name,
+                    "context_window_prepared", managed.metadata(),
+                    assignment.assignment_id,
+                )
+                prepared.update({
+                    "managed_context": managed.text,
+                    "managed_system_prompt": managed.system_prompt,
+                    "context_metadata": managed.metadata(),
+                })
+                result = sdk_loop(
+                    prepared, tools, self.agent_loop.max_steps,
+                    event_sink=on_event, resume_state=resume_state,
+                    checkpoint_sink=save_loop_checkpoint,
+                    tool_enabled=lambda name: name in {
+                        item["name"] for item in visible_tools()
+                    },
+                )
+            else:
+                result = self.agent_loop.run(
+                    managed_step, tools, loop_state, on_event,
+                    resume_state=resume_state,
+                    checkpoint_sink=save_loop_checkpoint,
+                )
             findings = list(result.output or [])
             if not all(isinstance(item, Finding) for item in findings):
                 raise TypeError(
@@ -870,6 +1008,7 @@ class MultiAgentCoordinator(Reviewer):
                     "steps": result.steps,
                     "stop_reason": result.stop_reason,
                     "context": last_context["metadata"],
+                    "activated_skills": sorted(activated_skills),
                     "usage": dict(result.usage),
                 },
                 attempt=max(1, result.steps),
@@ -894,7 +1033,8 @@ class MultiAgentCoordinator(Reviewer):
             "tools_available": len(tools.names()),
             "tool_calls": total_tool_calls,
             "activated_skills": [
-                "%s@%s" % (item.name, item.version) for item in activated_skills
+                "%s@%s" % (item.name, item.version)
+                for item in activated_skills.values()
             ],
             "observations": all_observations,
             "observations_by_finding": observations_by_finding,
